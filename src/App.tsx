@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Toaster } from '@/components/ui/toaster';
 import { Toaster as Sonner } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -18,6 +18,18 @@ const App = () => {
   const [currentView, setCurrentView] = useState<'import' | 'design'>('import');
   const [designMode, setDesignMode] = useState(false);
   const appShellRef = useRef<AppShellHandle>(null);
+
+  // Listen for session reset to clear the file
+  useEffect(() => {
+    const handleSessionReset = () => {
+      setCurrentFile(null);
+      setCurrentView('import');
+      setDesignMode(false);
+    };
+
+    window.addEventListener('session-reset', handleSessionReset);
+    return () => window.removeEventListener('session-reset', handleSessionReset);
+  }, []);
 
   const handleLogin = (credentials: { username: string; password: string }) => {
     console.log('Login with:', credentials);

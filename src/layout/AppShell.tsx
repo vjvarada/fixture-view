@@ -126,9 +126,20 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       input.click();
     };
 
-    const handleResetView = () => {
-      const event = new CustomEvent('viewer-reset');
-      window.dispatchEvent(event);
+    const handleResetSession = () => {
+      // Reset all session state - like starting fresh
+      setCurrentBaseplate(null);
+      setUndoStack([]);
+      setRedoStack([]);
+      setCavityBaseMesh(null);
+      setCavityTools([]);
+      setIsCavityOpen(false);
+      setIsSupportsOpen(false);
+      
+      // Dispatch events to reset the 3D scene and clear the file
+      window.dispatchEvent(new CustomEvent('viewer-reset'));
+      window.dispatchEvent(new CustomEvent('session-reset'));
+      window.dispatchEvent(new Event('supports-cancel-placement'));
     };
 
     const handleSetOrientation = (orientation: string) => {
@@ -260,7 +271,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     // Expose methods via ref
     React.useImperativeHandle(ref, () => ({
       openFilePicker: handleOpenFilePicker,
-      resetView: handleResetView,
+      resetView: handleResetSession,
       setViewOrientation: handleSetOrientation,
     }));
 
@@ -283,18 +294,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={handleOpenFilePicker}
-                className="tech-transition tech-glow font-tech"
-                disabled={isProcessing}
-              >
-                <Upload className="w-4 h-4 mr-2" />
-                Import
-              </Button>
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleResetView}
+                onClick={handleResetSession}
                 className="tech-transition"
                 disabled={isProcessing}
               >
@@ -444,15 +444,21 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         {/* Main Content */}
         <div className="flex-1 flex overflow-hidden">
           {/* Left Static Vertical Toolbar */}
-          <aside className="w-14 border-r border-border/50 tech-glass flex flex-col justify-center">
+          <aside className="w-14 flex-shrink-0 border-r border-border/50 tech-glass flex flex-col justify-center">
             <VerticalToolbar onToolSelect={handleToolSelect} />
           </aside>
 
           {/* Collapsible File Import Section */}
-          <aside className={`border-r border-border/50 tech-glass flex flex-col transition-all duration-300 ${isFileImportCollapsed ? 'w-12' : 'w-80'}`}>
-            <div className="p-2 border-b border-border/50 flex items-center justify-between">
+          <aside 
+            className="border-r border-border/50 tech-glass flex flex-col overflow-hidden flex-shrink-0"
+            style={{ 
+              width: isFileImportCollapsed ? 48 : 320,
+              transition: 'width 300ms ease-in-out'
+            }}
+          >
+            <div className="p-2 border-b border-border/50 flex items-center justify-between flex-shrink-0">
               {!isFileImportCollapsed && (
-                <h3 className="font-tech font-semibold text-sm">File Import</h3>
+                <h3 className="font-tech font-semibold text-sm whitespace-nowrap">File Import</h3>
               )}
               <Button
                 variant="ghost"
@@ -465,7 +471,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                     window.dispatchEvent(new CustomEvent('viewer-resize'));
                   }, 320);
                 }}
-                className="w-8 h-8 p-0 tech-transition hover:bg-primary/10 hover:text-primary"
+                className={`w-8 h-8 p-0 tech-transition hover:bg-primary/10 hover:text-primary flex-shrink-0 ${isFileImportCollapsed ? 'mx-auto' : ''}`}
                 title={isFileImportCollapsed ? 'Expand File Import' : 'Collapse File Import'}
               >
                 {isFileImportCollapsed ? (
@@ -477,7 +483,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
             </div>
 
             {!isFileImportCollapsed && (
-              <div className="flex-1">
+              <div className="flex-1 overflow-auto">
                 {children && React.cloneElement(children as React.ReactElement, {
                   isInCollapsiblePanel: true
                 })}
@@ -485,8 +491,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
             )}
           </aside>
 
-          {/* Main Viewport */}
-          <main className="flex-1 relative">
+          {/* Main Viewport - this is the only flex element */}
+          <main className="flex-1 relative min-w-0">
             <ThreeDViewer
               currentFile={currentFile}
               isProcessing={isProcessing}
@@ -506,11 +512,17 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
             {/* Cavity panel moved under Properties pane */}
           </main>
 
-          {/* Right Properties Panel */}
-          <aside className={`border-l border-border/50 tech-glass flex flex-col transition-all duration-300 ${isPropertiesCollapsed ? 'w-12' : 'w-64'}`}>
-            <div className="p-2 border-b border-border/50 flex items-center justify-between">
+          {/* Right Properties Panel - Fixed to right side */}
+          <aside 
+            className="border-l border-border/50 tech-glass flex flex-col overflow-hidden flex-shrink-0"
+            style={{ 
+              width: isPropertiesCollapsed ? 48 : 250,
+              transition: 'width 300ms ease-in-out'
+            }}
+          >
+            <div className="p-2 border-b border-border/50 flex items-center justify-between flex-shrink-0">
               {!isPropertiesCollapsed && (
-                <h3 className="font-tech font-semibold text-sm">Properties</h3>
+                <h3 className="font-tech font-semibold text-sm whitespace-nowrap">Properties</h3>
               )}
               <Button
                 variant="ghost"
@@ -523,7 +535,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                     window.dispatchEvent(new CustomEvent('viewer-resize'));
                   }, 320);
                 }}
-                className="w-8 h-8 p-0 tech-transition hover:bg-primary/10 hover:text-primary"
+                className={`w-8 h-8 p-0 tech-transition hover:bg-primary/10 hover:text-primary flex-shrink-0 ${isPropertiesCollapsed ? 'mx-auto' : ''}`}
                 title={isPropertiesCollapsed ? 'Expand Properties' : 'Collapse Properties'}
               >
                 {isPropertiesCollapsed ? (
@@ -536,8 +548,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
             {!isPropertiesCollapsed && (
               <div className="p-4 flex-1 overflow-auto">
-                {/* Part Properties Accordion - Transform controls */}
-                <PartPropertiesAccordion hasModel={!!currentFile} />
+                {/* Part Properties Accordion - File Details and Transform controls */}
+                <PartPropertiesAccordion hasModel={!!currentFile} currentFile={currentFile} />
 
                 {/* Subtract Workpieces panel anchored here */}
                 {isCavityOpen && (

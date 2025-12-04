@@ -8,8 +8,9 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { RotateCcw, Move, RotateCw } from 'lucide-react';
+import { RotateCcw, Move, RotateCw, FileText, Info } from 'lucide-react';
 import * as THREE from 'three';
+import { ProcessedFile } from '@/modules/FileImport/types';
 
 interface PartTransform {
   position: { x: number; y: number; z: number };
@@ -18,9 +19,10 @@ interface PartTransform {
 
 interface PartPropertiesAccordionProps {
   hasModel: boolean;
+  currentFile?: ProcessedFile | null;
 }
 
-const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({ hasModel }) => {
+const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({ hasModel, currentFile }) => {
   const [transform, setTransform] = useState<PartTransform>({
     position: { x: 0, y: 0, z: 0 },
     rotation: { x: 0, y: 0, z: 0 },
@@ -144,13 +146,78 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({ hasMo
     return null;
   }
 
+  // Helper function to format file size
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  // Helper function to format dimensions
+  const formatDimension = (value: number) => value.toFixed(2);
+
   return (
-    <Accordion type="single" collapsible defaultValue="part-properties" className="w-full">
-      <AccordionItem value="part-properties" className="border-border/50">
+    <Accordion type="multiple" defaultValue={["file-details", "part-position"]} className="w-full">
+      {/* File Details Accordion */}
+      {currentFile && (
+        <AccordionItem value="file-details" className="border-border/50">
+          <AccordionTrigger className="py-2 text-sm font-tech hover:no-underline">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-primary" />
+              File Details
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="pt-2">
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Name:</span>
+                <span className="font-mono truncate max-w-[120px]" title={currentFile.metadata.name}>
+                  {currentFile.metadata.name}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Size:</span>
+                <span className="font-mono">{formatFileSize(currentFile.metadata.size)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Triangles:</span>
+                <span className="font-mono">{currentFile.metadata.triangles.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Units:</span>
+                <span className="font-mono">{currentFile.metadata.units}</span>
+              </div>
+              <div className="border-t border-border/30 pt-2 mt-2">
+                <div className="text-muted-foreground mb-1 flex items-center gap-1">
+                  <Info className="w-3 h-3" />
+                  Dimensions ({currentFile.metadata.units})
+                </div>
+                <div className="grid grid-cols-3 gap-1 text-center">
+                  <div>
+                    <span className="text-red-500 font-mono text-xs">X</span>
+                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.x)}</div>
+                  </div>
+                  <div>
+                    <span className="text-green-500 font-mono text-xs">Y</span>
+                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.y)}</div>
+                  </div>
+                  <div>
+                    <span className="text-blue-500 font-mono text-xs">Z</span>
+                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.z)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      )}
+
+      {/* Part Position Accordion */}
+      <AccordionItem value="part-position" className="border-border/50">
         <AccordionTrigger className="py-2 text-sm font-tech hover:no-underline">
           <div className="flex items-center gap-2">
             <Move className="w-4 h-4 text-primary" />
-            Part Properties
+            Part Position
           </div>
         </AccordionTrigger>
         <AccordionContent className="pt-2">

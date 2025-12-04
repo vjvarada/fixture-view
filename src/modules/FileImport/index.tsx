@@ -1,8 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { AlertCircle, RotateCcw, Box } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import FileDropzone from "./components/FileDropzone";
 import { useFileProcessing } from "./hooks/useFileProcessing";
 import { useViewer } from "./hooks/useViewer";
@@ -48,6 +47,25 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
   const { startLoading, updateProgress, stopLoading } = useLoadingManager();
   const pendingFileRef = useRef<File | null>(null);
   const { processFile, isProcessing: fileProcessing, error: fileError, clearError } = useFileProcessing();
+
+  // Listen for session reset to clear internal state
+  useEffect(() => {
+    const handleSessionReset = () => {
+      setCurrentFile(null);
+      setIsProcessing(false);
+      setError(null);
+      setIsUnitsDialogOpen(false);
+      setIsOptimizationDialogOpen(false);
+      setMeshAnalysis(null);
+      setMeshProgress(null);
+      setIsMeshProcessing(false);
+      setPendingProcessedFile(null);
+      pendingFileRef.current = null;
+    };
+
+    window.addEventListener('session-reset', handleSessionReset);
+    return () => window.removeEventListener('session-reset', handleSessionReset);
+  }, []);
 
   // Remove viewer when in collapsible panel mode
   const viewerContainerRef = useRef<HTMLDivElement>(null);
@@ -291,60 +309,6 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
             isProcessing={isProcessing}
             className="min-h-[200px]"
           />
-
-          {/* File Information */}
-          {currentFile && (
-            <Card className="tech-glass">
-              <div className="p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-tech font-semibold text-sm flex items-center gap-2">
-                    <Box className="w-4 h-4" />
-                    File Details
-                  </h3>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleReset}
-                    className="tech-transition"
-                  >
-                    <RotateCcw className="w-3 h-3 mr-1" />
-                    Clear
-                  </Button>
-                </div>
-
-                <div className="space-y-2 text-xs font-tech">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Name:</span>
-                    <span className="truncate ml-2">{currentFile.metadata.name}</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Triangles:</span>
-                    <span>{currentFile.metadata.triangles.toLocaleString()}</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Size:</span>
-                    <span>{(currentFile.metadata.size / 1024 / 1024).toFixed(2)} MB</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Dimensions:</span>
-                    <span className="text-right ml-2">
-                      {currentFile.metadata.dimensions.x.toFixed(1)} × {' '}
-                      {currentFile.metadata.dimensions.y.toFixed(1)} × {' '}
-                      {currentFile.metadata.dimensions.z.toFixed(1)}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Process time:</span>
-                    <span>{currentFile.metadata.processingTime.toFixed(0)}ms</span>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
 
           {/* Help Text */}
           {!hasContent && (
