@@ -107,7 +107,6 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [isPropertiesCollapsed, setIsPropertiesCollapsed] = useState(false);
     const [undoStack, setUndoStack] = useState<any[]>([]);
     const [redoStack, setRedoStack] = useState<any[]>([]);
-    const [transformEnabled, setTransformEnabled] = useState(false);
     const [currentBaseplate, setCurrentBaseplate] = useState<{ id: string; type: string } | null>(null);
     const [cavityBaseMesh, setCavityBaseMesh] = useState<any | null>(null);
     const [cavityTools, setCavityTools] = useState<any[]>([]);
@@ -329,18 +328,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
               <Separator orientation="vertical" className="h-6" />
 
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  window.dispatchEvent(new CustomEvent('toggle-transform-mode'));
-                }}
-                className="tech-transition"
-                title="Toggle Transform Controls"
-              >
-                <Move className="w-4 h-4 mr-2" />
-                Transform
-              </Button>
+              {/* Transform is now via double-click on model - no toolbar button needed */}
             </div>
           </div>
 
@@ -502,8 +490,6 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               currentFile={currentFile}
               isProcessing={isProcessing}
               onComponentPlaced={handleComponentPlaced}
-              transformEnabled={transformEnabled}
-              onTransformToggle={setTransformEnabled}
             />
 
             {/* ViewCube temporarily disabled

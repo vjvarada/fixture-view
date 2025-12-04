@@ -4,7 +4,7 @@ import { Environment, OrbitControls as DreiOrbitControls, Html } from '@react-th
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import BasePlate from "./BasePlate";
 import { ProcessedFile, ViewOrientation } from "@/modules/FileImport/types";
-import ModelTransformControls from './ModelTransformControls';
+import SelectableTransformControls from './SelectableTransformControls';
 import * as THREE from 'three';
 import SupportPlacement from './Supports/SupportPlacement';
 import SupportMesh from './Supports/SupportMeshes';
@@ -16,11 +16,8 @@ import { createOffsetMesh, extractVertices } from '@/lib/offset/offsetMeshProces
 
 interface ThreeDSceneProps {
   currentFile: ProcessedFile | null;
-  transformEnabled: boolean;
-  currentTransformMode: 'translate' | 'rotate' | 'scale';
   modelTransform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 };
   setModelTransform: (transform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }) => void;
-  onCycleTransformMode?: () => void;
 }
 
 const computeDominantUpQuaternion = (geometry: THREE.BufferGeometry) => {
@@ -284,177 +281,6 @@ function getHighlightColor(baseHex?: string) {
   return lightenColor(complement, 30);
 }
 
-function TransformAnchor({
-  bounds,
-  transformEnabled,
-  currentMode,
-  onCycle,
-  rotation,
-  anchorColor = '#0ea5e9',
-}: {
-  bounds: BoundsSummary | null;
-  transformEnabled: boolean;
-  currentMode: 'translate' | 'rotate' | 'scale';
-  onCycle?: () => void;
-  rotation?: THREE.Euler;
-  anchorColor?: string;
-}) {
-  const { gl } = useThree();
-  const [hovered, setHovered] = useState(false);
-  const position = bounds ? bounds.center.toArray() : [0, 0, 0];
-  const longestEdge = bounds ? Math.max(bounds.size.x, bounds.size.y, bounds.size.z) : 1;
-  const anchorRadius = Math.max(longestEdge * 0.02, 2.4);
-  // Ring size derived from bounds so it reads like a perspective 3D circle regardless of camera view
-  const circleRadius = Math.max(longestEdge * 0.55, anchorRadius * 7.2);
-  const circleThickness = anchorRadius * 0.22;
-  const degreeLabelOffset = circleRadius * 1.02;
-  const axisColors = {
-    x: '#ef4444',
-    y: '#22c55e',
-    z: '#3b82f6'
-  } as const;
-  const labelStyles = {
-    x: {
-      background: 'rgba(248, 113, 113, 0.28)',
-      color: '#7f1d1d',
-      border: '1px solid rgba(248, 113, 113, 0.35)'
-    },
-    y: {
-      background: 'rgba(74, 222, 128, 0.28)',
-      color: '#065f46',
-      border: '1px solid rgba(74, 222, 128, 0.35)'
-    },
-    z: {
-      background: 'rgba(96, 165, 250, 0.28)',
-      color: '#1e3a8a',
-      border: '1px solid rgba(96, 165, 250, 0.35)'
-    }
-  };
-
-  const normalizeDegrees = useCallback((value: number) => {
-    let deg = THREE.MathUtils.radToDeg(value);
-    deg = ((deg + 180) % 360) - 180;
-    return Math.round(deg);
-  }, []);
-  
-
-  const rotationDegrees = useMemo(() => {
-    if (!rotation) {
-      return { x: 0, y: 0, z: 0 };
-    }
-    return {
-      x: normalizeDegrees(rotation.x),
-      y: normalizeDegrees(rotation.y),
-      z: normalizeDegrees(rotation.z),
-    };
-  }, [rotation, normalizeDegrees]);
-
-  const formatRotation = useCallback((value: number) => `${value >= 0 ? '+' : ''}${value}`, []);
-
-  const handleClick = useCallback((event: any) => {
-    event.stopPropagation();
-    onCycle?.();
-  }, [onCycle]);
-
-  const handlePointerOver = useCallback(() => {
-    setHovered(true);
-    gl.domElement.style.cursor = 'pointer';
-  }, [gl]);
-
-  const handlePointerOut = useCallback(() => {
-    setHovered(false);
-    gl.domElement.style.cursor = 'auto';
-  }, [gl]);
-
-  if (!bounds) {
-    return null;
-  }
-
-  return (
-    <group position={position as [number, number, number]} frustumCulled={false} renderOrder={1500}>
-      {currentMode === 'rotate' && (
-        <group>
-          {/* Axis dots positioned along the rotate rings (no extra ring visuals) */}
-          <mesh position={[circleRadius, 0, 0]}>
-            <sphereGeometry args={[anchorRadius * 0.55, 24, 24]} />
-            <meshBasicMaterial color={axisColors.x} depthWrite={false} depthTest={false} transparent opacity={0.95} />
-          </mesh>
-          <mesh position={[0, circleRadius, 0]}>
-            <sphereGeometry args={[anchorRadius * 0.55, 24, 24]} />
-            <meshBasicMaterial color={axisColors.y} depthWrite={false} depthTest={false} transparent opacity={0.95} />
-          </mesh>
-          <mesh position={[0, 0, circleRadius]}>
-            <sphereGeometry args={[anchorRadius * 0.55, 24, 24]} />
-            <meshBasicMaterial color={axisColors.z} depthWrite={false} depthTest={false} transparent opacity={0.95} />
-          </mesh>
-
-          {currentMode === 'rotate' && (
-            <>
-              <Html
-                position={[degreeLabelOffset, 0, 0]}
-                style={{
-                  background: labelStyles.x.background,
-                  padding: '1px 6px',
-                  borderRadius: '9999px',
-                  fontSize: '10px',
-                  color: labelStyles.x.color,
-                  pointerEvents: 'none',
-                  border: labelStyles.x.border
-                }}
-              >
-                X {formatRotation(rotationDegrees.x)}°
-              </Html>
-              <Html
-                position={[0, degreeLabelOffset, 0]}
-                style={{
-                  background: labelStyles.y.background,
-                  padding: '1px 6px',
-                  borderRadius: '9999px',
-                  fontSize: '10px',
-                  color: labelStyles.y.color,
-                  pointerEvents: 'none',
-                  border: labelStyles.y.border
-                }}
-              >
-                Y {formatRotation(rotationDegrees.y)}°
-              </Html>
-              <Html
-                position={[0, 0, degreeLabelOffset]}
-                style={{
-                  background: labelStyles.z.background,
-                  padding: '1px 6px',
-                  borderRadius: '9999px',
-                  fontSize: '10px',
-                  color: labelStyles.z.color,
-                  pointerEvents: 'none',
-                  border: labelStyles.z.border
-                }}
-              >
-                Z {formatRotation(rotationDegrees.z)}°
-              </Html>
-            </>
-          )}
-        </group>
-      )}
-
-      <mesh
-        onClick={handleClick}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
-      >
-        <sphereGeometry args={[anchorRadius * 0.55, 32, 32]} />
-        <meshBasicMaterial
-          color={transformEnabled ? anchorColor : '#d4d4d8'}
-          transparent
-          opacity={hovered ? 0.6 : 0.32}
-          depthWrite={false}
-          depthTest={false}
-        />
-      </mesh>
-    </group>
-  );
-}
-
 // Component for the main 3D model
 function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBoundsChange }: {
   file: ProcessedFile;
@@ -625,11 +451,8 @@ function FixtureComponent({
 // Main 3D Scene Component
 const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   currentFile,
-  transformEnabled,
-  currentTransformMode,
   modelTransform,
   setModelTransform,
-  onCycleTransformMode
 }) => {
   const { camera, size } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -1481,9 +1304,23 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         />
       )}
 
-      {/* Main 3D model - show in both normal and transform modes */}
+      {/* Main 3D model wrapped with transform controls */}
       {currentFile && (
-        <group>
+        <SelectableTransformControls
+          meshRef={modelMeshRef}
+          enabled={true}
+          onTransformChange={(transform) => {
+            setModelTransform({
+              position: transform.position,
+              rotation: transform.rotation,
+              scale: modelTransform.scale,
+            });
+          }}
+          onSelectionChange={(selected) => {
+            // Orbit controls stay enabled - only disabled during drag via events
+            console.log('Gizmo active:', selected);
+          }}
+        >
           <ModelMesh
             file={currentFile}
             meshRef={modelMeshRef}
@@ -1492,37 +1329,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             setColorsMap={setModelColors}
             onBoundsChange={setModelBounds}
           />
-          {/* Model selection handler */}
-          {modelMeshRef.current && (
-            <primitive
-              object={modelMeshRef.current}
-              onClick={() => {
-                window.dispatchEvent(new CustomEvent('model-selected', { detail: { mesh: modelMeshRef.current } }));
-              }}
-            />
-          )}
-          <TransformAnchor
-            bounds={modelBounds}
-            transformEnabled={transformEnabled}
-            currentMode={currentTransformMode}
-            onCycle={onCycleTransformMode}
-            rotation={modelTransform.rotation}
-            anchorColor={getHighlightColor(modelColors.get(currentFile.metadata.name))}
-          />
-        </group>
-      )}
-
-      {/* Transform controls - only when enabled and model is ready */}
-      {currentFile && transformEnabled && (
-        <ModelTransformControls
-          model={currentFile.mesh}
-          onTransform={setModelTransform}
-          enabled={transformEnabled}
-          snapToGrid={true}
-          gridSize={5}
-          modelRef={modelMeshRef}
-          transformMode={currentTransformMode}
-        />
+        </SelectableTransformControls>
       )}
 
       {/* Placed fixture components */}
@@ -1610,6 +1417,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         ref={(instance) => {
           controlsRef.current = instance as unknown as OrbitControlsImpl | null;
         }}
+        makeDefault
         enablePan={orbitControlsEnabled}
         enableZoom={orbitControlsEnabled}
         enableRotate={orbitControlsEnabled}

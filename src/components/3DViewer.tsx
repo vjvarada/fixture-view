@@ -1,7 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { ProcessedFile } from "@/modules/FileImport/types";
-import TransformControlsUI from './TransformControlsUI';
 import ThreeDScene from './3DScene';
 import * as THREE from 'three';
 
@@ -9,39 +8,13 @@ interface ThreeDViewerProps {
   currentFile: ProcessedFile | null;
   isProcessing: boolean;
   onComponentPlaced?: (component: any, position: any) => void;
-  transformEnabled?: boolean;
-  onTransformToggle?: (enabled: boolean) => void;
 }
 
 const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
   currentFile,
   isProcessing,
   onComponentPlaced,
-  transformEnabled: externalTransformEnabled = false,
-  onTransformToggle
 }) => {
-  // Internal transform state - can be overridden by external prop
-  const [internalTransformEnabled, setInternalTransformEnabled] = useState(false);
-  const [currentTransformMode, setCurrentTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
-
-  const transformEnabled = externalTransformEnabled !== undefined ? externalTransformEnabled : internalTransformEnabled;
-
-  const handleTransformToggle = (enabled: boolean) => {
-    if (externalTransformEnabled !== undefined && onTransformToggle) {
-      // External control - notify parent
-      console.log('Using external control, notifying parent');
-      onTransformToggle(enabled);
-    } else {
-      // Internal control
-      console.log('Using internal control, setting state to:', enabled);
-      setInternalTransformEnabled(enabled);
-    }
-
-    if (!enabled) {
-      setCurrentTransformMode('translate');
-    }
-  };
-
   const [modelTransform, setModelTransform] = useState<{
     position: THREE.Vector3;
     rotation: THREE.Euler;
@@ -52,37 +25,8 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
     scale: new THREE.Vector3(1, 1, 1)
   });
 
-  const ensureTransformEnabled = useCallback(() => {
-    if (!transformEnabled) {
-      handleTransformToggle(true);
-    }
-  }, [transformEnabled, handleTransformToggle]);
-
-  const cycleTransformMode = useCallback(() => {
-    if (!transformEnabled) {
-      ensureTransformEnabled();
-      return;
-    }
-    setCurrentTransformMode(prev => {
-      const modes: Array<'translate' | 'rotate' | 'scale'> = ['translate', 'rotate', 'scale'];
-      const nextIndex = (modes.indexOf(prev) + 1) % modes.length;
-      return modes[nextIndex];
-    });
-  }, [transformEnabled, ensureTransformEnabled]);
-
-  // Listen for external transform toggle events from header button
-  const handleToggleTransform = useCallback(() => {
-    console.log('Transform toggle event received in 3DViewer');
-    handleTransformToggle(!transformEnabled);
-  }, [transformEnabled]);
-
-  React.useEffect(() => {
-    window.addEventListener('toggle-transform-mode', handleToggleTransform);
-    return () => window.removeEventListener('toggle-transform-mode', handleToggleTransform);
-  }, [handleToggleTransform]);
-
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative" onContextMenu={(e) => e.preventDefault()}>
       <Canvas
         orthographic
         camera={{
@@ -97,23 +41,14 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
           powerPreference: "high-performance"
         }}
         style={{ background: 'white' }}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <ThreeDScene
           currentFile={currentFile}
-          transformEnabled={transformEnabled}
-          currentTransformMode={currentTransformMode}
           modelTransform={modelTransform}
           setModelTransform={setModelTransform}
-          onCycleTransformMode={cycleTransformMode}
         />
       </Canvas>
-
-      {/* Transform Controls UI - Center top of canvas when transform is enabled */}
-      <TransformControlsUI
-        transformEnabled={transformEnabled}
-        currentTransformMode={currentTransformMode}
-        onModeChange={setCurrentTransformMode}
-      />
 
       {/* Processing overlay */}
       {isProcessing && (
