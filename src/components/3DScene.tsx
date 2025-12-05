@@ -10,7 +10,7 @@ import SupportPlacement from './Supports/SupportPlacement';
 import SupportMesh from './Supports/SupportMeshes';
 import SupportEditOverlay from './Supports/SupportEditOverlay';
 import { SupportType, AnySupport } from './Supports/types';
-import { getSupportFootprintBounds } from './Supports/metrics';
+import { getSupportFootprintBounds, getSupportFootprintPoints } from './Supports/metrics';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices } from '@/lib/offset/offsetMeshProcessor';
 
@@ -595,6 +595,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   } | null>(null);
   const modelMeshRef = useRef<THREE.Mesh>(null);
   const basePlateMeshRef = useRef<THREE.Mesh>(null);
+  const prevModelPositionRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const [baseTopY, setBaseTopY] = useState<number>(0);
   const [modelDimensions, setModelDimensions] = useState<{ x?: number; y?: number; z?: number } | undefined>();
   const [orbitControlsEnabled, setOrbitControlsEnabled] = useState(true);
@@ -609,6 +610,16 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const [cavityPreview, setCavityPreview] = useState<THREE.Mesh | null>(null);
   const editingSupportRef = useRef<AnySupport | null>(null);
   const [editingSupport, setEditingSupport] = useState<AnySupport | null>(null);
+
+  // Calculate all support footprint points for convex hull calculation
+  const supportHullPoints = useMemo(() => {
+    const points: Array<{x: number; z: number}> = [];
+    for (const support of supports) {
+      const footprintPoints = getSupportFootprintPoints(support);
+      points.push(...footprintPoints);
+    }
+    return points;
+  }, [supports]);
 
   const csgEngineRef = useRef<CSGEngine | null>(null);
   if (!csgEngineRef.current) {
@@ -629,6 +640,36 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const id = setInterval(updateTopY, 250);
     return () => clearInterval(id);
   }, []);
+
+  // Update supports when model position changes
+  React.useEffect(() => {
+    const currentPos = modelTransform.position;
+    const prevPos = prevModelPositionRef.current;
+    
+    // Calculate the delta movement
+    const deltaX = currentPos.x - prevPos.x;
+    const deltaZ = currentPos.z - prevPos.z;
+    
+    // Only update if there's actual movement
+    if (Math.abs(deltaX) > 0.001 || Math.abs(deltaZ) > 0.001) {
+      setSupports(prevSupports => {
+        if (prevSupports.length === 0) return prevSupports;
+        
+        return prevSupports.map(support => {
+          const newCenter = support.center.clone();
+          newCenter.x += deltaX;
+          newCenter.y += deltaZ; // center.y is actually Z in world space
+          return {
+            ...support,
+            center: newCenter,
+          };
+        });
+      });
+    }
+    
+    // Update the ref to current position
+    prevModelPositionRef.current = currentPos.clone();
+  }, [modelTransform.position.x, modelTransform.position.z]);
 
   const updateCamera = useCallback((orientation: ViewOrientation, bounds: BoundsSummary | null) => {
     const orthoCam = camera as THREE.OrthographicCamera;
@@ -867,8 +908,16 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     window.dispatchEvent(new CustomEvent('support-created', { detail: support }));
 
     // Auto-expand baseplate if this support overhangs current footprint
+    // For convex-hull plates, the hull will automatically recalculate to include support points
     setBasePlate(prev => {
       if (!prev) return prev;
+      
+      // For convex-hull, no need to manually expand - the hull recalculates from supports
+      if (prev.type === 'convex-hull') {
+        // Just trigger a re-render by returning a new object reference
+        return { ...prev };
+      }
+      
       const { width, height } = prev;
       if (!width || !height) return prev;
 
@@ -899,19 +948,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
       const expandedWidth = newHalfW * 2;
       const expandedHeight = newHalfH * 2;
-
-      // For convex-hull plates, width/height are only hints in geometry; when we
-      // need to grow beyond the original hull, treat it as a rectangular plate
-      // so extension is visually accurate and symmetric around the origin.
-      if (prev.type === 'convex-hull') {
-        return {
-          ...prev,
-          type: 'rectangular',
-          oversizeXY: undefined,
-          width: expandedWidth,
-          height: expandedHeight,
-        };
-      }
 
       return {
         ...prev,
@@ -1581,6 +1617,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           modelGeometry={basePlate.type === 'convex-hull' && modelMeshRef.current?.geometry ? modelMeshRef.current.geometry : undefined}
           modelMatrixWorld={basePlate.type === 'convex-hull' && modelMeshRef.current ? modelMeshRef.current.matrixWorld : undefined}
           modelOrigin={modelMeshRef.current ? modelMeshRef.current.position : undefined}
+          additionalHullPoints={basePlate.type === 'convex-hull' ? supportHullPoints : undefined}
           selected={false}
           meshRef={basePlateMeshRef}
           onSelect={() => {

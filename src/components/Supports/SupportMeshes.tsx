@@ -8,15 +8,14 @@ interface SupportMeshProps {
   baseTopY?: number;
 }
 
-// Use the same material style as the baseplate (metallic)
+// Use a non-metallic matte material for supports
 const materialFor = (preview?: boolean) =>
   new THREE.MeshStandardMaterial({
     color: preview ? 0x3b82f6 : 0x888888,
     transparent: !!preview,
     opacity: preview ? 0.5 : 1,
-    metalness: 0.8,
-    roughness: 0.2,
-    emissive: 0x222222,
+    metalness: 0.0,
+    roughness: 0.7,
     side: THREE.DoubleSide,
   });
 

@@ -224,3 +224,186 @@ export const getSupportFootprintBounds = (support: AnySupport): FootprintBounds 
 
   return { minX, maxX, minZ, maxZ };
 };
+
+// Fillet radius constant (should match SupportMeshes.tsx)
+const FILLET_RADIUS = 2.0;
+
+/**
+ * Get all footprint points for a support including fillet margin.
+ * These points are used for convex hull calculation.
+ */
+export const getSupportFootprintPoints = (support: AnySupport, filletMargin: number = FILLET_RADIUS): Array<{x: number; z: number}> => {
+  const { center } = support;
+  const points: Array<{x: number; z: number}> = [];
+  
+  if (support.type === 'cylindrical') {
+    // Circle approximated by 16 points
+    const radius = ((support as any).radius as number) + filletMargin;
+    const segments = 16;
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      points.push({
+        x: center.x + Math.cos(angle) * radius,
+        z: center.y + Math.sin(angle) * radius
+      });
+    }
+  } else if (support.type === 'rectangular') {
+    const width = (support as any).width as number;
+    const depth = (support as any).depth as number;
+    const cornerRadius = ((support as any).cornerRadius as number) || 0;
+    const hw = width / 2 + filletMargin;
+    const hd = depth / 2 + filletMargin;
+    
+    if (cornerRadius <= 0) {
+      // No corner radius - four corners
+      points.push({ x: center.x - hw, z: center.y - hd });
+      points.push({ x: center.x + hw, z: center.y - hd });
+      points.push({ x: center.x + hw, z: center.y + hd });
+      points.push({ x: center.x - hw, z: center.y + hd });
+    } else {
+      // With corner radius - generate arc points at each corner
+      const r = Math.min(cornerRadius + filletMargin, hw, hd);
+      const arcSegments = 4; // segments per corner
+      
+      // Corner centers (inset by radius from each corner)
+      const corners = [
+        { cx: center.x + hw - r, cz: center.y + hd - r, startAngle: 0 },           // top-right
+        { cx: center.x - hw + r, cz: center.y + hd - r, startAngle: Math.PI / 2 }, // top-left
+        { cx: center.x - hw + r, cz: center.y - hd + r, startAngle: Math.PI },     // bottom-left
+        { cx: center.x + hw - r, cz: center.y - hd + r, startAngle: 3 * Math.PI / 2 } // bottom-right
+      ];
+      
+      for (const corner of corners) {
+        for (let i = 0; i <= arcSegments; i++) {
+          const angle = corner.startAngle + (i / arcSegments) * (Math.PI / 2);
+          points.push({
+            x: corner.cx + Math.cos(angle) * r,
+            z: corner.cz + Math.sin(angle) * r
+          });
+        }
+      }
+    }
+  } else if (support.type === 'conical') {
+    // Use base radius (larger) + fillet margin
+    const radius = ((support as any).baseRadius as number) + filletMargin;
+    const segments = 16;
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      points.push({
+        x: center.x + Math.cos(angle) * radius,
+        z: center.y + Math.sin(angle) * radius
+      });
+    }
+  } else if (support.type === 'custom') {
+    const polygon = (support as any).polygon as Array<[number, number]>;
+    const cornerRadius = ((support as any).cornerRadius as number) || 0;
+    
+    if (Array.isArray(polygon) && polygon.length >= 3) {
+      if (cornerRadius <= 0) {
+        // No corner radius - offset each vertex outward by filletMargin
+        // First compute centroid of the polygon
+        let cx = 0, cz = 0;
+        for (const [x, z] of polygon) {
+          cx += x;
+          cz += z;
+        }
+        cx /= polygon.length;
+        cz /= polygon.length;
+        
+        // Offset each point outward from the local centroid
+        for (const [x, z] of polygon) {
+          const dx = x - cx;
+          const dz = z - cz;
+          const dist = Math.hypot(dx, dz);
+          if (dist < 0.001) {
+            points.push({ x: center.x + x, z: center.y + z });
+          } else {
+            const scale = (dist + filletMargin) / dist;
+            points.push({
+              x: center.x + cx + dx * scale,
+              z: center.y + cz + dz * scale
+            });
+          }
+        }
+      } else {
+        // With corner radius - generate arc points at each corner
+        const n = polygon.length;
+        const arcSegments = 4;
+        const totalMargin = cornerRadius + filletMargin;
+        
+        for (let i = 0; i < n; i++) {
+          const prev = polygon[(i - 1 + n) % n];
+          const curr = polygon[i];
+          const next = polygon[(i + 1) % n];
+          
+          // Vectors to prev and next vertices
+          const toPrev = [prev[0] - curr[0], prev[1] - curr[1]];
+          const toNext = [next[0] - curr[0], next[1] - curr[1]];
+          const lenPrev = Math.hypot(toPrev[0], toPrev[1]);
+          const lenNext = Math.hypot(toNext[0], toNext[1]);
+          
+          if (lenPrev < 0.01 || lenNext < 0.01) {
+            // Degenerate corner - just add the point with offset
+            points.push({ x: center.x + curr[0], z: center.y + curr[1] });
+            continue;
+          }
+          
+          // Clamp radius to half the shortest edge
+          const r = Math.min(totalMargin, lenPrev / 2, lenNext / 2);
+          
+          // Normalize directions
+          const dirPrev = [toPrev[0] / lenPrev, toPrev[1] / lenPrev];
+          const dirNext = [toNext[0] / lenNext, toNext[1] / lenNext];
+          
+          // Calculate the bisector direction (outward)
+          const bisectorX = -(dirPrev[0] + dirNext[0]);
+          const bisectorZ = -(dirPrev[1] + dirNext[1]);
+          const bisectorLen = Math.hypot(bisectorX, bisectorZ);
+          
+          if (bisectorLen < 0.01) {
+            // Nearly straight corner
+            points.push({ x: center.x + curr[0], z: center.y + curr[1] });
+            continue;
+          }
+          
+          // Calculate angle between edges
+          const dot = dirPrev[0] * dirNext[0] + dirPrev[1] * dirNext[1];
+          const angle = Math.acos(Math.max(-1, Math.min(1, -dot)));
+          
+          // Find arc center - it's along the bisector at distance r / sin(angle/2)
+          const halfAngle = angle / 2;
+          const sinHalf = Math.sin(halfAngle);
+          if (sinHalf < 0.01) {
+            points.push({ x: center.x + curr[0], z: center.y + curr[1] });
+            continue;
+          }
+          
+          const centerDist = r / sinHalf;
+          const arcCenterX = curr[0] + (bisectorX / bisectorLen) * centerDist;
+          const arcCenterZ = curr[1] + (bisectorZ / bisectorLen) * centerDist;
+          
+          // Calculate start and end angles for the arc
+          const startAngle = Math.atan2(curr[1] + dirPrev[1] * r - arcCenterZ, curr[0] + dirPrev[0] * r - arcCenterX);
+          const endAngle = Math.atan2(curr[1] + dirNext[1] * r - arcCenterZ, curr[0] + dirNext[0] * r - arcCenterX);
+          
+          // Generate arc points
+          for (let j = 0; j <= arcSegments; j++) {
+            const t = j / arcSegments;
+            // Interpolate angle (handling wrap-around)
+            let angleDiff = endAngle - startAngle;
+            if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+            if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+            const a = startAngle + t * angleDiff;
+            
+            points.push({
+              x: center.x + arcCenterX + Math.cos(a) * r,
+              z: center.y + arcCenterZ + Math.sin(a) * r
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  return points;
+};

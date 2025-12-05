@@ -21,6 +21,7 @@ interface BasePlateProps {
   onPointerMove?: (e: any) => void;
   onPointerUp?: (e: any) => void;
   meshRef?: React.RefObject<THREE.Mesh>;
+  additionalHullPoints?: Array<{x: number; z: number}>; // Additional points to include in convex hull (e.g., from supports)
 }
 
 const finalizeGeometry = (geometry: THREE.BufferGeometry) => {
@@ -88,9 +89,10 @@ const BasePlate: React.FC<BasePlateProps> = ({
   modelOrigin,
   oversizeXY = 10,
   pitch = 20,
-  holeDiameter = 6
-  , onPointerDown, onPointerMove, onPointerUp,
-  meshRef: externalMeshRef
+  holeDiameter = 6,
+  onPointerDown, onPointerMove, onPointerUp,
+  meshRef: externalMeshRef,
+  additionalHullPoints = []
 }) => {
   const internalMeshRef = useRef<THREE.Mesh>(null);
   const meshRef = externalMeshRef || internalMeshRef;
@@ -103,9 +105,8 @@ const BasePlate: React.FC<BasePlateProps> = ({
       case 'metal':
         base = {
           color: selected ? 0x0066cc : 0x888888,
-          metalness: 0.8,
-          roughness: 0.2,
-          emissive: selected ? 0x001133 : 0x222222
+          metalness: 0.0,
+          roughness: 0.7,
         };
         break;
       case 'wood':
@@ -125,8 +126,8 @@ const BasePlate: React.FC<BasePlateProps> = ({
       default:
         base = {
           color: 0x888888,
-          metalness: 0.5,
-          roughness: 0.5
+          metalness: 0.0,
+          roughness: 0.7
         };
     }
     if (type === 'perforated-panel') {
@@ -162,6 +163,15 @@ const BasePlate: React.FC<BasePlateProps> = ({
               if (!dedupe.has(key)) {
                 dedupe.add(key);
                 xzPoints.push({ x: v.x, z: v.z });
+              }
+            }
+            
+            // === STEP 1b: Add additional hull points (e.g., from supports) ===
+            for (const pt of additionalHullPoints) {
+              const key = `${Math.round(pt.x * 100)}:${Math.round(pt.z * 100)}`;
+              if (!dedupe.has(key)) {
+                dedupe.add(key);
+                xzPoints.push({ x: pt.x, z: pt.z });
               }
             }
 
@@ -292,7 +302,7 @@ const BasePlate: React.FC<BasePlateProps> = ({
       default:
         return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.08), depth);
     }
-  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY]);
+  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints]);
 
   // Update geometry when props change
   React.useEffect(() => {

@@ -50,7 +50,8 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
     [baseTopY, contactOffset, baseTarget, raycastTargets, maxRayHeight]
   );
 
-  const closeThreshold = 2;  // 2mm threshold for snapping to close the loop
+  const closeThreshold = 2;  // 2mm threshold for highlighting to close the loop
+  const joinThreshold = 5;   // 5mm threshold for joining start/end points together
 
   // When entering via edit mode, we may receive an initial center in initParams.
   React.useEffect(() => {
@@ -67,7 +68,20 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
 
   const finalizeCustomSupport = React.useCallback((points: THREE.Vector2[]) => {
     if (points.length < 3) return;
-    const pts = points.map(p => p.clone());
+    let pts = points.map(p => p.clone());
+    
+    // If the last point is within joinThreshold of the first point, remove it
+    // This ensures a clean closed loop without a tiny gap or overlap
+    if (pts.length >= 3) {
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      if (first.distanceTo(last) <= joinThreshold) {
+        pts = pts.slice(0, -1); // Remove the last point
+      }
+    }
+    
+    if (pts.length < 3) return; // Need at least 3 points after cleanup
+    
     const cx = pts.reduce((sum, v) => sum + v.x, 0) / pts.length;
     const cz = pts.reduce((sum, v) => sum + v.y, 0) / pts.length;
     const centerV = new THREE.Vector2(cx, cz);
@@ -323,6 +337,17 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
     e.stopPropagation();
     if (type === 'custom') {
       const pt = planePoint.clone();
+      
+      // Check if we're closing the loop (near the first point with enough points)
+      if (customPoints.length >= 3) {
+        const first = customPoints[0];
+        if (pt.distanceTo(first) <= closeThreshold) {
+          // Close the loop - finalize without adding a new point
+          finalizeCustomSupport(customPoints);
+          return;
+        }
+      }
+      
       if (customPoints.length === 0) {
         setCustomPoints([pt.clone()]);
         setDrawingCustom(true);
