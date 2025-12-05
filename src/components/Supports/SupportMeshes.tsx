@@ -71,6 +71,98 @@ const createCylindricalFilletGeometry = (supportRadius: number, filletRadius: nu
   return geometry;
 };
 
+// Helper function to compute the height of a conical fillet
+// Returns the Y position where the fillet ends at the top (meeting the cone body)
+const getConicalFilletHeight = (baseRadius: number, topRadius: number, coneHeight: number, filletRadius: number): number => {
+  // Calculate slope angle
+  const radiusDiff = baseRadius - topRadius;
+  const slopeAngle = Math.atan2(radiusDiff, coneHeight);
+  // Fillet top Y = filletRadius * (1 - sin(slopeAngle))
+  return filletRadius * (1 - Math.sin(slopeAngle));
+};
+
+// Create a fillet ring geometry for conical supports
+// This creates an external fillet tangent to both the horizontal baseplate and the cone's sloped wall
+const createConicalFilletGeometry = (
+  baseRadius: number, 
+  topRadius: number, 
+  coneHeight: number,
+  filletRadius: number = FILLET_RADIUS, 
+  segments: number = FILLET_SEGMENTS
+): THREE.BufferGeometry => {
+  const radialSegments = 64;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  
+  // Calculate the cone's slope angle (angle from vertical)
+  const radiusDiff = baseRadius - topRadius;
+  const slopeAngle = Math.atan2(radiusDiff, coneHeight);
+  
+  // For a fillet tangent to both horizontal (baseplate) and the sloped cone wall:
+  // - The fillet center needs to be positioned so that tangency is achieved at both surfaces
+  // - For horizontal tangency at y=0: center is at distance filletRadius above (y = filletRadius)
+  // - For tangency to slope: the fillet must meet the cone wall perpendicularly to the wall's normal
+  
+  // The cone wall normal points outward at angle (90° - slopeAngle) from horizontal
+  // or equivalently at angle slopeAngle from vertical
+  
+  // For the fillet to be tangent to the slope, the center must be offset from the cone surface
+  // by filletRadius in the direction of the surface normal.
+  
+  // Key insight: The fillet center is at (baseRadius + filletRadius, filletRadius)
+  // The arc sweeps from angle 3π/2 (pointing down, tangent to horizontal) 
+  // to angle (π + slopeAngle) (tangent to the cone slope)
+  
+  // Arc angle = (3π/2) - (π + slopeAngle) = π/2 - slopeAngle
+  // But we sweep from top (meeting cone) to bottom (meeting baseplate)
+  
+  const filletCenterR = baseRadius + filletRadius;
+  const filletCenterY = filletRadius;
+  
+  // The arc goes from angle (π + slopeAngle) at the top (tangent to cone slope)
+  // to angle (3π/2) at the bottom (tangent to horizontal baseplate)
+  const startAngle = Math.PI + slopeAngle;  // tangent to cone slope
+  const endAngle = 3 * Math.PI / 2;          // tangent to horizontal (pointing down)
+  const arcAngle = endAngle - startAngle;    // = π/2 - slopeAngle
+  
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const angle = startAngle + t * arcAngle;
+    
+    const r = filletCenterR + filletRadius * Math.cos(angle);
+    const y = filletCenterY + filletRadius * Math.sin(angle);
+    
+    // Revolve around Y axis
+    for (let j = 0; j <= radialSegments; j++) {
+      const theta = (j / radialSegments) * Math.PI * 2;
+      const cosTheta = Math.cos(theta);
+      const sinTheta = Math.sin(theta);
+      
+      positions.push(r * cosTheta, y, r * sinTheta);
+    }
+  }
+  
+  // Generate indices - match the winding from circular fillet
+  for (let i = 0; i < segments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = i * (radialSegments + 1) + j;
+      const b = a + radialSegments + 1;
+      const c = a + 1;
+      const d = b + 1;
+      
+      indices.push(a, b, c);
+      indices.push(c, b, d);
+    }
+  }
+  
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  
+  return geometry;
+};
+
 // Helper function to create a rounded polygon path with corner radius
 const createRoundedPolygon = (polygon: [number, number][], cornerRadius: number): { points: [number, number][], cornerCenters: { cx: number, cz: number, startAngle: number, endAngle: number }[] } => {
   if (polygon.length < 3 || cornerRadius <= 0) {
@@ -651,13 +743,40 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
 
   if (type === 'conical') {
     const { baseRadius, topRadius } = support as any;
-    const geo = React.useMemo(() => new THREE.CylinderGeometry(topRadius, baseRadius, bodyHeight, 64), [topRadius, baseRadius, bodyHeight]);
-    const filletGeo = React.useMemo(() => createCylindricalFilletGeometry(baseRadius, effectiveFilletRadius, FILLET_SEGMENTS), [baseRadius, effectiveFilletRadius]);
+    
+    // For conical supports, calculate the fillet height based on the cone's slope
+    const totalHeight = height;
+    
+    // Calculate slope angle based on estimated body height
+    const estimatedBodyHeight = Math.max(0.1, totalHeight - effectiveFilletRadius);
+    const radiusDiff = baseRadius - topRadius;
+    const slopeAngle = Math.atan2(radiusDiff, estimatedBodyHeight);
+    
+    // The fillet top Y (relative to fillet position) = filletRadius * (1 - sin(slopeAngle))
+    // At start angle (π + slopeAngle): y = filletRadius + filletRadius * sin(π + slopeAngle)
+    //                                    = filletRadius - filletRadius * sin(slopeAngle)
+    //                                    = filletRadius * (1 - sin(slopeAngle))
+    const conicalFilletTopY = effectiveFilletRadius * (1 - Math.sin(slopeAngle));
+    
+    // The fillet top radius (where it meets the cone)
+    // At start angle: r = (baseRadius + filletRadius) + filletRadius * cos(π + slopeAngle)
+    //                   = baseRadius + filletRadius - filletRadius * cos(slopeAngle)
+    //                   = baseRadius + filletRadius * (1 - cos(slopeAngle))
+    const filletTopRadius = baseRadius + effectiveFilletRadius * (1 - Math.cos(slopeAngle));
+    
+    // The cone body starts where the fillet ends
+    // Cone bottom is at y = effectiveBaseY + conicalFilletTopY with radius = filletTopRadius
+    const conicalBodyHeight = Math.max(0.1, totalHeight - conicalFilletTopY);
+    const conicalBodyCenter = effectiveBaseY + conicalFilletTopY + conicalBodyHeight / 2;
+    
+    // The cone geometry: bottom radius should match where the fillet ends
+    const geo = React.useMemo(() => new THREE.CylinderGeometry(topRadius, filletTopRadius, conicalBodyHeight, 64), [topRadius, filletTopRadius, conicalBodyHeight]);
+    const filletGeo = React.useMemo(() => createConicalFilletGeometry(baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius, FILLET_SEGMENTS), [baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius]);
     
     return (
       <group onClick={handleSelect}>
         <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} material={mat} />
-        <group position={[center.x, bodyCenter, center.y]}>
+        <group position={[center.x, conicalBodyCenter, center.y]}>
           <mesh geometry={geo} material={mat} />
           <lineSegments renderOrder={2}>
             <edgesGeometry args={[geo, 70]} />

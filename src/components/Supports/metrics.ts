@@ -9,6 +9,7 @@ export interface SupportMetricOptions {
   modelTargets?: THREE.Object3D[] | null;
   maxRayHeight?: number;
   raycaster?: THREE.Raycaster;
+  modelBounds?: { min: THREE.Vector3; max: THREE.Vector3 } | null; // For fallback height calculation
 }
 
 export interface SupportMetrics {
@@ -146,6 +147,7 @@ export const computeSupportMetrics = ({
   modelTargets,
   maxRayHeight = DEFAULT_MAX_RAY_HEIGHT,
   raycaster,
+  modelBounds,
 }: SupportMetricOptions): SupportMetrics | null => {
   const rc = getRaycaster(raycaster);
   // Note: Avoid calling updateMatrixWorld(true) here as it's expensive
@@ -167,13 +169,20 @@ export const computeSupportMetrics = ({
     hitYs.push(hitY);
   }
 
+  // If no rays hit the model, use 20% of the model's height as fallback
   if (!hitYs.length) {
+    if (modelBounds) {
+      const modelHeight = modelBounds.max.y - modelBounds.min.y;
+      const fallbackHeight = Math.max(5, modelHeight * 0.2);
+      return { baseY: effectiveBaseY, height: fallbackHeight };
+    }
     return null;
   }
 
-  const minModelY = hitYs.reduce((min, y) => Math.min(min, y), hitYs[0]);
+  // Use the MAXIMUM hit Y - the support should go up to the highest point where it contacts the model
+  const maxModelY = hitYs.reduce((max, y) => Math.max(max, y), hitYs[0]);
   // Ensure a meaningful stem even when the model rests directly on the baseplate
-  const height = Math.max(5, minModelY - effectiveBaseY - contactOffset);
+  const height = Math.max(5, maxModelY - effectiveBaseY - contactOffset);
   return { baseY: effectiveBaseY, height };
 };
 

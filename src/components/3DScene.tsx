@@ -1715,6 +1715,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           baseTarget={basePlateMeshRef.current}
           contactOffset={Number(placing.initParams?.contactOffset ?? 0)}
           maxRayHeight={2000}
+          modelBounds={modelBounds ? { min: modelBounds.min, max: modelBounds.max } : null}
         />
       )}
 

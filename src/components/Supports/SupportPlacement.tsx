@@ -16,12 +16,13 @@ interface SupportPlacementProps {
   contactOffset?: number; // gap to keep from model contact in mm
   maxRayHeight?: number; // max height to search above base for intersections
   baseTarget?: THREE.Object3D | null; // actual baseplate mesh for local baseY
+  modelBounds?: { min: THREE.Vector3; max: THREE.Vector3 } | null; // model bounding box for fallback height
 }
 
 
 
 
-const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initParams, onCreate, onCancel, defaultCenter, raycastTargets = [], baseTopY = 0, contactOffset = 0, maxRayHeight = 2000, baseTarget = null }) => {
+const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initParams, onCreate, onCancel, defaultCenter, raycastTargets = [], baseTopY = 0, contactOffset = 0, maxRayHeight = 2000, baseTarget = null, modelBounds = null }) => {
   const [center, setCenter] = React.useState<THREE.Vector2 | null>(null);
   const [previewSupport, setPreviewSupport] = React.useState<AnySupport | null>(null);
   const [dragging, setDragging] = React.useState(false);
@@ -46,8 +47,9 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
         modelTargets: raycastTargets,
         maxRayHeight,
         raycaster: raycasterRef.current,
+        modelBounds,
       }),
-    [baseTopY, contactOffset, baseTarget, raycastTargets, maxRayHeight]
+    [baseTopY, contactOffset, baseTarget, raycastTargets, maxRayHeight, modelBounds]
   );
 
   const closeThreshold = 2;  // 2mm threshold for highlighting to close the loop
