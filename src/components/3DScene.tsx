@@ -1,8 +1,9 @@
-import React, { useRef, useState, useCallback, useMemo } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
+import { useThree } from '@react-three/fiber';
 import { Environment, OrbitControls as DreiOrbitControls, Html } from '@react-three/drei';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import BasePlate from "./BasePlate";
+import type { BasePlateConfig } from './BasePlate/types';
 import { ProcessedFile, ViewOrientation } from "@/modules/FileImport/types";
 import SelectableTransformControls from './SelectableTransformControls';
 import * as THREE from 'three';
@@ -321,45 +322,15 @@ const getFootprintMetrics = (bounds: BoundsSummary | null) => {
   return { radius: longestHalfEdge, padding, halfLength };
 };
 
-function lightenColor(hex: string, amount: number) {
-  const normalized = hex.replace('#', '');
-  const num = parseInt(normalized, 16);
-  const r = Math.min(255, Math.max(0, ((num >> 16) & 0xff) + amount));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amount));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + amount));
-  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-}
-
-
-function getComplementColor(hex: string) {
-  const normalized = hex.replace('#', '');
-  const num = parseInt(normalized, 16);
-  const r = 255 - ((num >> 16) & 0xff);
-  const g = 255 - ((num >> 8) & 0xff);
-  const b = 255 - (num & 0xff);
-  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-}
-
-function getHighlightColor(baseHex?: string) {
-  if (!baseHex || !baseHex.startsWith('#') || (baseHex.length !== 7 && baseHex.length !== 4)) {
-    return '#0ea5e9';
-  }
-
-  const normalized = baseHex.length === 4
-    ? `#${baseHex[1]}${baseHex[1]}${baseHex[2]}${baseHex[2]}${baseHex[3]}${baseHex[3]}`
-    : baseHex;
-  const complement = getComplementColor(normalized);
-  return lightenColor(complement, 30);
-}
-
 // Component for the main 3D model
-function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBoundsChange }: {
+function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBoundsChange, disableDoubleClick = false }: {
   file: ProcessedFile;
   meshRef?: React.RefObject<THREE.Mesh>;
   dimensions?: { x?: number; y?: number; z?: number };
   colorsMap?: Map<string, string>;
   setColorsMap?: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   onBoundsChange?: (bounds: BoundsSummary) => void;
+  disableDoubleClick?: boolean;
 }) {
   const internalRef = useRef<THREE.Mesh>(null);
   const actualRef = meshRef || internalRef;
@@ -508,13 +479,6 @@ function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBound
     });
   }, [file, dimensions, onBoundsChange, unitScale]);
 
-  useFrame(() => {
-    if (actualRef.current) {
-      // Optional: Add subtle rotation for better visualization
-      // actualRef.current.rotation.y += 0.001;
-    }
-  });
-
   // Track clicks for manual double-click detection
   const lastClickTimeRef = useRef<number>(0);
   const DOUBLE_CLICK_DELAY = 300; // ms
@@ -526,6 +490,9 @@ function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBound
       material={file.mesh.material}
       onClick={(e) => {
         e.stopPropagation();
+        // Skip double-click detection when in placement mode
+        if (disableDoubleClick) return;
+        
         const now = Date.now();
         const timeSinceLastClick = now - lastClickTimeRef.current;
         
@@ -537,23 +504,22 @@ function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBound
           lastClickTimeRef.current = now;
         }
       }}
-      onPointerOver={(e) => {
-
-      }}
+      onPointerOver={() => { /* Available for hover effects */ }}
     />
   );
 }
 
-// Component for placed fixture elements
-function FixtureComponent({
-  component,
-  position,
-  onSelect
-}: {
-  component: any;
+/**
+ * Component for placed fixture elements from the component library
+ * Currently a placeholder for future fixture component functionality
+ */
+interface FixtureComponentProps {
+  component: { geometry: THREE.BufferGeometry; material: THREE.Material };
   position: THREE.Vector3;
   onSelect?: () => void;
-}) {
+}
+
+function FixtureComponent({ component, position, onSelect }: FixtureComponentProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
 
@@ -579,23 +545,16 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 }) => {
   const { camera, size } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
-  const [placedComponents, setPlacedComponents] = useState<Array<{ component: any; position: THREE.Vector3; id: string }>>([]);
-  const [selectedComponent, setSelectedComponent] = useState<any>(null);
-  const [basePlate, setBasePlate] = useState<{
-    type: 'rectangular' | 'convex-hull' | 'perforated-panel' | 'metal-wooden-plate';
-    width?: number;      // X extent
-    height?: number;     // Z extent
-    depth?: number;      // Y thickness
-    position?: THREE.Vector3;
-    material?: 'metal' | 'wood' | 'plastic';
-    id?: string;
-    oversizeXY?: number; // convex hull extra per side (mm)
-    pitch?: number;      // perforated: hole spacing (mm)
-    holeDiameter?: number; // perforated / metal mounting
-  } | null>(null);
+  
+  // Future: Component library for fixture elements (currently placeholder)
+  const [placedComponents, setPlacedComponents] = useState<Array<{ component: unknown; position: THREE.Vector3; id: string }>>([]);
+  const [selectedComponent, setSelectedComponent] = useState<unknown>(null);
+  
+  // Baseplate configuration state
+  const [basePlate, setBasePlate] = useState<BasePlateConfig | null>(null);
+  
   const modelMeshRef = useRef<THREE.Mesh>(null);
   const basePlateMeshRef = useRef<THREE.Mesh>(null);
-  const prevModelPositionRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const [baseTopY, setBaseTopY] = useState<number>(0);
   const [modelDimensions, setModelDimensions] = useState<{ x?: number; y?: number; z?: number } | undefined>();
   const [orbitControlsEnabled, setOrbitControlsEnabled] = useState(true);
@@ -603,14 +562,31 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const [modelBounds, setModelBounds] = useState<BoundsSummary | null>(null);
   const [currentOrientation, setCurrentOrientation] = useState<ViewOrientation>('iso');
   const prevOrientationRef = useRef<ViewOrientation>('iso');
+  
+  // Support placement state
   const [placing, setPlacing] = useState<{ active: boolean; type: SupportType | null; initParams?: Record<string, number> }>({ active: false, type: null });
   const [supports, setSupports] = useState<AnySupport[]>([]);
   const [supportsTrimPreview, setSupportsTrimPreview] = useState<THREE.Mesh[]>([]);
   const [supportsTrimProcessing, setSupportsTrimProcessing] = useState(false);
+  
+  // Cavity operations preview (for CSG operations)
   const [cavityPreview, setCavityPreview] = useState<THREE.Mesh | null>(null);
+  
+  // Support editing state
   const editingSupportRef = useRef<AnySupport | null>(null);
   const [editingSupport, setEditingSupport] = useState<AnySupport | null>(null);
+  
+  // Live transform state - when pivot controls are active, this tracks the model's live position/bounds
+  const [liveTransform, setLiveTransform] = useState<{
+    position: THREE.Vector3;
+    rotation: THREE.Euler;
+    bounds: THREE.Box3;
+  } | null>(null);
+  
+  // Track whether we're in the process of closing (to ignore spurious transforms)
+  const pivotClosingRef = useRef(false);
 
+  // Supports stay fixed - no live position tracking needed
   // Calculate all support footprint points for convex hull calculation
   const supportHullPoints = useMemo(() => {
     const points: Array<{x: number; z: number}> = [];
@@ -641,35 +617,48 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => clearInterval(id);
   }, []);
 
-  // Update supports when model position changes
-  React.useEffect(() => {
-    const currentPos = modelTransform.position;
-    const prevPos = prevModelPositionRef.current;
-    
-    // Calculate the delta movement
-    const deltaX = currentPos.x - prevPos.x;
-    const deltaZ = currentPos.z - prevPos.z;
-    
-    // Only update if there's actual movement
-    if (Math.abs(deltaX) > 0.001 || Math.abs(deltaZ) > 0.001) {
-      setSupports(prevSupports => {
-        if (prevSupports.length === 0) return prevSupports;
-        
-        return prevSupports.map(support => {
-          const newCenter = support.center.clone();
-          newCenter.x += deltaX;
-          newCenter.y += deltaZ; // center.y is actually Z in world space
-          return {
-            ...support,
-            center: newCenter,
-          };
-        });
-      });
+  // Supports stay fixed in world space - they don't move when model moves
+  // The baseplate will expand to include both the model and the supports
+  
+  // Handle live transform from PivotControls
+  // Supports stay fixed, but we track the transform for baseplate live updates
+  const handleLiveTransformChange = useCallback((transform: { position: THREE.Vector3; rotation: THREE.Euler; bounds: THREE.Box3; pivotClosed?: boolean } | null) => {
+    if (transform === null) {
+      setLiveTransform(null);
+      pivotClosingRef.current = false;
+      return;
     }
     
-    // Update the ref to current position
-    prevModelPositionRef.current = currentPos.clone();
-  }, [modelTransform.position.x, modelTransform.position.z]);
+    // Ignore transforms that come in while we're closing
+    if (pivotClosingRef.current && !transform.pivotClosed) {
+      return;
+    }
+    
+    if (transform.pivotClosed) {
+      // Mark that we're closing - ignore any further transforms until cleared
+      pivotClosingRef.current = true;
+      
+      // Clear liveTransform after a short delay to allow geometry to update
+      requestAnimationFrame(() => {
+        setLiveTransform(null);
+        pivotClosingRef.current = false;
+      });
+      return;
+    }
+    
+    setLiveTransform(transform);
+  }, []);
+  
+  // Compute live position delta from the pivot transform for baseplate
+  const livePositionDelta = useMemo(() => {
+    if (!liveTransform) return null;
+    
+    // liveTransform.position is already the delta from pivot origin
+    return {
+      x: liveTransform.position.x,
+      z: liveTransform.position.z,
+    };
+  }, [liveTransform]);
 
   const updateCamera = useCallback((orientation: ViewOrientation, bounds: BoundsSummary | null) => {
     const orthoCam = camera as THREE.OrthographicCamera;
@@ -830,13 +819,13 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('cavity-apply', handleApply as EventListener);
   }, []);
 
-  // Handle mouse events for drag and drop (disabled for now)
-  const handlePointerMove = useCallback((event: any) => {
-    // Drag and drop functionality temporarily disabled
+  // TODO: Implement drag-and-drop for fixture components when library panel is ready
+  const handlePointerMove = useCallback((_event: unknown) => {
+    // Reserved for future drag-and-drop functionality
   }, []);
 
   const handlePointerUp = useCallback(() => {
-    // Drag and drop functionality temporarily disabled
+    // Reserved for future drag-and-drop functionality
   }, []);
 
   // Listen for component selection from library
@@ -872,7 +861,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // restore previous view
       setCurrentOrientation(prevOrientationRef.current);
       updateCamera(prevOrientationRef.current, modelBounds);
+      // Clear any editing state
       editingSupportRef.current = null;
+      setEditingSupport(null);
     };
     window.addEventListener('supports-start-placement', handleStartPlacement as EventListener);
     window.addEventListener('supports-cancel-placement', handleCancelPlacement as EventListener);
@@ -1386,6 +1377,27 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const box = new THREE.Box3().setFromObject(modelMeshRef.current);
     if (box.isEmpty()) return;
     
+    // Apply live position delta if pivot is active
+    if (livePositionDelta) {
+      box.min.x += livePositionDelta.x;
+      box.max.x += livePositionDelta.x;
+      box.min.z += livePositionDelta.z;
+      box.max.z += livePositionDelta.z;
+    }
+    
+    // Expand the bounding box to include support footprints
+    // Supports stay fixed, so use their actual positions
+    for (const support of supports) {
+      // Get footprint bounds for this support
+      const footprintBounds = getSupportFootprintBounds(support);
+      
+      // Expand the box to include this support's footprint
+      box.min.x = Math.min(box.min.x, footprintBounds.minX);
+      box.max.x = Math.max(box.max.x, footprintBounds.maxX);
+      box.min.z = Math.min(box.min.z, footprintBounds.minZ);
+      box.max.z = Math.max(box.max.z, footprintBounds.maxZ);
+    }
+    
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
@@ -1414,7 +1426,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         position: newPosition
       } : null);
     }
-  }, [modelTransform.position, modelTransform.rotation, basePlate?.type]);
+  }, [modelTransform.position, modelTransform.rotation, basePlate?.type, supports, livePositionDelta]);
 
   // Handle transform mode toggle events
   React.useEffect(() => {
@@ -1516,8 +1528,12 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         updateCamera('iso', null);
       }
 
-      // Clear baseplate when resetting
+      // Clear baseplate and supports when resetting
       setBasePlate(null);
+      setSupports([]);
+      setSupportsTrimPreview([]);
+      editingSupportRef.current = null;
+      setEditingSupport(null);
     };
 
     window.addEventListener('viewer-reset', handleViewReset as EventListener);
@@ -1618,6 +1634,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           modelMatrixWorld={basePlate.type === 'convex-hull' && modelMeshRef.current ? modelMeshRef.current.matrixWorld : undefined}
           modelOrigin={modelMeshRef.current ? modelMeshRef.current.position : undefined}
           additionalHullPoints={basePlate.type === 'convex-hull' ? supportHullPoints : undefined}
+          livePositionDelta={livePositionDelta}
           selected={false}
           meshRef={basePlateMeshRef}
           onSelect={() => {
@@ -1644,6 +1661,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           onSelectionChange={(selected) => {
             // Orbit controls stay enabled - only disabled during drag via events
           }}
+          onLiveTransformChange={handleLiveTransformChange}
         >
           <ModelMesh
             file={currentFile}
@@ -1652,6 +1670,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             colorsMap={modelColors}
             setColorsMap={setModelColors}
             onBoundsChange={setModelBounds}
+            disableDoubleClick={placing.active || editingSupport !== null}
           />
         </SelectableTransformControls>
       )}

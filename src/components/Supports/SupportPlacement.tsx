@@ -25,7 +25,6 @@ interface SupportPlacementProps {
 const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initParams, onCreate, onCancel, defaultCenter, raycastTargets = [], baseTopY = 0, contactOffset = 0, maxRayHeight = 2000, baseTarget = null, modelBounds = null }) => {
   const [center, setCenter] = React.useState<THREE.Vector2 | null>(null);
   const [previewSupport, setPreviewSupport] = React.useState<AnySupport | null>(null);
-  const [dragging, setDragging] = React.useState(false);
   const [hover, setHover] = React.useState<THREE.Vector2 | null>(null);
   const [customPoints, setCustomPoints] = React.useState<THREE.Vector2[]>([]);
   const [drawingCustom, setDrawingCustom] = React.useState(false);
@@ -109,7 +108,6 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
     setPreviewSupport(null);
     setHover(null);
     setDrawingCustom(false);
-    setDragging(false);
   }, [computeMetrics, initParams, onCreate, contactOffset]);
 
   const toSupport = (c: THREE.Vector2, cursor: THREE.Vector3): AnySupport => {
@@ -361,9 +359,8 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
     }
     if (!center) {
       setCenter(planePoint.clone());
-      setDragging(true);
     } else {
-      // second click also finalizes if not dragging
+      // Second click finalizes the support
       const support = toSupport(center, point);
       if (!support) return;
       const metrics = computeMetrics(support);
@@ -374,7 +371,6 @@ const SupportPlacement: React.FC<SupportPlacementProps> = ({ active, type, initP
       onCreate(support);
       setCenter(null);
       setPreviewSupport(null);
-      setDragging(false);
     }
   };
 

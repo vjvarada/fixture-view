@@ -1,28 +1,6 @@
 import React, { useRef, useMemo } from 'react';
 import * as THREE from 'three';
-
-interface BasePlateProps {
-  type: 'rectangular' | 'convex-hull' | 'perforated-panel' | 'metal-wooden-plate';
-  width?: number;
-  height?: number;
-  depth?: number;
-  radius?: number;
-  position?: THREE.Vector3;
-  material?: 'metal' | 'wood' | 'plastic';
-  onSelect?: () => void;
-  selected?: boolean;
-  modelGeometry?: THREE.BufferGeometry; // For convex hull around model
-  modelMatrixWorld?: THREE.Matrix4; // World transform of model for accurate hull
-  modelOrigin?: THREE.Vector3; // Model world position so hull is relative to model
-  oversizeXY?: number; // extra margin on XZ for convex hull
-  pitch?: number; // perforated panel hole spacing
-  holeDiameter?: number; // perforated panel hole diameter
-  onPointerDown?: (e: any) => void;
-  onPointerMove?: (e: any) => void;
-  onPointerUp?: (e: any) => void;
-  meshRef?: React.RefObject<THREE.Mesh>;
-  additionalHullPoints?: Array<{x: number; z: number}>; // Additional points to include in convex hull (e.g., from supports)
-}
+import type { BasePlateProps } from './BasePlate/types';
 
 const finalizeGeometry = (geometry: THREE.BufferGeometry) => {
   geometry.computeBoundingBox();
@@ -92,7 +70,8 @@ const BasePlate: React.FC<BasePlateProps> = ({
   holeDiameter = 6,
   onPointerDown, onPointerMove, onPointerUp,
   meshRef: externalMeshRef,
-  additionalHullPoints = []
+  additionalHullPoints = [],
+  livePositionDelta = null,
 }) => {
   const internalMeshRef = useRef<THREE.Mesh>(null);
   const meshRef = externalMeshRef || internalMeshRef;
@@ -144,12 +123,19 @@ const BasePlate: React.FC<BasePlateProps> = ({
   const geometry = useMemo(() => {
     switch (type) {
       case 'convex-hull':
+        // Sample model geometry and optionally apply live position delta
         if (modelGeometry && modelGeometry.attributes && modelGeometry.attributes.position) {
           try {
             // === STEP 1: Collect all XZ points from the model (top-down shadow) ===
-            const positions = modelGeometry.attributes.position as THREE.BufferAttribute;
             const xzPoints: Array<{x: number; z: number}> = [];
             const dedupe = new Set<string>();
+            
+            // Get position delta from live transform (or zero if none)
+            const deltaX = livePositionDelta?.x ?? 0;
+            const deltaZ = livePositionDelta?.z ?? 0;
+            
+            // Sample from geometry
+            const positions = modelGeometry.attributes.position as THREE.BufferAttribute;
             const sampleStep = Math.max(1, Math.floor(positions.count / 5000));
             const v = new THREE.Vector3();
             
@@ -158,11 +144,13 @@ const BasePlate: React.FC<BasePlateProps> = ({
               if (modelMatrixWorld) {
                 v.applyMatrix4(modelMatrixWorld);
               }
-              // Project to XZ plane (the floor)
-              const key = `${Math.round(v.x * 100)}:${Math.round(v.z * 100)}`;
+              // Apply live delta and project to XZ plane (the floor)
+              const finalX = v.x + deltaX;
+              const finalZ = v.z + deltaZ;
+              const key = `${Math.round(finalX * 100)}:${Math.round(finalZ * 100)}`;
               if (!dedupe.has(key)) {
                 dedupe.add(key);
-                xzPoints.push({ x: v.x, z: v.z });
+                xzPoints.push({ x: finalX, z: finalZ });
               }
             }
             
@@ -302,7 +290,7 @@ const BasePlate: React.FC<BasePlateProps> = ({
       default:
         return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.08), depth);
     }
-  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints]);
+  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints, livePositionDelta]);
 
   // Update geometry when props change
   React.useEffect(() => {

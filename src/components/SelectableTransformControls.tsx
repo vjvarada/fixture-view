@@ -8,6 +8,7 @@ interface SelectableTransformControlsProps {
   enabled: boolean;
   onTransformChange?: (transform: { position: THREE.Vector3; rotation: THREE.Euler }) => void;
   onSelectionChange?: (selected: boolean) => void;
+  onLiveTransformChange?: (transform: { position: THREE.Vector3; rotation: THREE.Euler; bounds: THREE.Box3; pivotClosed?: boolean } | null) => void;
   children?: React.ReactNode;
 }
 
@@ -24,6 +25,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
   enabled,
   onTransformChange,
   onSelectionChange,
+  onLiveTransformChange,
   children,
 }) => {
   const { gl, camera } = useThree();
@@ -78,7 +80,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     emitTransformUpdate();
   }, [meshRef.current?.geometry, emitTransformUpdate]);
 
-  // Calculate mesh bounds continuously via useFrame
+  // Calculate mesh bounds continuously via useFrame and emit live transform when active
   useFrame(() => {
     if (!meshRef.current || !enabled) return;
     
@@ -99,6 +101,27 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
         Math.abs(bounds.radius - radius) > 0.001 ||
         bounds.center.distanceTo(center) > 0.001) {
       setBounds({ center: center.clone(), size: size.clone(), radius });
+    }
+    
+    // Emit live transform when pivot is active
+    if (isActive && tempMesh && pivotRef.current) {
+      tempMesh.updateMatrixWorld(true);
+      
+      // Get the pivot's transform delta (this is what was applied during this drag session)
+      const pivotMatrix = pivotRef.current.matrix.clone();
+      const pivotDeltaPosition = new THREE.Vector3();
+      const pivotDeltaQuaternion = new THREE.Quaternion();
+      const pivotDeltaScale = new THREE.Vector3();
+      pivotMatrix.decompose(pivotDeltaPosition, pivotDeltaQuaternion, pivotDeltaScale);
+      
+      const pivotDeltaRotation = new THREE.Euler().setFromQuaternion(pivotDeltaQuaternion);
+      
+      // Emit the pivot delta and bounds
+      onLiveTransformChange?.({
+        position: pivotDeltaPosition,
+        rotation: pivotDeltaRotation,
+        bounds: box,
+      });
     }
   });
 
@@ -233,6 +256,8 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
       setTempMesh(null);
       setIsActive(false);
       onSelectionChange?.(false);
+      // Clear live transform on fallback
+      onLiveTransformChange?.(null);
       return;
     }
     
@@ -248,6 +273,17 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     const deltaQuaternion = new THREE.Quaternion();
     const deltaScale = new THREE.Vector3();
     pivotMatrix.decompose(deltaPosition, deltaQuaternion, deltaScale);
+    
+    // Emit the final live transform with pivotClosed flag BEFORE updating state
+    // This allows 3DScene to know the pivot is closing and the final delta
+    const box = new THREE.Box3().setFromObject(tempMesh);
+    const deltaRotation = new THREE.Euler().setFromQuaternion(deltaQuaternion);
+    onLiveTransformChange?.({
+      position: deltaPosition,
+      rotation: deltaRotation,
+      bounds: box,
+      pivotClosed: true,
+    });
     
     // Update cumulative tracking
     cumulativePositionRef.current.add(deltaPosition);
@@ -288,7 +324,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     
     setIsActive(false);
     onSelectionChange?.(false);
-  }, [meshRef, tempMesh, onSelectionChange, emitTransformUpdate]);
+  }, [meshRef, tempMesh, onSelectionChange, onLiveTransformChange, emitTransformUpdate]);
 
   // Handle double-click via custom event from the mesh itself
   useEffect(() => {
@@ -346,6 +382,44 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isActive, deactivateGizmo]);
+
+  // Close pivot controls when clicking on UI elements outside the canvas
+  useEffect(() => {
+    if (!isActive) return;
+    
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      
+      // Check if click is inside the 3D canvas
+      if (gl.domElement.contains(target) || gl.domElement === target) {
+        return; // Don't close if clicking in canvas
+      }
+      
+      // Check if clicking on an interactive UI element
+      const isInteractiveElement = 
+        target.closest('button') ||
+        target.closest('input') ||
+        target.closest('select') ||
+        target.closest('[role="button"]') ||
+        target.closest('[role="slider"]') ||
+        target.closest('[role="spinbutton"]') ||
+        target.closest('[role="combobox"]') ||
+        target.closest('[role="menuitem"]') ||
+        target.closest('[data-radix-collection-item]') || // Radix UI components
+        target.closest('[class*="accordion"]') ||
+        target.closest('[class*="slider"]') ||
+        target.closest('[class*="switch"]') ||
+        target.closest('[class*="checkbox"]');
+      
+      if (isInteractiveElement) {
+        deactivateGizmo();
+      }
+    };
+    
+    // Use capture phase to catch clicks before they're handled
+    document.addEventListener('mousedown', handleDocumentClick, true);
+    return () => document.removeEventListener('mousedown', handleDocumentClick, true);
+  }, [isActive, gl.domElement, deactivateGizmo]);
 
   // Listen for external transform updates (from Properties panel input fields)
   useEffect(() => {
