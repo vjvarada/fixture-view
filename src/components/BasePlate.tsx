@@ -64,6 +64,7 @@ const BasePlate: React.FC<BasePlateProps> = ({
   selected = false,
   modelGeometry,
   modelMatrixWorld,
+  modelGeometries = [], // Support for multiple geometries
   modelOrigin,
   oversizeXY = 10,
   pitch = 20,
@@ -124,9 +125,26 @@ const BasePlate: React.FC<BasePlateProps> = ({
     switch (type) {
       case 'convex-hull':
         // Sample model geometry and optionally apply live position delta
+        // Support both single geometry (backward compatibility) and multiple geometries
+        const geometriesToProcess: Array<{geometry: THREE.BufferGeometry, matrixWorld?: THREE.Matrix4}> = [];
+        
+        // Add single geometry if provided (backward compatibility)
         if (modelGeometry && modelGeometry.attributes && modelGeometry.attributes.position) {
+          geometriesToProcess.push({ geometry: modelGeometry, matrixWorld: modelMatrixWorld });
+        }
+        
+        // Add multiple geometries if provided
+        if (modelGeometries && modelGeometries.length > 0) {
+          for (const geo of modelGeometries) {
+            if (geo.geometry && geo.geometry.attributes && geo.geometry.attributes.position) {
+              geometriesToProcess.push({ geometry: geo.geometry, matrixWorld: geo.matrixWorld });
+            }
+          }
+        }
+        
+        if (geometriesToProcess.length > 0) {
           try {
-            // === STEP 1: Collect all XZ points from the model (top-down shadow) ===
+            // === STEP 1: Collect all XZ points from all models (top-down shadow) ===
             const xzPoints: Array<{x: number; z: number}> = [];
             const dedupe = new Set<string>();
             
@@ -134,23 +152,25 @@ const BasePlate: React.FC<BasePlateProps> = ({
             const deltaX = livePositionDelta?.x ?? 0;
             const deltaZ = livePositionDelta?.z ?? 0;
             
-            // Sample from geometry
-            const positions = modelGeometry.attributes.position as THREE.BufferAttribute;
-            const sampleStep = Math.max(1, Math.floor(positions.count / 5000));
-            const v = new THREE.Vector3();
-            
-            for (let i = 0; i < positions.count; i += sampleStep) {
-              v.set(positions.getX(i), positions.getY(i), positions.getZ(i));
-              if (modelMatrixWorld) {
-                v.applyMatrix4(modelMatrixWorld);
-              }
-              // Apply live delta and project to XZ plane (the floor)
-              const finalX = v.x + deltaX;
-              const finalZ = v.z + deltaZ;
-              const key = `${Math.round(finalX * 100)}:${Math.round(finalZ * 100)}`;
-              if (!dedupe.has(key)) {
-                dedupe.add(key);
-                xzPoints.push({ x: finalX, z: finalZ });
+            // Process each geometry
+            for (const geoInfo of geometriesToProcess) {
+              const positions = geoInfo.geometry.attributes.position as THREE.BufferAttribute;
+              const sampleStep = Math.max(1, Math.floor(positions.count / 5000));
+              const v = new THREE.Vector3();
+              
+              for (let i = 0; i < positions.count; i += sampleStep) {
+                v.set(positions.getX(i), positions.getY(i), positions.getZ(i));
+                if (geoInfo.matrixWorld) {
+                  v.applyMatrix4(geoInfo.matrixWorld);
+                }
+                // Apply live delta and project to XZ plane (the floor)
+                const finalX = v.x + deltaX;
+                const finalZ = v.z + deltaZ;
+                const key = `${Math.round(finalX * 100)}:${Math.round(finalZ * 100)}`;
+                if (!dedupe.has(key)) {
+                  dedupe.add(key);
+                  xzPoints.push({ x: finalX, z: finalZ });
+                }
               }
             }
             

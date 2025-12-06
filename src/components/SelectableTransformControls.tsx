@@ -1,28 +1,52 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { PivotControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 
+interface TransformData {
+  position: THREE.Vector3;
+  rotation: THREE.Euler;
+}
+
+interface LiveTransformData extends TransformData {
+  bounds: THREE.Box3;
+  pivotClosed?: boolean;
+}
+
 interface SelectableTransformControlsProps {
   meshRef: React.RefObject<THREE.Mesh>;
   enabled: boolean;
-  onTransformChange?: (transform: { position: THREE.Vector3; rotation: THREE.Euler }) => void;
+  partId?: string;
+  onTransformChange?: (transform: TransformData) => void;
   onSelectionChange?: (selected: boolean) => void;
-  onLiveTransformChange?: (transform: { position: THREE.Vector3; rotation: THREE.Euler; bounds: THREE.Box3; pivotClosed?: boolean } | null) => void;
+  onLiveTransformChange?: (transform: LiveTransformData | null) => void;
   children?: React.ReactNode;
 }
 
+// Reusable THREE.js objects to avoid allocations in render loop
+const tempBox = new THREE.Box3();
+const tempCenter = new THREE.Vector3();
+const tempSize = new THREE.Vector3();
+const tempPosition = new THREE.Vector3();
+const tempQuaternion = new THREE.Quaternion();
+const tempEuler = new THREE.Euler();
+const tempMatrix = new THREE.Matrix4();
+const tempScale = new THREE.Vector3();
+
 /**
- * Transform control system:
- * 1. Double-click: Show PivotControls with temp mesh clone
- * 2. During drag: PivotControls moves the clone naturally (gizmo moves WITH it)
- * 3. On close: Apply delta transform to cumulative transform, update main mesh
- * 4. Tracks cumulative transforms for UI display and restore functionality
- * 5. Next activation: Gizmo appears world-aligned
+ * Transform controls wrapper using @react-three/drei PivotControls.
+ * 
+ * Key behavior:
+ * - Double-click to activate gizmo (PivotControls starts at identity)
+ * - User transforms the part using the gizmo
+ * - On close: "bake" PivotControls transform into the mesh, reset PivotControls
+ * - Mesh accumulates all transforms, PivotControls always starts fresh
+ * - UI shows the mesh's actual accumulated transform
  */
 const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = ({
   meshRef,
   enabled,
+  partId,
   onTransformChange,
   onSelectionChange,
   onLiveTransformChange,
@@ -31,102 +55,114 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
   const { gl, camera } = useThree();
   const [isActive, setIsActive] = useState(false);
   const [bounds, setBounds] = useState<{ center: THREE.Vector3; size: THREE.Vector3; radius: number } | null>(null);
-  const raycasterRef = useRef(new THREE.Raycaster());
-  const groupRef = useRef<THREE.Group>(null);
   
-  // Temporary mesh displayed inside PivotControls while active
-  const [tempMesh, setTempMesh] = useState<THREE.Mesh | null>(null);
+  // Key to force PivotControls remount (resets to identity matrix)
+  const [pivotKey, setPivotKey] = useState(0);
   
-  // PivotControls ref to get final transform
+  // Ref to the PivotControls internal group for extracting its transform
   const pivotRef = useRef<THREE.Group>(null);
   
-  // Key to force PivotControls remount when activated
-  const [gizmoKey, setGizmoKey] = useState(0);
-  
-  // Store original geometry (before any transforms)
-  const originalGeometryRef = useRef<THREE.BufferGeometry | null>(null);
-  
-  // Cumulative transform tracking (position and quaternion from original)
-  const cumulativePositionRef = useRef(new THREE.Vector3(0, 0, 0));
-  const cumulativeQuaternionRef = useRef(new THREE.Quaternion());
-  
-  // Flag to track if we've captured the original geometry
-  const hasOriginalGeometryRef = useRef(false);
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const groupRef = useRef<THREE.Group>(null);
 
-  // Emit transform update to UI
+  // Get the mesh's current local transform (what's stored on the mesh itself)
+  const getMeshLocalTransform = useCallback((): TransformData => {
+    if (!meshRef.current) {
+      return { position: new THREE.Vector3(), rotation: new THREE.Euler() };
+    }
+    return { 
+      position: meshRef.current.position.clone(), 
+      rotation: meshRef.current.rotation.clone() 
+    };
+  }, [meshRef]);
+
+  // Get the mesh's world transform (includes PivotControls transform when active)
+  const getWorldTransform = useCallback((): TransformData => {
+    if (!meshRef.current) {
+      return { position: new THREE.Vector3(), rotation: new THREE.Euler() };
+    }
+    meshRef.current.updateMatrixWorld(true);
+    meshRef.current.getWorldPosition(tempPosition);
+    meshRef.current.getWorldQuaternion(tempQuaternion);
+    tempEuler.setFromQuaternion(tempQuaternion);
+    return { 
+      position: tempPosition.clone(), 
+      rotation: tempEuler.clone() 
+    };
+  }, [meshRef]);
+
+  // Emit transform update event (sends the mesh's world transform)
   const emitTransformUpdate = useCallback(() => {
-    const position = cumulativePositionRef.current.clone();
-    const rotation = new THREE.Euler().setFromQuaternion(cumulativeQuaternionRef.current);
+    if (!meshRef.current) return;
+    const { position, rotation } = getWorldTransform();
     
-    // Dispatch event for PartPropertiesAccordion
-    window.dispatchEvent(
-      new CustomEvent('model-transform-updated', {
-        detail: { position, rotation },
-      })
-    );
-    
+    window.dispatchEvent(new CustomEvent('model-transform-updated', {
+      detail: { position, rotation, partId },
+    }));
     onTransformChange?.({ position, rotation });
-  }, [onTransformChange]);
+  }, [meshRef, getWorldTransform, onTransformChange, partId]);
 
-  // Capture original geometry on first render
+  // Initial transform emit
   useEffect(() => {
-    if (!meshRef.current || hasOriginalGeometryRef.current) return;
-    
-    // Store a clone of the original geometry
-    originalGeometryRef.current = meshRef.current.geometry.clone();
-    hasOriginalGeometryRef.current = true;
-    
-    // Emit initial transform (0,0,0)
-    emitTransformUpdate();
-  }, [meshRef.current?.geometry, emitTransformUpdate]);
+    if (!meshRef.current) return;
+    const timer = setTimeout(emitTransformUpdate, 100);
+    return () => clearTimeout(timer);
+  }, [emitTransformUpdate]);
 
-  // Calculate mesh bounds continuously via useFrame and emit live transform when active
+  // Listen for external transform changes (e.g., reset position from UI)
+  useEffect(() => {
+    const handleExternalTransform = (e: CustomEvent) => {
+      const { position, rotation, partId: eventPartId } = e.detail;
+      
+      // Only handle events for this part
+      if (partId && eventPartId && eventPartId !== partId) return;
+      if (!partId && eventPartId) return;
+      
+      // Update mesh position/rotation directly (this is the "baked" transform)
+      if (meshRef.current) {
+        meshRef.current.position.copy(position);
+        meshRef.current.rotation.copy(rotation);
+        meshRef.current.updateMatrixWorld(true);
+      }
+      
+      // Force PivotControls to remount (resets to identity)
+      setPivotKey(k => k + 1);
+      
+      // Emit the transform update so UI stays in sync
+      setTimeout(() => {
+        emitTransformUpdate();
+      }, 50);
+    };
+    
+    window.addEventListener('set-model-transform', handleExternalTransform as EventListener);
+    return () => window.removeEventListener('set-model-transform', handleExternalTransform as EventListener);
+  }, [partId, emitTransformUpdate, meshRef]);
+
+  // Continuous bounds calculation
   useFrame(() => {
     if (!meshRef.current || !enabled) return;
     
-    // Use tempMesh bounds when active, otherwise main mesh
-    const targetMesh = isActive && tempMesh ? tempMesh : meshRef.current;
-    targetMesh.updateMatrixWorld(true);
+    meshRef.current.updateMatrixWorld(true);
+    tempBox.setFromObject(meshRef.current);
+    tempBox.getCenter(tempCenter);
+    tempBox.getSize(tempSize);
     
-    const box = new THREE.Box3().setFromObject(targetMesh);
-    const center = new THREE.Vector3();
-    const size = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
+    const radius = Math.max(tempSize.x, tempSize.y, tempSize.z) / 2;
     
-    const radius = Math.max(size.x, size.y, size.z) / 2;
-    
-    // Always update bounds
-    if (!bounds || 
-        Math.abs(bounds.radius - radius) > 0.001 ||
-        bounds.center.distanceTo(center) > 0.001) {
-      setBounds({ center: center.clone(), size: size.clone(), radius });
+    // Only update state if bounds changed significantly
+    if (!bounds || Math.abs(bounds.radius - radius) > 0.001 || bounds.center.distanceTo(tempCenter) > 0.001) {
+      setBounds({ center: tempCenter.clone(), size: tempSize.clone(), radius });
     }
     
-    // Emit live transform when pivot is active
-    if (isActive && tempMesh && pivotRef.current) {
-      tempMesh.updateMatrixWorld(true);
-      
-      // Get the pivot's transform delta (this is what was applied during this drag session)
-      const pivotMatrix = pivotRef.current.matrix.clone();
-      const pivotDeltaPosition = new THREE.Vector3();
-      const pivotDeltaQuaternion = new THREE.Quaternion();
-      const pivotDeltaScale = new THREE.Vector3();
-      pivotMatrix.decompose(pivotDeltaPosition, pivotDeltaQuaternion, pivotDeltaScale);
-      
-      const pivotDeltaRotation = new THREE.Euler().setFromQuaternion(pivotDeltaQuaternion);
-      
-      // Emit the pivot delta and bounds
-      onLiveTransformChange?.({
-        position: pivotDeltaPosition,
-        rotation: pivotDeltaRotation,
-        bounds: box,
-      });
+    // Emit live transform during active drag
+    if (isActive && onLiveTransformChange) {
+      const { position, rotation } = getWorldTransform();
+      onLiveTransformChange({ position, rotation, bounds: tempBox.clone() });
     }
   });
 
-  // Helper to get mouse position in normalized device coordinates
-  const getMouseNDC = useCallback((event: MouseEvent) => {
+  // Mouse position helper
+  const getMouseNDC = useCallback((event: MouseEvent): THREE.Vector2 => {
     const rect = gl.domElement.getBoundingClientRect();
     return new THREE.Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -134,221 +170,226 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     );
   }, [gl]);
 
-  // Check if mouse is over the mesh (for cursor changes)
-  const isMouseOverMesh = useCallback((event: MouseEvent) => {
+  // Raycast check for hover
+  const isMouseOverMesh = useCallback((event: MouseEvent): boolean => {
     if (!meshRef.current) return false;
-    
-    const mesh = meshRef.current;
-    mesh.updateMatrixWorld(true);
-    
-    const mouse = getMouseNDC(event);
-    raycasterRef.current.setFromCamera(mouse, camera);
-    
-    const intersects = raycasterRef.current.intersectObject(mesh, true);
-    return intersects.length > 0;
+    raycasterRef.current.setFromCamera(getMouseNDC(event), camera);
+    return raycasterRef.current.intersectObject(meshRef.current, true).length > 0;
   }, [meshRef, camera, getMouseNDC]);
 
-  // Apply cumulative transform to mesh geometry
-  const applyTransformToMesh = useCallback(() => {
-    if (!meshRef.current || !originalGeometryRef.current) return;
-    
-    const mesh = meshRef.current;
-    
-    // Clone original geometry
-    const newGeometry = originalGeometryRef.current.clone();
-    
-    // Create transform matrix from cumulative position and quaternion
-    const transformMatrix = new THREE.Matrix4();
-    transformMatrix.compose(
-      cumulativePositionRef.current,
-      cumulativeQuaternionRef.current,
-      new THREE.Vector3(1, 1, 1)
-    );
-    
-    // Apply transform to geometry
-    newGeometry.applyMatrix4(transformMatrix);
-    
-    // Replace mesh geometry
-    mesh.geometry.dispose();
-    mesh.geometry = newGeometry;
-    
-    // Keep mesh at origin (transform is in geometry)
-    mesh.position.set(0, 0, 0);
-    mesh.rotation.set(0, 0, 0);
-    mesh.scale.set(1, 1, 1);
-    mesh.updateMatrixWorld(true);
+  // Bake PivotControls transform into the mesh and reset PivotControls
+  // Returns a promise that resolves after the bake is complete
+  const bakeTransformAndReset = useCallback((): Promise<{ position: THREE.Vector3; rotation: THREE.Euler }> => {
+    return new Promise((resolve) => {
+      if (!meshRef.current || !pivotRef.current) {
+        resolve({ position: new THREE.Vector3(), rotation: new THREE.Euler() });
+        return;
+      }
+      
+      const mesh = meshRef.current;
+      const pivot = pivotRef.current;
+      
+      console.group('🔧 Bake Transform Debug');
+      console.log('Mesh BEFORE bake:');
+      console.log('  Local position:', mesh.position.toArray());
+      console.log('  Local rotation:', [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z]);
+      console.log('  Mesh UUID:', mesh.uuid);
+      
+      mesh.updateMatrixWorld(true);
+      const worldPosBefore = new THREE.Vector3();
+      const worldQuatBefore = new THREE.Quaternion();
+      mesh.getWorldPosition(worldPosBefore);
+      mesh.getWorldQuaternion(worldQuatBefore);
+      console.log('  World position:', worldPosBefore.toArray());
+      console.log('  World quaternion:', worldQuatBefore.toArray());
+      
+      // The mesh's world transform ALREADY includes all PivotControls transforms
+      // Capture the world transform
+      const worldPosition = new THREE.Vector3();
+      const worldQuaternion = new THREE.Quaternion();
+      
+      mesh.getWorldPosition(worldPosition);
+      mesh.getWorldQuaternion(worldQuaternion);
+      
+      console.log('World transform to bake:');
+      console.log('  Position:', worldPosition.toArray());
+      console.log('  Quaternion:', worldQuaternion.toArray());
+      
+      // Store the world transform
+      const bakedPosition = worldPosition.clone();
+      const bakedQuaternion = worldQuaternion.clone();
+      const bakedEuler = new THREE.Euler().setFromQuaternion(bakedQuaternion);
+      
+      // NOW: Reset PivotControls matrix to identity WITHOUT using key (no remount)
+      // Then set mesh local = baked world
+      console.log('Resetting pivot matrix and applying baked transform...');
+      
+      // Reset pivot's matrix to identity
+      pivot.matrix.identity();
+      pivot.position.set(0, 0, 0);
+      pivot.rotation.set(0, 0, 0);
+      pivot.scale.set(1, 1, 1);
+      pivot.updateMatrix();
+      
+      // Set mesh local transform to the baked world transform
+      mesh.position.copy(bakedPosition);
+      mesh.rotation.copy(bakedEuler);
+      mesh.updateMatrix();
+      mesh.updateMatrixWorld(true);
+      
+      console.log('Mesh AFTER bake:');
+      console.log('  Local position:', mesh.position.toArray());
+      console.log('  Local rotation:', [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z]);
+      console.log('  Mesh UUID:', mesh.uuid);
+      console.groupEnd();
+      
+      // Verify it sticks
+      requestAnimationFrame(() => {
+        if (meshRef.current) {
+          console.log('🔧 Verify after RAF - mesh position:', meshRef.current.position.toArray());
+          console.log('🔧 Verify after RAF - mesh UUID:', meshRef.current.uuid);
+        }
+      });
+      
+      resolve({ position: bakedPosition, rotation: bakedEuler });
+    });
   }, [meshRef]);
 
-  // Activate gizmo: create temp mesh clone, hide main mesh
+  // Activate gizmo
   const activateGizmo = useCallback(() => {
     if (!meshRef.current) return;
     
-    const mesh = meshRef.current;
-    
-    // Check if mesh has any position/rotation set (e.g., from useViewer baseplate move)
-    // If so, we need to bake that into the geometry first
-    const meshHasTransform = 
-      mesh.position.lengthSq() > 0.0001 || 
-      mesh.rotation.x !== 0 || mesh.rotation.y !== 0 || mesh.rotation.z !== 0;
-    
-    let clonedGeometry = mesh.geometry.clone();
-    
-    if (meshHasTransform) {
-      // Bake the mesh's current transform into the geometry
-      const meshMatrix = new THREE.Matrix4();
-      meshMatrix.compose(
-        mesh.position,
-        mesh.quaternion,
-        mesh.scale
-      );
-      clonedGeometry.applyMatrix4(meshMatrix);
+    // Position PivotControls at the mesh's current world center
+    // BUT keep pivot axes world-aligned (no rotation)
+    if (pivotRef.current) {
+      meshRef.current.updateMatrixWorld(true);
+      const meshWorldPos = new THREE.Vector3();
+      meshRef.current.getWorldPosition(meshWorldPos);
       
-      // Also update cumulative tracking to include this transform
-      // (in case it wasn't already tracked, e.g., from external moves)
-      // We add the mesh position to cumulative
-      const meshQuaternion = mesh.quaternion.clone();
+      // Get mesh's world rotation - we'll bake this into the mesh's local rotation
+      const meshWorldQuat = new THREE.Quaternion();
+      meshRef.current.getWorldQuaternion(meshWorldQuat);
+      const meshWorldEuler = new THREE.Euler().setFromQuaternion(meshWorldQuat);
       
-      // Check if this position is already in cumulative (avoid double-counting)
-      // Simple check: if cumulative Y differs significantly from mesh position Y
-      const positionDelta = mesh.position.clone().sub(cumulativePositionRef.current);
-      if (positionDelta.lengthSq() > 0.0001) {
-        // There's a discrepancy - sync cumulative to actual mesh state
-        cumulativePositionRef.current.copy(mesh.position);
-        cumulativeQuaternionRef.current.copy(meshQuaternion);
-      }
+      // Set pivot to mesh's world POSITION only - keep rotation at identity (world-aligned)
+      pivotRef.current.position.copy(meshWorldPos);
+      pivotRef.current.rotation.set(0, 0, 0);  // World-aligned axes!
+      pivotRef.current.updateMatrix();
       
-      // Reset the main mesh transform (we've baked it into geometry)
-      mesh.position.set(0, 0, 0);
-      mesh.rotation.set(0, 0, 0);
-      mesh.scale.set(1, 1, 1);
-      mesh.geometry.dispose();
-      mesh.geometry = clonedGeometry.clone();
-      mesh.updateMatrixWorld(true);
+      // Reset mesh position to origin, but KEEP its rotation
+      // This way the part's orientation is preserved in mesh.rotation
+      meshRef.current.position.set(0, 0, 0);
+      meshRef.current.rotation.copy(meshWorldEuler);  // Keep the rotation on the mesh
+      meshRef.current.updateMatrix();
+      meshRef.current.updateMatrixWorld(true);
+      
+      console.group('🟢 Pivot Controls ACTIVATED');
+      console.log('Part ID:', partId);
+      console.log('Pivot positioned at:', meshWorldPos.toArray(), '(world-aligned axes)');
+      console.log('Mesh rotation preserved:', [meshWorldEuler.x, meshWorldEuler.y, meshWorldEuler.z]);
+      console.groupEnd();
     }
     
-    const clonedMaterial = Array.isArray(mesh.material) 
-      ? mesh.material.map(m => m.clone()) 
-      : mesh.material.clone();
+    // Notify other controls to close
+    window.dispatchEvent(new CustomEvent('pivot-control-activated', { detail: { partId } }));
     
-    const clone = new THREE.Mesh(clonedGeometry, clonedMaterial);
-    
-    // Temp mesh at origin (geometry already has transform baked in)
-    clone.position.set(0, 0, 0);
-    clone.rotation.set(0, 0, 0);
-    clone.scale.set(1, 1, 1);
-    
-    setTempMesh(clone);
-    
-    // Hide main mesh
-    mesh.visible = false;
-    
-    // Increment key to force fresh PivotControls
-    setGizmoKey(k => k + 1);
     setIsActive(true);
     onSelectionChange?.(true);
-  }, [meshRef, onSelectionChange]);
+  }, [meshRef, onSelectionChange, partId]);
 
-  // Deactivate gizmo: apply delta transform to cumulative, update main mesh
-  const deactivateGizmo = useCallback(() => {
-    if (!meshRef.current || !tempMesh || !pivotRef.current) {
-      // Fallback: just show the mesh again
-      if (meshRef.current) meshRef.current.visible = true;
-      setTempMesh(null);
-      setIsActive(false);
-      onSelectionChange?.(false);
-      // Clear live transform on fallback
-      onLiveTransformChange?.(null);
-      return;
+  // Deactivate gizmo - bake transform into mesh and reset PivotControls
+  const deactivateGizmo = useCallback(async () => {
+    window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: false } }));
+    gl.domElement.style.cursor = 'auto';
+    
+    // Capture the transform BEFORE hiding (while pivot still has its transform)
+    let bakedPosition = new THREE.Vector3();
+    let bakedRotation = new THREE.Euler();
+    
+    if (meshRef.current && pivotRef.current) {
+      meshRef.current.updateMatrixWorld(true);
+      meshRef.current.getWorldPosition(bakedPosition);
+      const worldQuat = new THREE.Quaternion();
+      meshRef.current.getWorldQuaternion(worldQuat);
+      bakedRotation.setFromQuaternion(worldQuat);
     }
     
-    const mesh = meshRef.current;
-    
-    // Get the temp mesh's final world transform (this is what we see on screen)
-    tempMesh.updateMatrixWorld(true);
-    const tempWorldMatrix = tempMesh.matrixWorld.clone();
-    
-    // Get the PivotControls transform for tracking
-    const pivotMatrix = pivotRef.current.matrix.clone();
-    const deltaPosition = new THREE.Vector3();
-    const deltaQuaternion = new THREE.Quaternion();
-    const deltaScale = new THREE.Vector3();
-    pivotMatrix.decompose(deltaPosition, deltaQuaternion, deltaScale);
-    
-    // Emit the final live transform with pivotClosed flag BEFORE updating state
-    // This allows 3DScene to know the pivot is closing and the final delta
-    const box = new THREE.Box3().setFromObject(tempMesh);
-    const deltaRotation = new THREE.Euler().setFromQuaternion(deltaQuaternion);
-    onLiveTransformChange?.({
-      position: deltaPosition,
-      rotation: deltaRotation,
-      bounds: box,
-      pivotClosed: true,
-    });
-    
-    // Update cumulative tracking
-    cumulativePositionRef.current.add(deltaPosition);
-    cumulativeQuaternionRef.current.premultiply(deltaQuaternion);
-    cumulativeQuaternionRef.current.normalize();
-    
-    // Instead of applyTransformToMesh (which reconstructs from cumulative),
-    // directly use the temp mesh's geometry which is exactly what user sees
-    const finalGeometry = tempMesh.geometry.clone();
-    
-    // Apply the pivot's world transform to the geometry
-    finalGeometry.applyMatrix4(pivotMatrix);
-    
-    // Replace main mesh geometry
-    mesh.geometry.dispose();
-    mesh.geometry = finalGeometry;
-    
-    // Keep mesh at origin (transform is baked into geometry)
-    mesh.position.set(0, 0, 0);
-    mesh.rotation.set(0, 0, 0);
-    mesh.scale.set(1, 1, 1);
-    mesh.updateMatrixWorld(true);
-    
-    // Show main mesh
-    mesh.visible = true;
-    
-    // Cleanup temp mesh
-    tempMesh.geometry.dispose();
-    if (Array.isArray(tempMesh.material)) {
-      tempMesh.material.forEach(m => m.dispose());
-    } else {
-      tempMesh.material.dispose();
-    }
-    setTempMesh(null);
-    
-    // Emit transform update
-    emitTransformUpdate();
-    
+    // Hide the pivot controls FIRST to avoid visual jump to origin
     setIsActive(false);
     onSelectionChange?.(false);
-  }, [meshRef, tempMesh, onSelectionChange, onLiveTransformChange, emitTransformUpdate]);
+    
+    // Wait for React to re-render and hide the pivot
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    if (meshRef.current && pivotRef.current) {
+      // Now reset pivot to origin (it's hidden, so no visual jump)
+      pivotRef.current.matrix.identity();
+      pivotRef.current.position.set(0, 0, 0);
+      pivotRef.current.rotation.set(0, 0, 0);
+      pivotRef.current.scale.set(1, 1, 1);
+      pivotRef.current.updateMatrix();
+      
+      // Set mesh local transform to the captured world transform
+      meshRef.current.position.copy(bakedPosition);
+      meshRef.current.rotation.copy(bakedRotation);
+      meshRef.current.updateMatrix();
+      meshRef.current.updateMatrixWorld(true);
+      
+      console.log('🔧 deactivateGizmo - Bake complete, position:', bakedPosition.toArray());
+      
+      // Get bounds after bake
+      tempBox.setFromObject(meshRef.current);
+      
+      // Notify about the final transform
+      onLiveTransformChange?.({ position: bakedPosition, rotation: bakedRotation, bounds: tempBox.clone(), pivotClosed: true });
+      
+      // Emit update with the baked transform
+      window.dispatchEvent(new CustomEvent('model-transform-updated', {
+        detail: { position: bakedPosition, rotation: bakedRotation, partId },
+      }));
+      onTransformChange?.({ position: bakedPosition, rotation: bakedRotation });
+    }
+    
+    requestAnimationFrame(() => onLiveTransformChange?.(null));
+  }, [gl, meshRef, onSelectionChange, onLiveTransformChange, onTransformChange, partId]);
 
-  // Handle double-click via custom event from the mesh itself
+  // Close when another pivot control is activated
+  useEffect(() => {
+    if (!isActive) return;
+    
+    const handleOtherActivated = (e: CustomEvent) => {
+      const activatedPartId = e.detail?.partId;
+      // If a different part was activated, close this one
+      if (activatedPartId !== partId) {
+        deactivateGizmo();
+      }
+    };
+    
+    window.addEventListener('pivot-control-activated', handleOtherActivated as EventListener);
+    return () => window.removeEventListener('pivot-control-activated', handleOtherActivated as EventListener);
+  }, [isActive, partId, deactivateGizmo]);
+
+  // Double-click handler
   useEffect(() => {
     if (!enabled) return;
     
-    const handleMeshDoubleClick = () => {
+    const handleMeshDoubleClick = (e: CustomEvent) => {
       if (isActive) return;
+      const eventPartId = e.detail?.partId;
+      if (partId && eventPartId && eventPartId !== partId) return;
       activateGizmo();
     };
     
-    window.addEventListener('mesh-double-click', handleMeshDoubleClick);
-    return () => window.removeEventListener('mesh-double-click', handleMeshDoubleClick);
-  }, [enabled, isActive, activateGizmo]);
+    window.addEventListener('mesh-double-click', handleMeshDoubleClick as EventListener);
+    return () => window.removeEventListener('mesh-double-click', handleMeshDoubleClick as EventListener);
+  }, [enabled, isActive, activateGizmo, partId]);
 
-  // Cursor change on hover over mesh (to indicate it's clickable)
+  // Hover cursor
   useEffect(() => {
     if (!enabled || isActive) return;
     
     const handleMouseMove = (event: MouseEvent) => {
-      if (isMouseOverMesh(event)) {
-        gl.domElement.style.cursor = 'pointer';
-      } else {
-        gl.domElement.style.cursor = 'auto';
-      }
+      gl.domElement.style.cursor = isMouseOverMesh(event) ? 'pointer' : 'auto';
     };
     
     gl.domElement.addEventListener('mousemove', handleMouseMove);
@@ -358,187 +399,151 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     };
   }, [gl, enabled, isActive, isMouseOverMesh]);
 
-  // Disable orbit controls when dragging gizmo
+  // Drag handlers
   const handleDragStart = useCallback(() => {
+    console.log('🔵 Drag START');
+    if (meshRef.current) {
+      console.log('  Mesh local pos:', meshRef.current.position.toArray());
+      meshRef.current.updateMatrixWorld(true);
+      const wp = new THREE.Vector3();
+      meshRef.current.getWorldPosition(wp);
+      console.log('  Mesh world pos:', wp.toArray());
+    }
+    if (pivotRef.current) {
+      console.log('  PivotRef matrix:', pivotRef.current.matrix.elements.slice(0, 4), '...');
+    }
     window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: true } }));
     gl.domElement.style.cursor = 'grabbing';
-  }, [gl]);
+  }, [gl, meshRef]);
+
+  // Handle drag - emit live transform data
+  // Use a throttle to avoid too much console spam
+  const lastDragLogRef = useRef(0);
+  const handleDrag = useCallback(() => {
+    if (!meshRef.current) return;
+    const { position, rotation } = getWorldTransform();
+    
+    // Log every 500ms during drag
+    const now = Date.now();
+    if (now - lastDragLogRef.current > 500) {
+      console.log('🟡 Dragging - world pos:', position.toArray().map(v => v.toFixed(2)), 'rot:', [rotation.x.toFixed(2), rotation.y.toFixed(2), rotation.z.toFixed(2)]);
+      lastDragLogRef.current = now;
+    }
+    
+    if (onLiveTransformChange) {
+      tempBox.setFromObject(meshRef.current);
+      onLiveTransformChange({ position, rotation, bounds: tempBox.clone() });
+    }
+  }, [meshRef, onLiveTransformChange, getWorldTransform]);
 
   const handleDragEnd = useCallback(() => {
+    console.log('🔵 Drag END');
+    if (meshRef.current) {
+      console.log('  Mesh local pos:', meshRef.current.position.toArray());
+      meshRef.current.updateMatrixWorld(true);
+      const wp = new THREE.Vector3();
+      const wq = new THREE.Quaternion();
+      meshRef.current.getWorldPosition(wp);
+      meshRef.current.getWorldQuaternion(wq);
+      console.log('  Mesh world pos:', wp.toArray());
+      console.log('  Mesh world quat:', wq.toArray());
+    }
+    if (pivotRef.current) {
+      console.log('  PivotRef matrix:', pivotRef.current.matrix.elements);
+    }
     window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: false } }));
     gl.domElement.style.cursor = 'auto';
-  }, [gl]);
+    emitTransformUpdate();
+  }, [gl, emitTransformUpdate, meshRef]);
 
-  // Keyboard shortcut to close
+  // Keyboard escape
   useEffect(() => {
     if (!isActive) return;
-    
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        deactivateGizmo();
-      }
+      if (e.key === 'Escape') deactivateGizmo();
     };
-    
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isActive, deactivateGizmo]);
 
-  // Close pivot controls when clicking on UI elements outside the canvas
+  // Click outside to close
   useEffect(() => {
     if (!isActive) return;
     
     const handleDocumentClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
+      if (gl.domElement.contains(target) || gl.domElement === target) return;
       
-      // Check if click is inside the 3D canvas
-      if (gl.domElement.contains(target) || gl.domElement === target) {
-        return; // Don't close if clicking in canvas
-      }
-      
-      // Check if clicking on an interactive UI element
-      const isInteractiveElement = 
-        target.closest('button') ||
-        target.closest('input') ||
-        target.closest('select') ||
-        target.closest('[role="button"]') ||
-        target.closest('[role="slider"]') ||
-        target.closest('[role="spinbutton"]') ||
-        target.closest('[role="combobox"]') ||
-        target.closest('[role="menuitem"]') ||
-        target.closest('[data-radix-collection-item]') || // Radix UI components
-        target.closest('[class*="accordion"]') ||
-        target.closest('[class*="slider"]') ||
-        target.closest('[class*="switch"]') ||
-        target.closest('[class*="checkbox"]');
-      
-      if (isInteractiveElement) {
+      if (target.closest('button, input, select, [role="button"], [role="slider"], [data-radix-collection-item], [class*="accordion"]')) {
         deactivateGizmo();
       }
     };
     
-    // Use capture phase to catch clicks before they're handled
     document.addEventListener('mousedown', handleDocumentClick, true);
     return () => document.removeEventListener('mousedown', handleDocumentClick, true);
   }, [isActive, gl.domElement, deactivateGizmo]);
 
-  // Listen for external transform updates (from Properties panel input fields)
+  // External transform updates
   useEffect(() => {
     const handleSetTransform = (e: CustomEvent) => {
       if (!meshRef.current || isActive) return;
+      if (partId && e.detail.partId && e.detail.partId !== partId) return;
       
       const { position, rotation } = e.detail;
-      
-      // Update cumulative transform
-      cumulativePositionRef.current.copy(position);
+      meshRef.current.position.copy(position);
       if (rotation instanceof THREE.Euler) {
-        cumulativeQuaternionRef.current.setFromEuler(rotation);
+        meshRef.current.rotation.copy(rotation);
       } else {
-        cumulativeQuaternionRef.current.setFromEuler(new THREE.Euler(rotation.x, rotation.y, rotation.z));
+        meshRef.current.rotation.set(rotation.x, rotation.y, rotation.z);
       }
-      
-      // Apply to mesh
-      applyTransformToMesh();
-      
-      // Emit update
+      meshRef.current.updateMatrixWorld(true);
       emitTransformUpdate();
     };
 
     window.addEventListener('set-model-transform', handleSetTransform as EventListener);
     return () => window.removeEventListener('set-model-transform', handleSetTransform as EventListener);
-  }, [meshRef, isActive, applyTransformToMesh, emitTransformUpdate]);
+  }, [meshRef, isActive, partId, emitTransformUpdate]);
 
-  // Listen for restore transform request
+  // Baseplate move notification
   useEffect(() => {
-    const handleRestoreTransform = (e: CustomEvent) => {
-      if (!meshRef.current || isActive) return;
-      
-      const { position, rotation } = e.detail;
-      
-      // Update cumulative transform
-      cumulativePositionRef.current.copy(position);
-      if (rotation instanceof THREE.Euler) {
-        cumulativeQuaternionRef.current.setFromEuler(rotation);
-      } else if (rotation instanceof THREE.Quaternion) {
-        cumulativeQuaternionRef.current.copy(rotation);
-      } else {
-        // Assume it's an object with x, y, z in radians
-        const euler = new THREE.Euler(rotation.x, rotation.y, rotation.z);
-        cumulativeQuaternionRef.current.setFromEuler(euler);
-      }
-      
-      // Apply to mesh
-      applyTransformToMesh();
-      
-      // Emit update
-      emitTransformUpdate();
-    };
+    const handler = () => emitTransformUpdate();
+    window.addEventListener('baseplate-moved-model', handler);
+    return () => window.removeEventListener('baseplate-moved-model', handler);
+  }, [emitTransformUpdate]);
 
-    window.addEventListener('restore-model-transform', handleRestoreTransform as EventListener);
-    return () => window.removeEventListener('restore-model-transform', handleRestoreTransform as EventListener);
-  }, [meshRef, isActive, applyTransformToMesh, emitTransformUpdate]);
+  // Computed values
+  const gizmoScale = useMemo(() => bounds ? Math.max(bounds.radius * 0.75, 25) : 50, [bounds]);
+  
+  const closeButtonPosition = useMemo((): [number, number, number] | undefined => {
+    if (!bounds) return undefined;
+    return [bounds.center.x + bounds.radius * 1.2, bounds.center.y + bounds.radius * 1.2, bounds.center.z];
+  }, [bounds]);
 
-  // Listen for baseplate-moved-model event (when baseplate creation moves the part)
-  // This just tracks the transform like PivotControls does - updates cumulative tracking
-  useEffect(() => {
-    const handleBaseplateMovedModel = (e: CustomEvent) => {
-      if (!meshRef.current) return;
-      
-      const { deltaY } = e.detail;
-      
-      // Just update cumulative position tracking (like PivotControls does)
-      // The mesh was already moved by useViewer, we just need to track it
-      cumulativePositionRef.current.y += deltaY;
-      
-      // Emit update to UI so position displays correctly
-      emitTransformUpdate();
-    };
-
-    window.addEventListener('baseplate-moved-model', handleBaseplateMovedModel as EventListener);
-    return () => window.removeEventListener('baseplate-moved-model', handleBaseplateMovedModel as EventListener);
-  }, [meshRef, emitTransformUpdate]);
-
-  // Scale the gizmo based on model size
-  const gizmoScale = bounds ? Math.max(bounds.radius * 0.75, 25) : 50;
-
-  // Render
   return (
     <group ref={groupRef}>
-      {/* Main mesh - always rendered, but hidden when gizmo is active */}
-      {children}
+      <PivotControls
+        ref={pivotRef}
+        scale={gizmoScale}
+        lineWidth={4}
+        depthTest={false}
+        fixed={false}
+        visible={isActive}
+        activeAxes={isActive ? [true, true, true] : [false, false, false]}
+        axisColors={['#ff4060', '#40ff60', '#4080ff']}
+        hoveredColor="#ffff40"
+        annotations={isActive}
+        annotationsClass="pivot-annotation"
+        autoTransform={true}
+        disableScaling={true}
+        onDrag={isActive ? handleDrag : undefined}
+        onDragStart={isActive ? handleDragStart : undefined}
+        onDragEnd={isActive ? handleDragEnd : undefined}
+      >
+        {children}
+      </PivotControls>
       
-      {/* PivotControls with temp mesh clone - only when active */}
-      {isActive && tempMesh && (
-        <PivotControls
-          ref={pivotRef}
-          key={gizmoKey}
-          scale={gizmoScale}
-          lineWidth={4}
-          depthTest={false}
-          fixed={false}
-          axisColors={['#ff4060', '#40ff60', '#4080ff']}
-          hoveredColor="#ffff40"
-          annotations={true}
-          annotationsClass="pivot-annotation"
-          autoTransform={true}
-          anchor={[0, 0, 0]}
-          disableScaling={true}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <primitive object={tempMesh} />
-        </PivotControls>
-      )}
-      
-      {/* Small close button - only shown when active */}
-      {isActive && bounds && (
-        <Html
-          position={[bounds.center.x + bounds.radius * 1.2, bounds.center.y + bounds.radius * 1.2, bounds.center.z]}
-          center
-          style={{
-            pointerEvents: 'auto',
-            userSelect: 'none',
-          }}
-        >
+      {isActive && closeButtonPosition && (
+        <Html position={closeButtonPosition} center style={{ pointerEvents: 'auto', userSelect: 'none' }}>
           <button
             onClick={deactivateGizmo}
             className="w-6 h-6 flex items-center justify-center bg-slate-800/90 hover:bg-red-600 text-white rounded-full shadow-lg border border-slate-600 transition-colors text-xs"

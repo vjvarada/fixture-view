@@ -1,6 +1,5 @@
 import React, { useRef, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 
 interface PartThumbnailProps {
   mesh: THREE.Mesh;
@@ -22,6 +21,44 @@ const MODEL_COLOR_PALETTE = [
   '#3b82f6', // Blue
   '#f59e0b'  // Amber
 ];
+
+// Singleton shared renderer for all thumbnails to avoid WebGL context limit
+let sharedRenderer: THREE.WebGLRenderer | null = null;
+let sharedEnvMap: THREE.Texture | null = null;
+let rendererRefCount = 0;
+
+function getSharedRenderer(): THREE.WebGLRenderer {
+  if (!sharedRenderer) {
+    // Create offscreen canvas for shared rendering
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = 128; // Max thumbnail size we'll support
+    offscreenCanvas.height = 128;
+    
+    sharedRenderer = new THREE.WebGLRenderer({
+      canvas: offscreenCanvas,
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: true, // Required to copy pixels to visible canvas
+    });
+    sharedRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    sharedRenderer.setClearColor(0xffffff, 1);
+    sharedRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    sharedRenderer.toneMappingExposure = 1;
+    sharedRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    
+    // Create shared environment map
+    sharedEnvMap = createWarehouseEnvMap(sharedRenderer);
+  }
+  rendererRefCount++;
+  return sharedRenderer;
+}
+
+function releaseSharedRenderer(): void {
+  rendererRefCount--;
+  // Don't dispose - keep it alive for reuse
+  // Only dispose if explicitly needed (e.g., on app unmount)
+}
 
 // Create a simple environment map that simulates warehouse lighting
 function createWarehouseEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
@@ -53,7 +90,7 @@ function createWarehouseEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
 
 const PartThumbnail: React.FC<PartThumbnailProps> = ({ mesh, size = 24, className = '', color }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const hasRenderedRef = useRef(false);
 
   // Determine the color to use - read from mesh material since color is applied before file is set
   const thumbnailColor = useMemo(() => {
@@ -94,62 +131,51 @@ const PartThumbnail: React.FC<PartThumbnailProps> = ({ mesh, size = 24, classNam
   }, [mesh, thumbnailColor]);
 
   useEffect(() => {
-    if (!canvasRef.current || !thumbnailMesh) return;
+    if (!canvasRef.current || !thumbnailMesh || hasRenderedRef.current) return;
 
     const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     
-    // Create renderer matching R3F Canvas defaults exactly
-    const renderer = new THREE.WebGLRenderer({ 
-      canvas, 
-      antialias: true,
-      alpha: false, // No alpha - solid background like 3D viewer
-      powerPreference: 'high-performance',
-    });
-    renderer.setSize(size, size);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0xffffff, 1); // White background like 3D viewer
-    // R3F defaults - matching exactly
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    rendererRef.current = renderer;
+    // Get shared renderer (uses singleton pattern)
+    const renderer = getSharedRenderer();
+    
+    // Resize shared renderer's canvas for this thumbnail
+    const renderSize = Math.max(size * window.devicePixelRatio, 64); // Min 64px for quality
+    renderer.setSize(renderSize, renderSize);
 
     // Create scene with white background
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xffffff);
     
-    // Create environment map to simulate <Environment preset="warehouse" />
-    const envMap = createWarehouseEnvMap(renderer);
-    scene.environment = envMap;
-    
-    // Apply environment map to the mesh material for reflections
-    if (thumbnailMesh.material instanceof THREE.MeshStandardMaterial) {
-      thumbnailMesh.material.envMap = envMap;
-      thumbnailMesh.material.envMapIntensity = 1.0;
-      thumbnailMesh.material.needsUpdate = true;
+    // Use shared environment map
+    if (sharedEnvMap) {
+      scene.environment = sharedEnvMap;
+      
+      // Apply environment map to the mesh material for reflections
+      if (thumbnailMesh.material instanceof THREE.MeshStandardMaterial) {
+        thumbnailMesh.material.envMap = sharedEnvMap;
+        thumbnailMesh.material.envMapIntensity = 1.0;
+        thumbnailMesh.material.needsUpdate = true;
+      }
     }
 
-    // Match lighting exactly from 3DScene.tsx (lines 1618-1623)
-    // <ambientLight intensity={0.6} />
+    // Match lighting exactly from 3DScene.tsx
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
 
-    // <directionalLight position={[10, 10, 5]} intensity={0.8} />
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(10, 10, 5);
     scene.add(directionalLight);
 
-    // <directionalLight position={[-10, -10, -5]} intensity={0.4} />
     const backLight = new THREE.DirectionalLight(0xffffff, 0.4);
     backLight.position.set(-10, -10, -5);
     scene.add(backLight);
 
-    // <pointLight position={[0, 10, 0]} intensity={0.3} />
     const topLight = new THREE.PointLight(0xffffff, 0.3);
     topLight.position.set(0, 10, 0);
     scene.add(topLight);
 
-    // <pointLight position={[0, -10, 0]} intensity={0.3} />
     const bottomLight = new THREE.PointLight(0xffffff, 0.3);
     bottomLight.position.set(0, -10, 0);
     scene.add(bottomLight);
@@ -165,7 +191,6 @@ const PartThumbnail: React.FC<PartThumbnailProps> = ({ mesh, size = 24, classNam
     scene.add(thumbnailMesh);
 
     // Create orthographic camera for consistent thumbnail
-    const aspect = 1;
     const frustumSize = maxDim * 1.2;
     const camera = new THREE.OrthographicCamera(
       -frustumSize / 2,
@@ -176,22 +201,29 @@ const PartThumbnail: React.FC<PartThumbnailProps> = ({ mesh, size = 24, classNam
       maxDim * 10
     );
 
-    // Position camera for isometric-like view (matching 3D viewer default)
+    // Position camera for isometric-like view
     const distance = maxDim * 2;
     camera.position.set(distance, distance * 0.8, distance);
     camera.lookAt(0, 0, 0);
 
-    // Render
+    // Render to shared offscreen canvas
     renderer.render(scene, camera);
 
-    // Cleanup
+    // Copy from shared renderer's canvas to visible canvas
+    canvas.width = size * window.devicePixelRatio;
+    canvas.height = size * window.devicePixelRatio;
+    ctx.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
+    
+    hasRenderedRef.current = true;
+
+    // Cleanup (but don't dispose shared renderer)
     return () => {
-      envMap.dispose();
-      renderer.dispose();
+      releaseSharedRenderer();
       thumbnailMesh.geometry.dispose();
       if (thumbnailMesh.material instanceof THREE.Material) {
         thumbnailMesh.material.dispose();
       }
+      hasRenderedRef.current = false;
     };
   }, [thumbnailMesh, size]);
 

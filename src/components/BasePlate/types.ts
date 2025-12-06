@@ -41,6 +41,14 @@ export interface BasePlateConfig {
 }
 
 /**
+ * Model geometry info for convex hull calculation
+ */
+export interface ModelGeometryInfo {
+  geometry: THREE.BufferGeometry;
+  matrixWorld: THREE.Matrix4;
+}
+
+/**
  * Props for the BasePlate component
  */
 export interface BasePlateProps {
@@ -53,10 +61,12 @@ export interface BasePlateProps {
   material?: BasePlateMaterial;
   onSelect?: () => void;
   selected?: boolean;
-  /** Model geometry for convex hull calculation */
+  /** Model geometry for convex hull calculation (single model, for backward compatibility) */
   modelGeometry?: THREE.BufferGeometry;
-  /** World transform of model for accurate hull */
+  /** World transform of model for accurate hull (single model) */
   modelMatrixWorld?: THREE.Matrix4;
+  /** Multiple model geometries for convex hull calculation */
+  modelGeometries?: ModelGeometryInfo[];
   /** Model world position for hull reference */
   modelOrigin?: THREE.Vector3;
   /** Extra margin on XZ for convex hull (mm) */

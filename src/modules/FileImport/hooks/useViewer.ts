@@ -232,8 +232,7 @@ export function useViewer(
     // Controls
     if (config.enableOrbitControls) {
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
+      controls.enableDamping = false;
       controls.minDistance = 1;
       controls.maxDistance = 100;
       controls.enablePan = true;

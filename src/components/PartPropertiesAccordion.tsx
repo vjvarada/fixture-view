@@ -8,7 +8,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { RotateCcw, Move, RotateCw, Box, Info, ToggleLeft, ToggleRight, X } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { RotateCcw, Move, RotateCw, Box, X } from 'lucide-react';
 import * as THREE from 'three';
 import { ProcessedFile } from '@/modules/FileImport/types';
 import SupportsAccordion from './Supports/SupportsAccordion';
@@ -20,11 +21,13 @@ interface PartTransform {
   rotation: { x: number; y: number; z: number }; // in degrees for UI
 }
 
-type PositioningMode = 'absolute' | 'incremental';
-
 interface PartPropertiesAccordionProps {
   hasModel: boolean;
   currentFile?: ProcessedFile | null;
+  importedParts?: ProcessedFile[];
+  selectedPartId?: string | null;
+  onPartSelect?: (partId: string | null) => void;
+  onRemovePart?: (partId: string) => void;
   onClearFile?: () => void;
   supports?: AnySupport[];
   selectedSupportId?: string | null;
@@ -32,42 +35,30 @@ interface PartPropertiesAccordionProps {
   onSupportUpdate?: (support: AnySupport) => void;
   onSupportDelete?: (id: string) => void;
   modelColor?: string;
+  modelColors?: Map<string, string>;
 }
 
 const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({ 
   hasModel, 
   currentFile,
+  importedParts = [],
+  selectedPartId,
+  onPartSelect,
+  onRemovePart,
   onClearFile,
   supports = [],
   selectedSupportId = null,
   onSupportSelect,
   onSupportUpdate,
   onSupportDelete,
-  modelColor
+  modelColor,
+  modelColors = new Map()
 }) => {
-  // Current transform (what's displayed in the UI)
-  const [transform, setTransform] = useState<PartTransform>({
-    position: { x: 0, y: 0, z: 0 },
-    rotation: { x: 0, y: 0, z: 0 },
-  });
-
-  // Positioning mode: absolute (wrt original) or incremental (wrt last position)
-  const [positioningMode, setPositioningMode] = useState<PositioningMode>('absolute');
-
-  // Original transform - captured when model is first loaded
-  const originalTransformRef = useRef<PartTransform>({
-    position: { x: 0, y: 0, z: 0 },
-    rotation: { x: 0, y: 0, z: 0 },
-  });
+  // Map of partId -> transform (stores transforms for ALL parts)
+  const [partTransforms, setPartTransforms] = useState<Map<string, PartTransform>>(new Map());
   
-  // Last incremental position - updated when switching to incremental mode or after restore
-  const lastIncrementalTransformRef = useRef<PartTransform>({
-    position: { x: 0, y: 0, z: 0 },
-    rotation: { x: 0, y: 0, z: 0 },
-  });
-  
-  // Flag to track if we've captured the original transform
-  const hasOriginalTransformRef = useRef(false);
+  // Track which parts we've initialized (to prevent re-requesting on every render)
+  const initializedPartsRef = useRef<Set<string>>(new Set());
 
   // Convert radians to degrees for display
   const radToDeg = (rad: number) => (rad * 180) / Math.PI;
@@ -78,26 +69,43 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
   // - CAD X = Three.js X (horizontal)
   // - CAD Y = Three.js Z (depth) 
   // - CAD Z = Three.js Y (vertical/up)
-  // So in UI we display: X, Y (internally Z), Z (internally Y)
   
+  // Get transform for a specific part (or return default)
+  const getPartTransform = useCallback((partId: string): PartTransform => {
+    return partTransforms.get(partId) || {
+      position: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    };
+  }, [partTransforms]);
+
   // Get CAD-style position for display (swap Y and Z)
-  const getCadPosition = () => ({
-    x: transform.position.x,
-    y: transform.position.z,  // CAD Y = Three.js Z
-    z: transform.position.y,  // CAD Z = Three.js Y
-  });
+  const getCadPosition = useCallback((partId: string) => {
+    const transform = getPartTransform(partId);
+    return {
+      x: transform.position.x,
+      y: transform.position.z,  // CAD Y = Three.js Z
+      z: transform.position.y,  // CAD Z = Three.js Y
+    };
+  }, [getPartTransform]);
   
   // Get CAD-style rotation for display (swap Y and Z)
-  const getCadRotation = () => ({
-    x: transform.rotation.x,
-    y: transform.rotation.z,  // CAD Y = Three.js Z
-    z: transform.rotation.y,  // CAD Z = Three.js Y
-  });
+  const getCadRotation = useCallback((partId: string) => {
+    const transform = getPartTransform(partId);
+    return {
+      x: transform.rotation.x,
+      y: transform.rotation.z,  // CAD Y = Three.js Z
+      z: transform.rotation.y,  // CAD Z = Three.js Y
+    };
+  }, [getPartTransform]);
 
-  // Listen for transform updates from the 3D scene
+  // Listen for transform updates from the 3D scene (handles ALL parts via partId)
   useEffect(() => {
     const handleTransformUpdate = (e: CustomEvent) => {
-      const { position, rotation } = e.detail;
+      const { position, rotation, partId } = e.detail;
+      
+      // If no partId in event, ignore (should not happen with proper emit)
+      if (!partId || !position) return;
+      
       const newTransform = {
         position: {
           x: parseFloat(position.x.toFixed(2)),
@@ -105,44 +113,66 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
           z: parseFloat(position.z.toFixed(2)),
         },
         rotation: {
-          x: parseFloat(radToDeg(rotation.x).toFixed(1)),
-          y: parseFloat(radToDeg(rotation.y).toFixed(1)),
-          z: parseFloat(radToDeg(rotation.z).toFixed(1)),
+          x: parseFloat(radToDeg(rotation?.x || 0).toFixed(1)),
+          y: parseFloat(radToDeg(rotation?.y || 0).toFixed(1)),
+          z: parseFloat(radToDeg(rotation?.z || 0).toFixed(1)),
         },
       };
       
-      // Capture original transform on first update
-      if (!hasOriginalTransformRef.current) {
-        originalTransformRef.current = { ...newTransform };
-        lastIncrementalTransformRef.current = { ...newTransform };
-        hasOriginalTransformRef.current = true;
-      }
-      
-      setTransform(newTransform);
+      // Store transform for this specific part
+      setPartTransforms(prev => {
+        const newMap = new Map(prev);
+        newMap.set(partId, newTransform);
+        return newMap;
+      });
     };
 
     window.addEventListener('model-transform-updated', handleTransformUpdate as EventListener);
-    
-    // Request initial transform state
-    window.dispatchEvent(new CustomEvent('request-model-transform'));
-
     return () => {
       window.removeEventListener('model-transform-updated', handleTransformUpdate as EventListener);
     };
   }, []);
 
-  // Reset original transform when file changes
+  // Request transforms for parts that we haven't initialized yet
   useEffect(() => {
-    if (currentFile) {
-      hasOriginalTransformRef.current = false;
-    }
-  }, [currentFile]);
+    // Build list of all parts (importedParts or fallback to currentFile)
+    const allParts = importedParts.length > 0 
+      ? importedParts 
+      : (currentFile ? [currentFile] : []);
+    
+    allParts.forEach(part => {
+      if (!initializedPartsRef.current.has(part.id)) {
+        initializedPartsRef.current.add(part.id);
+        
+        // Request transform after a delay to allow mesh to mount
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('request-model-transform', {
+            detail: { partId: part.id }
+          }));
+        }, 150);
+      }
+    });
+    
+    // Clean up parts that no longer exist
+    const currentPartIds = new Set(allParts.map(p => p.id));
+    initializedPartsRef.current.forEach(id => {
+      if (!currentPartIds.has(id)) {
+        initializedPartsRef.current.delete(id);
+        setPartTransforms(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(id);
+          return newMap;
+        });
+      }
+    });
+  }, [importedParts, currentFile]);
 
-  // Dispatch transform change to 3D scene
-  const dispatchTransformChange = useCallback((newTransform: PartTransform) => {
+  // Dispatch transform change to 3D scene for a specific part
+  const dispatchTransformChange = useCallback((partId: string, newTransform: PartTransform) => {
     window.dispatchEvent(
       new CustomEvent('set-model-transform', {
         detail: {
+          partId,
           position: new THREE.Vector3(
             newTransform.position.x,
             newTransform.position.y,
@@ -158,422 +188,267 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
     );
   }, []);
 
-  // Handle position change - cadAxis is what UI shows, map to Three.js axis
-  const handlePositionChange = (cadAxis: 'x' | 'y' | 'z', value: string) => {
+  // Handle position change for a specific part - cadAxis is what UI shows, map to Three.js axis
+  const handlePositionChange = useCallback((partId: string, cadAxis: 'x' | 'y' | 'z', value: string) => {
     const numValue = parseFloat(value) || 0;
     // Map CAD axis to Three.js axis: X->X, Y->Z, Z->Y
     const threeAxis = cadAxis === 'y' ? 'z' : cadAxis === 'z' ? 'y' : 'x';
+    const currentTransform = getPartTransform(partId);
     const newTransform = {
-      ...transform,
-      position: { ...transform.position, [threeAxis]: numValue },
+      ...currentTransform,
+      position: { ...currentTransform.position, [threeAxis]: numValue },
     };
-    setTransform(newTransform);
-    dispatchTransformChange(newTransform);
-  };
+    setPartTransforms(prev => new Map(prev).set(partId, newTransform));
+    dispatchTransformChange(partId, newTransform);
+  }, [getPartTransform, dispatchTransformChange]);
 
-  // Handle rotation change - cadAxis is what UI shows, map to Three.js axis
-  const handleRotationChange = (cadAxis: 'x' | 'y' | 'z', value: string) => {
+  // Handle rotation change for a specific part - cadAxis is what UI shows, map to Three.js axis
+  const handleRotationChange = useCallback((partId: string, cadAxis: 'x' | 'y' | 'z', value: string) => {
     const numValue = parseFloat(value) || 0;
     // Map CAD axis to Three.js axis: X->X, Y->Z, Z->Y
     const threeAxis = cadAxis === 'y' ? 'z' : cadAxis === 'z' ? 'y' : 'x';
+    const currentTransform = getPartTransform(partId);
     const newTransform = {
-      ...transform,
-      rotation: { ...transform.rotation, [threeAxis]: numValue },
+      ...currentTransform,
+      rotation: { ...currentTransform.rotation, [threeAxis]: numValue },
     };
-    setTransform(newTransform);
-    dispatchTransformChange(newTransform);
-  };
+    setPartTransforms(prev => new Map(prev).set(partId, newTransform));
+    dispatchTransformChange(partId, newTransform);
+  }, [getPartTransform, dispatchTransformChange]);
 
-  // Reset position to origin (0, 0, 0)
-  const handleResetPosition = () => {
-    const resetPosition = { x: 0, y: 0, z: 0 };
+  // Reset position to origin (0, 0, 0) for a specific part
+  const handleResetPosition = useCallback((partId: string) => {
+    const currentTransform = getPartTransform(partId);
     const newTransform = {
-      ...transform,
-      position: resetPosition,
+      ...currentTransform,
+      position: { x: 0, y: 0, z: 0 },
     };
-    setTransform(newTransform);
-    dispatchTransformChange(newTransform);
-  };
+    setPartTransforms(prev => new Map(prev).set(partId, newTransform));
+    dispatchTransformChange(partId, newTransform);
+  }, [getPartTransform, dispatchTransformChange]);
 
-  // Reset rotation to zero (0, 0, 0)
-  const handleResetRotation = () => {
-    const resetRotation = { x: 0, y: 0, z: 0 };
+  // Reset rotation to zero (0, 0, 0) for a specific part
+  const handleResetRotation = useCallback((partId: string) => {
+    const currentTransform = getPartTransform(partId);
     const newTransform = {
-      ...transform,
-      rotation: resetRotation,
+      ...currentTransform,
+      rotation: { x: 0, y: 0, z: 0 },
     };
-    setTransform(newTransform);
-    dispatchTransformChange(newTransform);
-  };
-
-  // Handle mode toggle
-  const handleModeToggle = () => {
-    if (positioningMode === 'absolute') {
-      // Switching to incremental: save current position as the new baseline
-      lastIncrementalTransformRef.current = { ...transform };
-      setPositioningMode('incremental');
-    } else {
-      // Switching to absolute
-      setPositioningMode('absolute');
-    }
-  };
-
-  // Restore based on mode - dispatches restore event to 3D scene
-  const handleRestore = () => {
-    let targetTransform: PartTransform;
-    
-    if (positioningMode === 'absolute') {
-      // Restore to original transform (0,0,0 since that's the initial state)
-      targetTransform = originalTransformRef.current;
-    } else {
-      // Restore to last incremental position
-      targetTransform = lastIncrementalTransformRef.current;
-    }
-    
-    // Dispatch restore event with THREE.js types
-    window.dispatchEvent(
-      new CustomEvent('restore-model-transform', {
-        detail: {
-          position: new THREE.Vector3(
-            targetTransform.position.x,
-            targetTransform.position.y,
-            targetTransform.position.z
-          ),
-          rotation: new THREE.Euler(
-            degToRad(targetTransform.rotation.x),
-            degToRad(targetTransform.rotation.y),
-            degToRad(targetTransform.rotation.z)
-          ),
-        },
-      })
-    );
-  };
-
-  // Get display values based on mode
-  const getDisplayPosition = () => {
-    const cadPos = getCadPosition();
-    if (positioningMode === 'incremental') {
-      // Show delta from last incremental position
-      // lastIncrementalTransformRef stores in Three.js coordinates, we need to convert to CAD
-      const lastPos = lastIncrementalTransformRef.current.position;
-      const lastCadPos = {
-        x: lastPos.x,
-        y: lastPos.z,  // CAD Y = Three.js Z
-        z: lastPos.y,  // CAD Z = Three.js Y
-      };
-      return {
-        x: parseFloat((cadPos.x - lastCadPos.x).toFixed(2)),
-        y: parseFloat((cadPos.y - lastCadPos.y).toFixed(2)),
-        z: parseFloat((cadPos.z - lastCadPos.z).toFixed(2)),
-      };
-    }
-    return cadPos;
-  };
-
-  const getDisplayRotation = () => {
-    const cadRot = getCadRotation();
-    if (positioningMode === 'incremental') {
-      // Show delta from last incremental rotation
-      const lastRot = lastIncrementalTransformRef.current.rotation;
-      const lastCadRot = {
-        x: lastRot.x,
-        y: lastRot.z,  // CAD Y = Three.js Z
-        z: lastRot.y,  // CAD Z = Three.js Y
-      };
-      return {
-        x: parseFloat((cadRot.x - lastCadRot.x).toFixed(1)),
-        y: parseFloat((cadRot.y - lastCadRot.y).toFixed(1)),
-        z: parseFloat((cadRot.z - lastCadRot.z).toFixed(1)),
-      };
-    }
-    return cadRot;
-  };
-
-  // Handle position change with mode awareness
-  const handlePositionChangeWithMode = (cadAxis: 'x' | 'y' | 'z', value: string) => {
-    const numValue = parseFloat(value) || 0;
-    
-    if (positioningMode === 'incremental') {
-      // Value is delta from last position, calculate absolute
-      const lastPos = lastIncrementalTransformRef.current.position;
-      // Convert last position to CAD coordinates first
-      const lastCadPos = {
-        x: lastPos.x,
-        y: lastPos.z,  // CAD Y = Three.js Z
-        z: lastPos.y,  // CAD Z = Three.js Y
-      };
-      
-      // Calculate new CAD position
-      const newCadPos = { ...getCadPosition() };
-      newCadPos[cadAxis] = lastCadPos[cadAxis] + numValue;
-      
-      // Convert back to Three.js coordinates
-      const newTransform = {
-        ...transform,
-        position: {
-          x: newCadPos.x,
-          y: newCadPos.z,  // Three.js Y = CAD Z
-          z: newCadPos.y,  // Three.js Z = CAD Y
-        },
-      };
-      setTransform(newTransform);
-      dispatchTransformChange(newTransform);
-    } else {
-      // Absolute mode - use existing handler
-      handlePositionChange(cadAxis, value);
-    }
-  };
-
-  // Handle rotation change with mode awareness
-  const handleRotationChangeWithMode = (cadAxis: 'x' | 'y' | 'z', value: string) => {
-    const numValue = parseFloat(value) || 0;
-    
-    if (positioningMode === 'incremental') {
-      // Value is delta from last rotation, calculate absolute
-      const lastRot = lastIncrementalTransformRef.current.rotation;
-      // Convert last rotation to CAD coordinates first
-      const lastCadRot = {
-        x: lastRot.x,
-        y: lastRot.z,  // CAD Y = Three.js Z
-        z: lastRot.y,  // CAD Z = Three.js Y
-      };
-      
-      // Calculate new CAD rotation
-      const newCadRot = { ...getCadRotation() };
-      newCadRot[cadAxis] = lastCadRot[cadAxis] + numValue;
-      
-      // Convert back to Three.js coordinates
-      const newTransform = {
-        ...transform,
-        rotation: {
-          x: newCadRot.x,
-          y: newCadRot.z,  // Three.js Y = CAD Z
-          z: newCadRot.y,  // Three.js Z = CAD Y
-        },
-      };
-      setTransform(newTransform);
-      dispatchTransformChange(newTransform);
-    } else {
-      // Absolute mode - use existing handler
-      handleRotationChange(cadAxis, value);
-    }
-  };
+    setPartTransforms(prev => new Map(prev).set(partId, newTransform));
+    dispatchTransformChange(partId, newTransform);
+  }, [getPartTransform, dispatchTransformChange]);
 
   if (!hasModel) {
     return null;
   }
 
-  // Helper function to format file size
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  };
-
-  // Helper function to format dimensions
-  const formatDimension = (value: number) => value.toFixed(2);
+  // Get all parts to display (use importedParts if available, otherwise currentFile)
+  const allParts = importedParts.length > 0 ? importedParts : (currentFile ? [currentFile] : []);
 
   return (
     <Accordion type="single" collapsible defaultValue="parts" className="w-full">
       {/* Parts Accordion */}
-      {currentFile && (
+      {allParts.length > 0 && (
         <AccordionItem value="parts" className="border-border/50">
           <AccordionTrigger className="py-2 text-xs font-tech hover:no-underline">
             <div className="flex items-center gap-2">
               <Box className="w-3.5 h-3.5 text-primary" />
               Parts
+              <Badge variant="secondary" className="ml-auto font-tech text-[8px] h-4">
+                {allParts.length}
+              </Badge>
             </div>
           </AccordionTrigger>
           <AccordionContent className="pt-2">
             {/* Nested Accordion for each part */}
-            <Accordion type="single" collapsible defaultValue={`part-${currentFile.metadata.name}`} className="space-y-1">
-              <AccordionItem 
-                value={`part-${currentFile.metadata.name}`}
-                className="border rounded-md border-border/30"
-              >
-                <AccordionTrigger className="py-1.5 px-2 text-xs font-tech hover:no-underline">
-                  <div className="flex items-center gap-2 flex-1">
-                    <PartThumbnail 
-                      mesh={currentFile.mesh} 
-                      size={28} 
-                      className="flex-shrink-0 border border-border/30"
-                      color={modelColor}
-                    />
-                    <div className="flex-1 min-w-0 text-left">
-                      <p className="font-tech font-medium text-[10px] truncate" title={currentFile.metadata.name}>
-                        {currentFile.metadata.name}
-                      </p>
-                      <p className="text-[8px] text-muted-foreground">
-                        {currentFile.metadata.triangles?.toLocaleString()} tri • {currentFile.metadata.units}
-                      </p>
-                    </div>
-                    {onClearFile && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onClearFile();
-                        }}
-                        className="w-6 h-6 p-0 text-muted-foreground hover:text-destructive"
-                        title="Remove part"
-                      >
-                        <X className="w-3 h-3" />
-                      </Button>
-                    )}
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="px-2 pb-2">
-                  {/* Part Info */}
-                  <div className="text-[8px] text-muted-foreground font-tech mb-3 p-2 rounded bg-muted/30">
-                    <span>Size: </span>
-                    <span className="font-mono">
-                      {currentFile.metadata.dimensions.x.toFixed(1)} ×{' '}
-                      {currentFile.metadata.dimensions.z.toFixed(1)} ×{' '}
-                      {currentFile.metadata.dimensions.y.toFixed(1)} {currentFile.metadata.units}
-                    </span>
-                  </div>
+            <Accordion 
+              type="single" 
+              collapsible 
+              value={selectedPartId ? `part-${selectedPartId}` : ""}
+              onValueChange={(val) => {
+                const partId = val?.replace('part-', '') || null;
+                onPartSelect?.(partId);
+              }}
+              className="space-y-1"
+            >
+              {allParts.map((part) => {
+                const partColor = modelColors.get(part.metadata.name) || modelColor;
+                const cadPosition = getCadPosition(part.id);
+                const cadRotation = getCadRotation(part.id);
+                
+                return (
+                  <AccordionItem 
+                    key={part.id}
+                    value={`part-${part.id}`}
+                    className="border rounded-md border-border/30"
+                  >
+                    <AccordionTrigger className="py-1.5 px-2 text-xs font-tech hover:no-underline">
+                      <div className="flex items-center gap-2 flex-1">
+                        <PartThumbnail 
+                          mesh={part.mesh} 
+                          size={28} 
+                          className="flex-shrink-0 border border-border/30"
+                          color={partColor}
+                        />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="font-tech font-medium text-[10px] truncate" title={part.metadata.name}>
+                            {part.metadata.name}
+                          </p>
+                          <p className="text-[8px] text-muted-foreground">
+                            {part.metadata.triangles?.toLocaleString()} tri • {part.metadata.units}
+                          </p>
+                        </div>
+                        {(onRemovePart || onClearFile) && (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              if (onRemovePart) {
+                                onRemovePart(part.id);
+                              } else if (onClearFile) {
+                                onClearFile();
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                if (onRemovePart) {
+                                  onRemovePart(part.id);
+                                } else if (onClearFile) {
+                                  onClearFile();
+                                }
+                              }
+                            }}
+                            className="w-6 h-6 p-0 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                            title="Remove part"
+                          >
+                            <X className="w-3 h-3" />
+                          </div>
+                        )}
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="px-2 pb-2">
+                      {/* Part Info */}
+                      <div className="text-[8px] text-muted-foreground font-tech mb-3 p-2 rounded bg-muted/30">
+                        <span>Size: </span>
+                        <span className="font-mono">
+                          {part.metadata.dimensions.x.toFixed(1)} ×{' '}
+                          {part.metadata.dimensions.z.toFixed(1)} ×{' '}
+                          {part.metadata.dimensions.y.toFixed(1)} {part.metadata.units}
+                        </span>
+                      </div>
 
-                  {/* Position & Rotation Controls */}
-                  <div className="space-y-3">
-                    {/* Mode Toggle */}
-                    <div className="flex items-center justify-between border-b border-border/30 pb-2">
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleModeToggle}
-                          className="h-5 px-1.5 text-[8px] gap-1"
-                          title={`Switch to ${positioningMode === 'absolute' ? 'incremental' : 'absolute'} mode`}
-                        >
-                          {positioningMode === 'absolute' ? (
-                            <ToggleLeft className="w-3.5 h-3.5" />
-                          ) : (
-                            <ToggleRight className="w-3.5 h-3.5 text-primary" />
-                          )}
-                          <span className={positioningMode === 'incremental' ? 'text-primary font-medium' : ''}>
-                            {positioningMode === 'absolute' ? 'Absolute' : 'Incremental'}
-                          </span>
-                        </Button>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={handleRestore}
-                        className="h-5 px-1.5 text-[8px] gap-1"
-                        title={positioningMode === 'absolute' 
-                          ? 'Restore to original position' 
-                          : 'Restore to last incremental position'}
-                      >
-                        <RotateCcw className="w-2.5 h-2.5" />
-                        Restore
-                      </Button>
-                    </div>
+                      {/* Position & Rotation Controls */}
+                      <div className="space-y-3">
+                        {/* Position Controls */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
+                              <Move className="w-2.5 h-2.5" />
+                              Position (mm)
+                            </Label>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleResetPosition(part.id)}
+                              className="h-5 px-1.5 text-[8px]"
+                              title="Reset position to zero"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                            </Button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 pl-1">
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-red-500 font-mono">X</Label>
+                              <Input
+                                type="number"
+                                value={cadPosition.x.toFixed(2)}
+                                onChange={(e) => handlePositionChange(part.id, 'x', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="0.1"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-green-500 font-mono">Y</Label>
+                              <Input
+                                type="number"
+                                value={cadPosition.y.toFixed(2)}
+                                onChange={(e) => handlePositionChange(part.id, 'y', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="0.1"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
+                              <Input
+                                type="number"
+                                value={cadPosition.z.toFixed(2)}
+                                onChange={(e) => handlePositionChange(part.id, 'z', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="0.1"
+                              />
+                            </div>
+                          </div>
+                        </div>
 
-                    {/* Position Controls */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
-                          <Move className="w-2.5 h-2.5" />
-                          Position (mm){positioningMode === 'incremental' && ' Δ'}
-                        </Label>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleResetPosition}
-                          className="h-5 px-1.5 text-[8px]"
-                          title="Reset position to zero"
-                        >
-                          <RotateCcw className="w-2.5 h-2.5" />
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 pl-1">
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-red-500 font-mono">X</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayPosition().x}
-                            onChange={(e) => handlePositionChangeWithMode('x', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="0.1"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-green-500 font-mono">Y</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayPosition().y}
-                            onChange={(e) => handlePositionChangeWithMode('y', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="0.1"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayPosition().z}
-                            onChange={(e) => handlePositionChangeWithMode('z', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="0.1"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Rotation Controls */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
-                          <RotateCw className="w-2.5 h-2.5" />
-                          Rotation (°){positioningMode === 'incremental' && ' Δ'}
-                        </Label>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleResetRotation}
-                          className="h-5 px-1.5 text-[8px]"
-                          title="Reset rotation to zero"
-                        >
-                          <RotateCcw className="w-2.5 h-2.5" />
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 pl-1">
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-red-500 font-mono">X</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayRotation().x}
-                            onChange={(e) => handleRotationChangeWithMode('x', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="1"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-green-500 font-mono">Y</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayRotation().y}
-                            onChange={(e) => handleRotationChangeWithMode('y', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="1"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
-                          <Input
-                            type="number"
-                            value={getDisplayRotation().z}
-                            onChange={(e) => handleRotationChangeWithMode('z', e.target.value)}
-                            className="h-7 !text-[10px] font-mono"
-                            step="1"
-                          />
+                        {/* Rotation Controls */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
+                              <RotateCw className="w-2.5 h-2.5" />
+                              Rotation (°)
+                            </Label>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleResetRotation(part.id)}
+                              className="h-5 px-1.5 text-[8px]"
+                              title="Reset rotation to zero"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                            </Button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 pl-1">
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-red-500 font-mono">X</Label>
+                              <Input
+                                type="number"
+                                value={cadRotation.x.toFixed(1)}
+                                onChange={(e) => handleRotationChange(part.id, 'x', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="1"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-green-500 font-mono">Y</Label>
+                              <Input
+                                type="number"
+                                value={cadRotation.y.toFixed(1)}
+                                onChange={(e) => handleRotationChange(part.id, 'y', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="1"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
+                              <Input
+                                type="number"
+                                value={cadRotation.z.toFixed(1)}
+                                onChange={(e) => handleRotationChange(part.id, 'z', e.target.value)}
+                                className="h-7 !text-[10px] font-mono"
+                                step="1"
+                              />
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
             </Accordion>
           </AccordionContent>
         </AccordionItem>

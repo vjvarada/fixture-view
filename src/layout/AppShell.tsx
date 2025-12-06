@@ -141,7 +141,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [completedSteps, setCompletedSteps] = useState<WorkflowStep[]>([]);
 
     // File Processing State (moved from FileImport)
-    const [internalFile, setInternalFile] = useState<ProcessedFile | null>(null);
+    const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
+    const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [fileError, setFileError] = useState<string | null>(null);
     const [isUnitsDialogOpen, setIsUnitsDialogOpen] = useState(false);
@@ -154,8 +155,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const pendingFileRef = useRef<File | null>(null);
     const { processFile, error: fileProcessingError, clearError } = useFileProcessing();
 
-    // Determine the actual file to use (prop or internal)
-    const actualFile = currentFile || internalFile;
+    // Determine the actual file to use (first imported part for backward compatibility)
+    const actualFile = currentFile || (importedParts.length > 0 ? importedParts[0] : null);
     const actualProcessing = externalProcessing || isProcessing;
 
     // Support placement state
@@ -227,12 +228,16 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       }
     }, [processFile]);
 
-    // Finalize the mesh import
+    // Finalize the mesh import - add part to array
     const finalizeMeshImport = useCallback((processedFile: ProcessedFile) => {
-      setInternalFile(processedFile);
+      // Add to imported parts array
+      setImportedParts(prev => [...prev, processedFile]);
       
-      // Dispatch event for 3D viewer to pick up
-      window.dispatchEvent(new CustomEvent('file-imported', { detail: processedFile }));
+      // Select the newly imported part
+      setSelectedPartId(processedFile.id);
+      
+      // Dispatch event for 3D viewer to pick up (with all parts)
+      window.dispatchEvent(new CustomEvent('part-imported', { detail: processedFile }));
 
       setIsProcessing(false);
       setIsOptimizationDialogOpen(false);
@@ -352,7 +357,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
     // Clear file
     const handleClearFile = useCallback(() => {
-      setInternalFile(null);
+      setImportedParts([]);
+      setSelectedPartId(null);
       setFileError(null);
       clearError();
       setCompletedSteps(prev => prev.filter(s => s !== 'import'));
@@ -389,7 +395,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       setCavityBaseMesh(null);
       setCavityTools([]);
       setIsCavityOpen(false);
-      setInternalFile(null);
+      setImportedParts([]);
+      setSelectedPartId(null);
       setFileError(null);
       setActiveStep('import');
       setCompletedSteps([]);
@@ -841,9 +848,18 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                   {activeStep === 'import' && (
                     <ImportStepContent
                       currentFile={actualFile}
+                      parts={importedParts}
                       isProcessing={actualProcessing}
                       error={fileError}
                       onFileSelected={handleFileSelected}
+                      onRemovePart={(partId) => {
+                        setImportedParts(prev => prev.filter(p => p.id !== partId));
+                        if (selectedPartId === partId) {
+                          setSelectedPartId(null);
+                        }
+                        // Dispatch event to remove from 3D scene
+                        window.dispatchEvent(new CustomEvent('part-removed', { detail: partId }));
+                      }}
                     />
                   )}
                   {activeStep === 'baseplates' && (
@@ -1014,15 +1030,30 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               <div className="p-4 flex-1 overflow-auto">
                 {/* Part Properties Accordion - File Details, Transform controls, and Supports */}
                 <PartPropertiesAccordion 
-                  hasModel={!!actualFile} 
+                  hasModel={importedParts.length > 0} 
                   currentFile={actualFile}
+                  importedParts={importedParts}
+                  selectedPartId={selectedPartId}
+                  onPartSelect={(partId) => {
+                    setSelectedPartId(partId);
+                    // Also dispatch event for 3D viewer
+                    window.dispatchEvent(new CustomEvent('part-selected', { detail: partId }));
+                  }}
                   onClearFile={handleClearFile}
+                  onRemovePart={(partId) => {
+                    setImportedParts(prev => prev.filter(p => p.id !== partId));
+                    if (selectedPartId === partId) {
+                      setSelectedPartId(null);
+                    }
+                    window.dispatchEvent(new CustomEvent('part-removed', { detail: partId }));
+                  }}
                   supports={supports}
                   selectedSupportId={selectedSupportId}
                   onSupportSelect={setSelectedSupportId}
                   onSupportUpdate={handleSupportUpdate}
                   onSupportDelete={handleSupportDelete}
                   modelColor={actualFile ? modelColors.get(actualFile.metadata.name) : undefined}
+                  modelColors={modelColors}
                 />
 
                 {/* Subtract Workpieces panel anchored here */}

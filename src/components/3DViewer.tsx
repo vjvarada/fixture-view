@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { ProcessedFile } from "@/modules/FileImport/types";
 import ThreeDScene from './3DScene';
-import * as THREE from 'three';
 
 interface ThreeDViewerProps {
   currentFile: ProcessedFile | null;
@@ -17,38 +16,62 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
   onComponentPlaced,
   onModelColorAssigned,
 }) => {
-  const [internalFile, setInternalFile] = useState<ProcessedFile | null>(null);
-  const [modelTransform, setModelTransform] = useState<{
-    position: THREE.Vector3;
-    rotation: THREE.Euler;
-    scale: THREE.Vector3;
-  }>({
-    position: new THREE.Vector3(0, 0, 0),
-    rotation: new THREE.Euler(0, 0, 0),
-    scale: new THREE.Vector3(1, 1, 1)
-  });
+  // Store multiple imported parts
+  const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
 
-  // Listen for file-imported events from the context panel
+  // Listen for part-imported events from the context panel (new multi-part system)
   useEffect(() => {
+    const handlePartImported = (e: CustomEvent<ProcessedFile>) => {
+      setImportedParts(prev => [...prev, e.detail]);
+      setSelectedPartId(e.detail.id);
+    };
+
+    // Legacy single-file import support
     const handleFileImported = (e: CustomEvent<ProcessedFile>) => {
-      setInternalFile(e.detail);
+      // Only use this if the file doesn't have an ID (legacy)
+      if (!e.detail.id) {
+        const legacyPart = {
+          ...e.detail,
+          id: `legacy-${Date.now()}`
+        };
+        setImportedParts([legacyPart]);
+        setSelectedPartId(legacyPart.id);
+      }
     };
 
     const handleSessionReset = () => {
-      setInternalFile(null);
+      setImportedParts([]);
+      setSelectedPartId(null);
     };
 
+    const handlePartSelected = (e: CustomEvent<string>) => {
+      setSelectedPartId(e.detail);
+    };
+
+    const handlePartRemoved = (e: CustomEvent<string>) => {
+      const removedPartId = e.detail;
+      setImportedParts(prev => prev.filter(p => p.id !== removedPartId));
+      setSelectedPartId(prev => prev === removedPartId ? null : prev);
+    };
+
+    window.addEventListener('part-imported', handlePartImported as EventListener);
     window.addEventListener('file-imported', handleFileImported as EventListener);
     window.addEventListener('session-reset', handleSessionReset);
+    window.addEventListener('part-selected', handlePartSelected as EventListener);
+    window.addEventListener('part-removed', handlePartRemoved as EventListener);
 
     return () => {
+      window.removeEventListener('part-imported', handlePartImported as EventListener);
       window.removeEventListener('file-imported', handleFileImported as EventListener);
       window.removeEventListener('session-reset', handleSessionReset);
+      window.removeEventListener('part-selected', handlePartSelected as EventListener);
+      window.removeEventListener('part-removed', handlePartRemoved as EventListener);
     };
   }, []);
 
-  // Use prop file if provided, otherwise use internal file
-  const displayFile = currentFile || internalFile;
+  // Always use importedParts from event-based state for multi-part support
+  const displayParts = importedParts;
 
   return (
     <div className="w-full h-full relative" onContextMenu={(e) => e.preventDefault()}>
@@ -69,9 +92,9 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
         onContextMenu={(e) => e.preventDefault()}
       >
         <ThreeDScene
-          currentFile={displayFile}
-          modelTransform={modelTransform}
-          setModelTransform={setModelTransform}
+          importedParts={displayParts}
+          selectedPartId={selectedPartId}
+          onPartSelected={setSelectedPartId}
           onModelColorAssigned={onModelColorAssigned}
         />
       </Canvas>
@@ -89,7 +112,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
       )}
 
       {/* Empty state */}
-      {!displayFile && !isProcessing && (
+      {displayParts.length === 0 && !isProcessing && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center tech-glass p-6 rounded-lg border border-border/50">
             <h3 className="font-tech font-semibold text-lg mb-2">3D Viewer</h3>

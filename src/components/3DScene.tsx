@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useThree, ThreeEvent } from '@react-three/fiber';
 import { Environment, OrbitControls as DreiOrbitControls, Html } from '@react-three/drei';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import BasePlate from "./BasePlate";
@@ -16,9 +16,9 @@ import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices } from '@/lib/offset/offsetMeshProcessor';
 
 interface ThreeDSceneProps {
-  currentFile: ProcessedFile | null;
-  modelTransform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 };
-  setModelTransform: (transform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }) => void;
+  importedParts: ProcessedFile[];
+  selectedPartId: string | null;
+  onPartSelected: (partId: string | null) => void;
   onModelColorAssigned?: (modelId: string, color: string) => void;
 }
 
@@ -118,6 +118,9 @@ const computeDominantUpQuaternion = (geometry: THREE.BufferGeometry) => {
   const quaternion = new THREE.Quaternion().setFromUnitVectors(dominantNormal, up);
   return quaternion;
 };
+
+// Reusable temp vector for world position calculations (module-level)
+const tempVec = new THREE.Vector3();
 
 // Utility function for model colors
 const modelColorPalette = [
@@ -324,7 +327,17 @@ const getFootprintMetrics = (bounds: BoundsSummary | null) => {
 };
 
 // Component for the main 3D model
-function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBoundsChange, disableDoubleClick = false }: {
+const ModelMesh = React.memo(function ModelMesh({ 
+  file, 
+  meshRef, 
+  dimensions, 
+  colorsMap, 
+  setColorsMap, 
+  onBoundsChange, 
+  disableDoubleClick = false, 
+  onDoubleClick, 
+  initialOffset 
+}: {
   file: ProcessedFile;
   meshRef?: React.RefObject<THREE.Mesh>;
   dimensions?: { x?: number; y?: number; z?: number };
@@ -332,68 +345,88 @@ function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBound
   setColorsMap?: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   onBoundsChange?: (bounds: BoundsSummary) => void;
   disableDoubleClick?: boolean;
+  onDoubleClick?: () => void;
+  initialOffset?: THREE.Vector3;
 }) {
   const internalRef = useRef<THREE.Mesh>(null);
   const actualRef = meshRef || internalRef;
   const hasNormalizedRef = useRef(false);
+  const lastClickTimeRef = useRef<number>(0);
+  
+  const DOUBLE_CLICK_DELAY = 300;
+
   const unitScale = useMemo(() => {
     switch (file.metadata.units) {
-      case 'cm':
-        return 10;
-      case 'inch':
-        return 25.4;
-      default:
-        return 1;
+      case 'cm': return 10;
+      case 'inch': return 25.4;
+      default: return 1;
     }
   }, [file.metadata.units]);
 
-  // Get model color
   const modelId = file.metadata.name;
   const modelColor = getModelColor(modelId, colorsMap || new Map());
 
-  // Assign color to model when it loads
-  React.useEffect(() => {
+  // Assign color on mount
+  useEffect(() => {
     if (setColorsMap && colorsMap && !colorsMap.has(modelId)) {
-      const newColor = getModelColor(modelId, colorsMap);
-      setColorsMap(prev => new Map(prev.set(modelId, newColor)));
+      setColorsMap(prev => new Map(prev.set(modelId, getModelColor(modelId, colorsMap))));
     }
   }, [modelId, setColorsMap, colorsMap]);
 
-  // Update material color when model loads
-  React.useEffect(() => {
-    if (actualRef.current && actualRef.current.material && modelColor) {
-      // Convert hex color to RGB values for Three.js
-      const hex = modelColor.replace('#', '');
-      const r = parseInt(hex.substr(0, 2), 16) / 255;
-      const g = parseInt(hex.substr(2, 2), 16) / 255;
-      const b = parseInt(hex.substr(4, 2), 16) / 255;
-
-      if (actualRef.current.material instanceof THREE.MeshStandardMaterial) {
-        actualRef.current.material.color.setRGB(r, g, b);
-        actualRef.current.material.needsUpdate = true;
-      } else if (actualRef.current.material instanceof THREE.MeshBasicMaterial) {
-        actualRef.current.material.color.setRGB(r, g, b);
-        actualRef.current.material.needsUpdate = true;
-      }
-    }
-  }, [modelColor]);
-
-  // Normalize model so it rests on the XY plane and report bounds to parent
-  React.useEffect(() => {
+  // Apply material color
+  useEffect(() => {
     const mesh = actualRef.current;
-    if (!mesh) {
-      return;
+    if (!mesh?.material || !modelColor) return;
+    
+    const hex = modelColor.replace('#', '');
+    const r = parseInt(hex.substr(0, 2), 16) / 255;
+    const g = parseInt(hex.substr(2, 2), 16) / 255;
+    const b = parseInt(hex.substr(4, 2), 16) / 255;
+
+    const material = mesh.material as THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
+    if ('color' in material) {
+      material.color.setRGB(r, g, b);
+      material.needsUpdate = true;
     }
+  }, [modelColor, actualRef]);
+
+  // Emit transform on mount and whenever mesh position might have changed from setup
+  useEffect(() => {
+    const mesh = actualRef.current;
+    if (!mesh) return;
+    
+    // Delay slightly to ensure position is finalized after any setup
+    const timeoutId = setTimeout(() => {
+      if (actualRef.current) {
+        window.dispatchEvent(new CustomEvent('model-transform-updated', {
+          detail: {
+            position: actualRef.current.position.clone(),
+            rotation: actualRef.current.rotation.clone(),
+            partId: file.id,
+          },
+        }));
+      }
+    }, 50);
+    
+    return () => clearTimeout(timeoutId);
+  }, [file.id, actualRef]);
+
+  // Normalize geometry and set initial position
+  useEffect(() => {
+    const mesh = actualRef.current;
+    if (!mesh) return;
 
     const geometry = mesh.geometry as THREE.BufferGeometry;
 
     if (!hasNormalizedRef.current) {
+      // Center geometry and orient to dominant up
       geometry.computeBoundingBox();
       const geoBox = geometry.boundingBox;
+      
       if (geoBox) {
         const geoCenter = geoBox.getCenter(new THREE.Vector3());
-        const bottom = geoBox.min.y;
-        geometry.translate(-geoCenter.x, -bottom, -geoCenter.z);
+        geometry.translate(-geoCenter.x, -geoBox.min.y, -geoCenter.z);
+        
         const dominantQuaternion = computeDominantUpQuaternion(geometry);
         if (dominantQuaternion) {
           geometry.applyQuaternion(dominantQuaternion);
@@ -401,114 +434,78 @@ function ModelMesh({ file, meshRef, dimensions, colorsMap, setColorsMap, onBound
           const orientedBox = geometry.boundingBox;
           if (orientedBox) {
             const orientedCenter = orientedBox.getCenter(new THREE.Vector3());
-            const orientedBottom = orientedBox.min.y;
-            geometry.translate(-orientedCenter.x, -orientedBottom, -orientedCenter.z);
+            geometry.translate(-orientedCenter.x, -orientedBox.min.y, -orientedCenter.z);
           }
         }
+        
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
-        if (geometry.attributes.position) {
-          geometry.attributes.position.needsUpdate = true;
-        }
+        geometry.attributes.position?.needsUpdate;
       }
 
-      mesh.position.set(0, 0, 0);
+      // Set initial position from offset
+      mesh.position.set(initialOffset?.x ?? 0, 0, initialOffset?.z ?? 0);
       mesh.rotation.set(0, 0, 0);
       mesh.scale.setScalar(unitScale);
-      mesh.updateMatrixWorld(true, true);
+      mesh.updateMatrixWorld(true);
       mesh.userData.normalized = true;
       hasNormalizedRef.current = true;
     }
 
-    if (typeof (geometry as any).disposeBoundsTree === 'function') {
-      (geometry as any).disposeBoundsTree();
-    }
-    if (typeof (geometry as any).computeBoundsTree === 'function') {
-      (geometry as any).computeBoundsTree();
-    }
+    // BVH acceleration
+    const geo = geometry as any;
+    geo.disposeBoundsTree?.();
+    geo.computeBoundsTree?.();
 
+    // Handle dimension overrides
     if (dimensions && (dimensions.x || dimensions.y || dimensions.z)) {
       const box = geometry.boundingBox ?? new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
       const currentDimensions = box.getSize(new THREE.Vector3());
-      const scaleX = dimensions.x ? (dimensions.x / unitScale) / (currentDimensions.x || 1) : mesh.scale.x;
-      const scaleY = dimensions.y ? (dimensions.y / unitScale) / (currentDimensions.y || 1) : mesh.scale.y;
-      const scaleZ = dimensions.z ? (dimensions.z / unitScale) / (currentDimensions.z || 1) : mesh.scale.z;
-      mesh.scale.set(scaleX, scaleY, scaleZ);
-      mesh.updateMatrixWorld(true, true);
-    }
-
-    const finalBox = new THREE.Box3().setFromObject(mesh);
-    
-    // Ensure geometry is centered on XZ and sits on Y=0
-    // We adjust the GEOMETRY, not the mesh position, so PivotControls works correctly
-    const finalCenter = finalBox.getCenter(new THREE.Vector3());
-    const bottomY = finalBox.min.y;
-    
-    // If the model isn't centered/grounded, adjust the geometry directly
-    if (Math.abs(finalCenter.x) > 0.001 || Math.abs(finalCenter.z) > 0.001 || Math.abs(bottomY) > 0.001) {
-      // We need to adjust in local (unscaled) space, so divide by scale
-      const scaleX = mesh.scale.x || 1;
-      const scaleY = mesh.scale.y || 1;
-      const scaleZ = mesh.scale.z || 1;
-      
-      geometry.translate(
-        -finalCenter.x / scaleX,
-        -bottomY / scaleY,
-        -finalCenter.z / scaleZ
+      mesh.scale.set(
+        dimensions.x ? (dimensions.x / unitScale) / (currentDimensions.x || 1) : mesh.scale.x,
+        dimensions.y ? (dimensions.y / unitScale) / (currentDimensions.y || 1) : mesh.scale.y,
+        dimensions.z ? (dimensions.z / unitScale) / (currentDimensions.z || 1) : mesh.scale.z
       );
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
-      if (geometry.attributes.position) {
-        geometry.attributes.position.needsUpdate = true;
-      }
-      mesh.updateMatrixWorld(true, true);
+      mesh.updateMatrixWorld(true);
     }
-    
-    // Recompute bounds after geometry adjustment
-    const adjustedBox = new THREE.Box3().setFromObject(mesh);
-    const sphere = adjustedBox.getBoundingSphere(new THREE.Sphere());
-    const adjustedCenter = adjustedBox.getCenter(new THREE.Vector3());
-    const finalSize = adjustedBox.getSize(new THREE.Vector3());
 
+    // Report bounds
+    const finalBox = new THREE.Box3().setFromObject(mesh);
+    const sphere = finalBox.getBoundingSphere(new THREE.Sphere());
     onBoundsChange?.({
-      min: adjustedBox.min.clone(),
-      max: adjustedBox.max.clone(),
-      center: adjustedCenter,
-      size: finalSize,
+      min: finalBox.min.clone(),
+      max: finalBox.max.clone(),
+      center: finalBox.getCenter(new THREE.Vector3()),
+      size: finalBox.getSize(new THREE.Vector3()),
       radius: sphere.radius,
       unitsScale: unitScale,
     });
-  }, [file, dimensions, onBoundsChange, unitScale]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.id, dimensions, unitScale, initialOffset]);
 
-  // Track clicks for manual double-click detection
-  const lastClickTimeRef = useRef<number>(0);
-  const DOUBLE_CLICK_DELAY = 300; // ms
+  // Click handler with double-click detection
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    if (disableDoubleClick) return;
+    
+    const now = Date.now();
+    if (now - lastClickTimeRef.current < DOUBLE_CLICK_DELAY) {
+      onDoubleClick?.() ?? window.dispatchEvent(new CustomEvent('mesh-double-click'));
+      lastClickTimeRef.current = 0;
+    } else {
+      lastClickTimeRef.current = now;
+    }
+  }, [disableDoubleClick, onDoubleClick]);
 
   return (
     <mesh 
       ref={actualRef} 
       geometry={file.mesh.geometry} 
       material={file.mesh.material}
-      onClick={(e) => {
-        e.stopPropagation();
-        // Skip double-click detection when in placement mode
-        if (disableDoubleClick) return;
-        
-        const now = Date.now();
-        const timeSinceLastClick = now - lastClickTimeRef.current;
-        
-        if (timeSinceLastClick < DOUBLE_CLICK_DELAY) {
-          // Double-click detected
-          window.dispatchEvent(new CustomEvent('mesh-double-click'));
-          lastClickTimeRef.current = 0; // Reset to prevent triple-click
-        } else {
-          lastClickTimeRef.current = now;
-        }
-      }}
-      onPointerOver={() => { /* Available for hover effects */ }}
+      onClick={handleClick}
     />
   );
-}
+});
 
 /**
  * Component for placed fixture elements from the component library
@@ -540,9 +537,9 @@ function FixtureComponent({ component, position, onSelect }: FixtureComponentPro
 
 // Main 3D Scene Component
 const ThreeDScene: React.FC<ThreeDSceneProps> = ({
-  currentFile,
-  modelTransform,
-  setModelTransform,
+  importedParts,
+  selectedPartId,
+  onPartSelected,
   onModelColorAssigned,
 }) => {
   const { camera, size } = useThree();
@@ -555,15 +552,107 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Baseplate configuration state
   const [basePlate, setBasePlate] = useState<BasePlateConfig | null>(null);
   
-  const modelMeshRef = useRef<THREE.Mesh>(null);
+  // Store refs for each model mesh by part ID
+  const modelMeshRefs = useRef<Map<string, React.RefObject<THREE.Mesh>>>(new Map());
+  // Store initial offsets for each part (persists across renders to prevent position reset)
+  const partInitialOffsetsRef = useRef<Map<string, THREE.Vector3>>(new Map());
   const basePlateMeshRef = useRef<THREE.Mesh>(null);
   const [baseTopY, setBaseTopY] = useState<number>(0);
   const [modelDimensions, setModelDimensions] = useState<{ x?: number; y?: number; z?: number } | undefined>();
   const [orbitControlsEnabled, setOrbitControlsEnabled] = useState(true);
   const [modelColors, setModelColors] = useState<Map<string, string>>(new Map());
   const [modelBounds, setModelBounds] = useState<BoundsSummary | null>(null);
+  // Store bounds for each part for combined bounding box calculation
+  const [partBounds, setPartBounds] = useState<Map<string, BoundsSummary>>(new Map());
   const [currentOrientation, setCurrentOrientation] = useState<ViewOrientation>('iso');
   const prevOrientationRef = useRef<ViewOrientation>('iso');
+  // Track whether to update camera on next bounds change (only for first part or explicit reframe)
+  const shouldReframeCameraRef = useRef<boolean>(true);
+
+  // Local state to track the selected part's transform (for property panel sync and grid positioning)
+  const [modelTransform, setModelTransform] = useState({
+    position: new THREE.Vector3(),
+    rotation: new THREE.Euler(),
+    scale: new THREE.Vector3(1, 1, 1),
+  });
+
+  // Get or create a ref for a part
+  const getPartMeshRef = useCallback((partId: string) => {
+    if (!modelMeshRefs.current.has(partId)) {
+      modelMeshRefs.current.set(partId, React.createRef<THREE.Mesh>());
+    }
+    return modelMeshRefs.current.get(partId)!;
+  }, []);
+
+  // Get the currently selected part's mesh ref
+  const selectedPartMeshRef = selectedPartId ? getPartMeshRef(selectedPartId) : null;
+
+  // Get the first part (for backward compatibility with single-file operations)
+  const firstPart = importedParts.length > 0 ? importedParts[0] : null;
+
+  // Calculate combined bounds from all parts
+  useEffect(() => {
+    if (partBounds.size === 0) {
+      setModelBounds(null);
+      return;
+    }
+    
+    // Combine all part bounds into one
+    const combinedBox = new THREE.Box3();
+    partBounds.forEach((bounds) => {
+      combinedBox.expandByPoint(bounds.min);
+      combinedBox.expandByPoint(bounds.max);
+    });
+    
+    if (combinedBox.isEmpty()) {
+      setModelBounds(null);
+      return;
+    }
+    
+    const center = combinedBox.getCenter(new THREE.Vector3());
+    const combinedSize = combinedBox.getSize(new THREE.Vector3());
+    const sphere = combinedBox.getBoundingSphere(new THREE.Sphere());
+    
+    // Use the first part's units scale for now
+    const firstPartBounds = Array.from(partBounds.values())[0];
+    
+    setModelBounds({
+      min: combinedBox.min.clone(),
+      max: combinedBox.max.clone(),
+      center,
+      size: combinedSize,
+      radius: sphere.radius,
+      unitsScale: firstPartBounds?.unitsScale ?? 1,
+    });
+  }, [partBounds]);
+
+  // Clean up stale partBounds entries when parts are removed
+  useEffect(() => {
+    const currentPartIds = new Set(importedParts.map(p => p.id));
+    setPartBounds(prev => {
+      const newMap = new Map(prev);
+      let changed = false;
+      for (const [partId] of newMap) {
+        if (!currentPartIds.has(partId)) {
+          newMap.delete(partId);
+          changed = true;
+        }
+      }
+      return changed ? newMap : prev;
+    });
+    
+    // Also clean up mesh refs and initial offsets
+    for (const [partId] of modelMeshRefs.current) {
+      if (!currentPartIds.has(partId)) {
+        modelMeshRefs.current.delete(partId);
+      }
+    }
+    for (const [partId] of partInitialOffsetsRef.current) {
+      if (!currentPartIds.has(partId)) {
+        partInitialOffsetsRef.current.delete(partId);
+      }
+    }
+  }, [importedParts]);
 
   // Report model colors to parent when they change
   useEffect(() => {
@@ -649,6 +738,34 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // Mark that we're closing - ignore any further transforms until cleared
       pivotClosingRef.current = true;
       
+      // Check for baseplate collision and lift parts if needed
+      if (basePlate && selectedPartId) {
+        const baseplateTopY = basePlate.depth ?? 4;
+        const partRef = modelMeshRefs.current.get(selectedPartId);
+        if (partRef?.current) {
+          partRef.current.updateMatrixWorld(true);
+          const partBox = new THREE.Box3().setFromObject(partRef.current);
+          const currentMinY = partBox.min.y;
+          
+          // If part's bottom is below baseplate top, lift it
+          if (currentMinY < baseplateTopY) {
+            const offsetY = baseplateTopY - currentMinY;
+            partRef.current.position.y += offsetY;
+            partRef.current.updateMatrixWorld(true);
+            
+            // Emit updated transform
+            partRef.current.getWorldPosition(tempVec);
+            window.dispatchEvent(new CustomEvent('model-transform-updated', {
+              detail: {
+                position: tempVec.clone(),
+                rotation: partRef.current.rotation.clone(),
+                partId: selectedPartId,
+              },
+            }));
+          }
+        }
+      }
+      
       // Clear liveTransform after a short delay to allow geometry to update
       requestAnimationFrame(() => {
         setLiveTransform(null);
@@ -658,7 +775,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     }
     
     setLiveTransform(transform);
-  }, []);
+  }, [basePlate, selectedPartId]);
   
   // Compute live position delta from the pivot transform for baseplate
   const livePositionDelta = useMemo(() => {
@@ -743,14 +860,28 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     }
   }, [camera, size.width, size.height]);
 
+  // Track previous orientation to detect explicit orientation changes
+  const lastOrientationRef = useRef<ViewOrientation>(currentOrientation);
+
   React.useEffect(() => {
-    updateCamera(currentOrientation, modelBounds);
+    const orientationChanged = lastOrientationRef.current !== currentOrientation;
+    lastOrientationRef.current = currentOrientation;
+
+    // Update camera if:
+    // 1. Orientation explicitly changed (user clicked view button), OR
+    // 2. This is the first part being added (shouldReframeCameraRef is true)
+    if (orientationChanged || (modelBounds && shouldReframeCameraRef.current)) {
+      updateCamera(currentOrientation, modelBounds);
+      shouldReframeCameraRef.current = false; // Reset after initial framing
+    }
   }, [currentOrientation, modelBounds, updateCamera]);
 
   React.useEffect(() => {
-    if (!currentFile) {
+    if (importedParts.length === 0) {
       setModelBounds(null);
+      setPartBounds(new Map());
       setCurrentOrientation('iso');
+      shouldReframeCameraRef.current = true; // Reset so next part import will frame the camera
     } else {
       // When a new file is loaded, emit the initial transform with isInitial flag
       // This allows the Properties panel to store the initial position for reset functionality
@@ -766,30 +897,39 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         );
       }, 100); // Small delay to ensure mesh is positioned
     }
-  }, [currentFile]);
+  }, [importedParts.length]);
 
   // Cavity context request/dispatch
   React.useEffect(() => {
     const handleRequestContext = () => {
       const base = basePlateMeshRef.current || null;
-      const model = modelMeshRef.current || null;
+      
+      // Collect all part meshes
+      const partMeshes: THREE.Mesh[] = [];
+      importedParts.forEach(part => {
+        const ref = modelMeshRefs.current.get(part.id);
+        if (ref?.current) {
+          partMeshes.push(ref.current);
+        }
+      });
+      
       let baseMesh: THREE.Mesh | null = null;
       let tools: THREE.Mesh[] = [];
-      if (base && model) {
+      if (base && partMeshes.length > 0) {
         baseMesh = base; // default: baseplate as base
-        tools = [model];
+        tools = partMeshes;
       } else if (base) {
         baseMesh = base;
         tools = [];
-      } else if (model) {
-        baseMesh = model;
-        tools = [];
+      } else if (partMeshes.length > 0) {
+        baseMesh = partMeshes[0];
+        tools = partMeshes.slice(1);
       }
       window.dispatchEvent(new CustomEvent('cavity-context', { detail: { baseMesh, fixtureComponents: tools } }));
     };
     window.addEventListener('request-cavity-context', handleRequestContext as EventListener);
     return () => window.removeEventListener('request-cavity-context', handleRequestContext as EventListener);
-  }, []);
+  }, [importedParts]);
 
   // Listen for cavity operation result to show preview
   React.useEffect(() => {
@@ -814,8 +954,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const handleApply = (e: CustomEvent) => {
       const { mesh } = e.detail || {};
       if (!mesh || !mesh.isMesh) return;
-      // Prefer replacing baseplate if present
-      const target = basePlateMeshRef.current || modelMeshRef.current;
+      // Prefer replacing baseplate if present, otherwise first part
+      const firstPartRef = importedParts.length > 0 ? modelMeshRefs.current.get(importedParts[0].id) : null;
+      const target = basePlateMeshRef.current || firstPartRef?.current;
       if (target && mesh.geometry) {
         const old = target.geometry;
         target.geometry = mesh.geometry;
@@ -828,7 +969,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     };
     window.addEventListener('cavity-apply', handleApply as EventListener);
     return () => window.removeEventListener('cavity-apply', handleApply as EventListener);
-  }, []);
+  }, [importedParts]);
 
   // TODO: Implement drag-and-drop for fixture components when library panel is ready
   const handlePointerMove = useCallback((_event: unknown) => {
@@ -1124,7 +1265,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           return;
         }
 
-        const modelMesh = modelMeshRef.current;
+        // Use first part's mesh for support trimming (or could use all parts)
+        const firstPartRef = importedParts.length > 0 ? modelMeshRefs.current.get(importedParts[0].id) : null;
+        const modelMesh = firstPartRef?.current;
         if (!modelMesh || supports.length === 0) {
           setSupportsTrimPreview([]);
           return;
@@ -1258,10 +1401,27 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
       const basePlateId = `baseplate-${Date.now()}`;
 
-      // Model footprint in mm
-      const box = modelMeshRef.current ? new THREE.Box3().setFromObject(modelMeshRef.current) : null;
+      // Calculate combined WORLD bounding box from all parts
+      // This properly accounts for rotations and transformations
+      let combinedBox: THREE.Box3 | null = null;
+      importedParts.forEach(part => {
+        const ref = modelMeshRefs.current.get(part.id);
+        if (ref?.current) {
+          // Force full matrix world update through the hierarchy
+          ref.current.updateMatrixWorld(true);
+          // setFromObject automatically uses world coordinates
+          const partBox = new THREE.Box3().setFromObject(ref.current);
+          if (!combinedBox) {
+            combinedBox = partBox.clone();
+          } else {
+            combinedBox.union(partBox);
+          }
+        }
+      });
+      
+      const box = combinedBox;
       const size = box ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(60, 60, 60);
-      const fitPadTotal = 20; // +20mm total (10mm per side)
+      const boxCenter = box ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0);
 
       // Helper to coerce dimension
       const clampPos = (v: any, min: number, fallback: number) => Math.max(Number(v) || fallback, min);
@@ -1282,25 +1442,32 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         const width = clampPos(dimensions?.width, 10, size.x + (paddingValue * 2));
         const height = clampPos(dimensions?.length ?? dimensions?.depth, 10, size.z + (paddingValue * 2));
         const depth = clampPos(dimensions?.height, 1, DEFAULT_THICKNESS);
-        cfg = { ...cfg, type: 'rectangular', width, height, depth };
+        cfg = { ...cfg, type: 'rectangular', width, height, depth, oversizeXY: paddingValue };
+        // Position baseplate centered under the parts (in XZ plane)
+        cfg.position = new THREE.Vector3(boxCenter.x, 0, boxCenter.z);
       } else if (option === 'convex-hull') {
         const depth = clampPos(dimensions?.height, 1, DEFAULT_THICKNESS);
         const oversizeXY = clampPos(dimensions?.oversizeXY ?? dimensions?.padding, 0, 10);
-        // width/height are derived in BasePlate from model geometry + oversize, we pass hint values too
+        // Convex hull computes its own shape from geometry, position stays at origin
         cfg = { ...cfg, type: 'convex-hull', depth, oversizeXY, width: size.x + oversizeXY * 2, height: size.z + oversizeXY * 2 };
+        cfg.position = new THREE.Vector3(0, 0, 0);
       } else if (option === 'perforated-panel') {
-        const width = clampPos(dimensions?.width, 10, size.x + fitPadTotal);
-        const height = clampPos(dimensions?.length ?? dimensions?.depth, 10, size.z + fitPadTotal);
+        const paddingValue = clampPos(dimensions?.padding, 0, 10);
+        const width = clampPos(dimensions?.width, 10, size.x + (paddingValue * 2));
+        const height = clampPos(dimensions?.length ?? dimensions?.depth, 10, size.z + (paddingValue * 2));
         const depth = clampPos(dimensions?.height, 1, DEFAULT_THICKNESS);
         const pitch = clampPos(dimensions?.pitch ?? dimensions?.holeDistance, 2, 20);
         const holeDiameter = clampPos(dimensions?.holeDiameter, 1, 6);
-        cfg = { ...cfg, type: 'perforated-panel', width, height, depth, pitch, holeDiameter };
+        cfg = { ...cfg, type: 'perforated-panel', width, height, depth, pitch, holeDiameter, oversizeXY: paddingValue };
+        cfg.position = new THREE.Vector3(boxCenter.x, 0, boxCenter.z);
       } else if (option === 'metal-wooden-plate') {
-        const width = clampPos(dimensions?.width, 10, size.x + fitPadTotal);
-        const height = clampPos(dimensions?.length ?? dimensions?.depth, 10, size.z + fitPadTotal);
+        const paddingValue = clampPos(dimensions?.padding, 0, 10);
+        const width = clampPos(dimensions?.width, 10, size.x + (paddingValue * 2));
+        const height = clampPos(dimensions?.length ?? dimensions?.depth, 10, size.z + (paddingValue * 2));
         const depth = clampPos(dimensions?.height, 1, DEFAULT_THICKNESS);
         const holeDiameter = clampPos(dimensions?.holeDiameter, 1, 6);
-        cfg = { ...cfg, type: 'metal-wooden-plate', width, height, depth, holeDiameter };
+        cfg = { ...cfg, type: 'metal-wooden-plate', width, height, depth, holeDiameter, oversizeXY: paddingValue };
+        cfg.position = new THREE.Vector3(boxCenter.x, 0, boxCenter.z);
       } else {
         console.warn('Unsupported baseplate option:', option);
         return;
@@ -1308,47 +1475,62 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
       // Get baseplate depth/thickness - total height is exactly this value
       const baseplateDepth = cfg.depth ?? DEFAULT_THICKNESS;
-      // Top of baseplate is at Y = baseplateDepth (bevel is included within the depth, not added to it)
+      // Top of baseplate is at Y = baseplateDepth (bevel is included within the depth)
       const baseplateTopY = baseplateDepth;
       
-      // Smart model lifting: only move the model if it collides with the baseplate
-      // If model is already above the baseplate, don't move it
-      if (modelMeshRef.current) {
-        const mbox = new THREE.Box3().setFromObject(modelMeshRef.current);
-        const currentMinY = mbox.min.y;
-        
-        // Only lift if model's bottom is below the baseplate's top surface (collision)
-        if (currentMinY < baseplateTopY) {
-          const offsetY = baseplateTopY - currentMinY;
-          modelMeshRef.current.position.y += offsetY;
+      // Lift parts that would collide with baseplate
+      // Move in global Y direction (Three.js up = CAD Z direction)
+      importedParts.forEach(part => {
+        const ref = modelMeshRefs.current.get(part.id);
+        if (ref?.current) {
+          ref.current.updateMatrixWorld(true);
+          const mbox = new THREE.Box3().setFromObject(ref.current);
+          const currentMinY = mbox.min.y;
+          
+          // Only lift if model's bottom is below the baseplate's top surface (collision)
+          if (currentMinY < baseplateTopY) {
+            const offsetY = baseplateTopY - currentMinY;
+            // Move in world Y (global up direction)
+            ref.current.position.y += offsetY;
+            ref.current.updateMatrixWorld(true);
+          }
+        }
+      });
+      
+      // Update transform state for the selected part
+      if (selectedPartId) {
+        const selectedRef = modelMeshRefs.current.get(selectedPartId);
+        if (selectedRef?.current) {
+          selectedRef.current.getWorldPosition(tempVec);
           setModelTransform({
-            position: modelMeshRef.current.position.clone(),
-            rotation: modelMeshRef.current.rotation.clone(),
-            scale: modelMeshRef.current.scale.clone(),
+            position: tempVec.clone(),
+            rotation: selectedRef.current.rotation.clone(),
+            scale: selectedRef.current.scale.clone(),
           });
         }
-        // If currentMinY >= baseplateTopY, model is already above baseplate - no movement needed
-      }
-
-      // Baseplate sits at Y=0 (geometry already positioned so bottom is at Y=0, top at Y=depth)
-      // For convex-hull: geometry already includes world coordinates, so position is (0, 0, 0)
-      // For other types: geometry is centered, so position should match model XZ position
-      if (option === 'convex-hull') {
-        // Convex hull geometry already contains world XZ coordinates
-        cfg.position = new THREE.Vector3(0, 0, 0);
-      } else {
-        // Other baseplate types have geometry centered at origin, so we position them under the model
-        // Use bounding box center since mesh.position may be (0,0,0) after transforms are baked into geometry
-        const boxCenter = box ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, 0);
-        cfg.position = new THREE.Vector3(boxCenter.x, 0, boxCenter.z);
       }
 
       setBasePlate(cfg);
+      
+      // Emit transform updates for all parts after lifting
+      importedParts.forEach(part => {
+        const ref = modelMeshRefs.current.get(part.id);
+        if (ref?.current) {
+          ref.current.getWorldPosition(tempVec);
+          window.dispatchEvent(new CustomEvent('model-transform-updated', {
+            detail: {
+              position: tempVec.clone(),
+              rotation: ref.current.rotation.clone(),
+              partId: part.id,
+            },
+          }));
+        }
+      });
     };
 
     window.addEventListener('create-baseplate', handleCreateBaseplate as EventListener);
     return () => window.removeEventListener('create-baseplate', handleCreateBaseplate as EventListener);
-  }, []);
+  }, [importedParts, selectedPartId]);
 
   // Handle base plate deselection/cancellation
   React.useEffect(() => {
@@ -1377,15 +1559,23 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // This recalculates dimensions based on new bounding box after gizmo closes
   React.useEffect(() => {
     if (!basePlate) return;
-    if (!modelMeshRef.current) return;
+    if (importedParts.length === 0) return;
     
     // Only update for non-convex-hull types
     // Convex-hull recalculates its geometry from modelGeometry/modelMatrixWorld props automatically
     if (basePlate.type === 'convex-hull') return;
     
-    // Compute current bounding box of the model
-    modelMeshRef.current.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(modelMeshRef.current);
+    // Compute combined bounding box of all parts
+    const box = new THREE.Box3();
+    importedParts.forEach(part => {
+      const ref = modelMeshRefs.current.get(part.id);
+      if (ref?.current) {
+        ref.current.updateMatrixWorld(true);
+        const partBox = new THREE.Box3().setFromObject(ref.current);
+        box.union(partBox);
+      }
+    });
+    
     if (box.isEmpty()) return;
     
     // Apply live position delta if pivot is active
@@ -1449,62 +1639,64 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('toggle-transform-mode', handleToggleTransform as EventListener);
   }, []);
 
-  // Emit model transform updates when transform changes (for Properties panel sync)
-  React.useEffect(() => {
-    // Dispatch current transform state to any listeners
-    window.dispatchEvent(
-      new CustomEvent('model-transform-updated', {
-        detail: {
-          position: modelTransform.position,
-          rotation: modelTransform.rotation,
-        },
-      })
-    );
-  }, [modelTransform]);
+  // NOTE: We no longer emit model-transform-updated from modelTransform state changes
+  // because SelectableTransformControls already emits per-part transform events directly.
+  // The old useEffect caused all parts to update when any part was transformed.
 
   // Listen for transform changes from Properties panel input fields
+  // Note: SelectableTransformControls handles the actual mesh positioning
+  // This handler just updates the modelTransform state for the selected part
   React.useEffect(() => {
     const handleSetTransform = (e: CustomEvent) => {
-      const { position, rotation } = e.detail;
+      const { position, rotation, partId } = e.detail;
       
-      // Directly update the mesh position and rotation
-      if (modelMeshRef.current) {
-        modelMeshRef.current.position.copy(position);
-        modelMeshRef.current.rotation.copy(rotation);
-        modelMeshRef.current.updateMatrixWorld(true);
+      // Use partId from event if provided, otherwise fall back to selectedPartId
+      const targetPartId = partId || selectedPartId;
+      
+      // Update the state if it's the selected part
+      if (targetPartId === selectedPartId) {
+        setModelTransform({
+          position: position.clone(),
+          rotation: rotation.clone(),
+          scale: modelTransform.scale.clone(),
+        });
       }
-      
-      // Also update the state
-      setModelTransform({
-        position: position.clone(),
-        rotation: rotation.clone(),
-        scale: modelTransform.scale.clone(),
-      });
     };
 
-    const handleRequestTransform = () => {
-      // Send current transform state from the actual mesh (more accurate)
-      const mesh = modelMeshRef.current;
+    const handleRequestTransform = (e: CustomEvent) => {
+      // If a specific partId is requested, use that; otherwise use selected part
+      const requestedPartId = e.detail?.partId || selectedPartId;
+      if (!requestedPartId) return;
+      
+      const partRef = modelMeshRefs.current.get(requestedPartId);
+      const mesh = partRef?.current;
+      
       if (mesh) {
+        mesh.updateMatrixWorld(true);
+        mesh.getWorldPosition(tempVec);
         window.dispatchEvent(
           new CustomEvent('model-transform-updated', {
             detail: {
-              position: mesh.position.clone(),
+              position: tempVec.clone(),
               rotation: mesh.rotation.clone(),
+              partId: requestedPartId,
             },
           })
         );
-      } else {
-        // Fallback to state
+      } else if (requestedPartId === selectedPartId) {
+        // Fallback to state for selected part if mesh not ready
         window.dispatchEvent(
           new CustomEvent('model-transform-updated', {
             detail: {
               position: modelTransform.position,
               rotation: modelTransform.rotation,
+              partId: selectedPartId,
             },
           })
         );
       }
+      // Note: If mesh isn't found and it's not selected, we skip - the ModelMesh 
+      // will emit its own transform when it mounts via the useEffect
     };
 
     window.addEventListener('set-model-transform', handleSetTransform as EventListener);
@@ -1514,7 +1706,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       window.removeEventListener('set-model-transform', handleSetTransform as EventListener);
       window.removeEventListener('request-model-transform', handleRequestTransform as EventListener);
     };
-  }, [modelTransform, setModelTransform]);
+  }, [modelTransform, setModelTransform, selectedPartId]);
 
   // Handle orbit controls enable/disable for transform mode
   React.useEffect(() => {
@@ -1529,7 +1721,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Handle view reset events
   React.useEffect(() => {
     const handleViewReset = (e: CustomEvent) => {
-      if (currentFile && modelMeshRef.current) {
+      if (importedParts.length > 0) {
         // Reset camera to isometric view position based on model size and units
         setCurrentOrientation('iso');
         updateCamera('iso', modelBounds);
@@ -1549,14 +1741,14 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
     window.addEventListener('viewer-reset', handleViewReset as EventListener);
     return () => window.removeEventListener('viewer-reset', handleViewReset as EventListener);
-  }, [camera, currentFile, updateCamera, modelBounds]);
+  }, [camera, importedParts.length, updateCamera, modelBounds]);
 
   // Handle view orientation events
   React.useEffect(() => {
     const handleViewOrientation = (e: CustomEvent) => {
       const orientation = e.detail;
 
-      if (currentFile && modelMeshRef.current) {
+      if (importedParts.length > 0) {
         // Set camera position based on orientation and model size/units
         setCurrentOrientation(orientation as ViewOrientation);
         updateCamera(orientation as ViewOrientation, modelBounds);
@@ -1592,7 +1784,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
     window.addEventListener('viewer-orientation', handleViewOrientation as EventListener);
     return () => window.removeEventListener('viewer-orientation', handleViewOrientation as EventListener);
-  }, [camera, currentFile, updateCamera, modelBounds]);
+  }, [camera, importedParts.length, updateCamera, modelBounds]);
 
   // Handle clear/reset events
   React.useEffect(() => {
@@ -1641,9 +1833,40 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           oversizeXY={basePlate.oversizeXY}
           pitch={basePlate.pitch}
           holeDiameter={basePlate.holeDiameter}
-          modelGeometry={basePlate.type === 'convex-hull' && modelMeshRef.current?.geometry ? modelMeshRef.current.geometry : undefined}
-          modelMatrixWorld={basePlate.type === 'convex-hull' && modelMeshRef.current ? modelMeshRef.current.matrixWorld : undefined}
-          modelOrigin={modelMeshRef.current ? modelMeshRef.current.position : undefined}
+          modelGeometries={basePlate.type === 'convex-hull' && importedParts.length > 0 ? (() => {
+            // Collect geometries and matrices from ALL imported parts
+            const geometries: Array<{geometry: THREE.BufferGeometry, matrixWorld?: THREE.Matrix4}> = [];
+            importedParts.forEach(part => {
+              const partRef = modelMeshRefs.current.get(part.id);
+              if (partRef?.current?.geometry) {
+                geometries.push({
+                  geometry: partRef.current.geometry,
+                  matrixWorld: partRef.current.matrixWorld
+                });
+              }
+            });
+            return geometries;
+          })() : undefined}
+          modelOrigin={importedParts.length > 0 ? (() => {
+            // Use center of combined bounding box for model origin
+            let combinedBox: THREE.Box3 | null = null;
+            importedParts.forEach(part => {
+              const partRef = modelMeshRefs.current.get(part.id);
+              if (partRef?.current) {
+                const partBox = new THREE.Box3().setFromObject(partRef.current);
+                if (!combinedBox) {
+                  combinedBox = partBox;
+                } else {
+                  combinedBox.union(partBox);
+                }
+              }
+            });
+            if (combinedBox) {
+              return combinedBox.getCenter(new THREE.Vector3());
+            }
+            const firstPartRef = modelMeshRefs.current.get(importedParts[0].id);
+            return firstPartRef?.current?.position;
+          })() : undefined}
           additionalHullPoints={basePlate.type === 'convex-hull' ? supportHullPoints : undefined}
           livePositionDelta={livePositionDelta}
           selected={false}
@@ -1657,34 +1880,47 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         />
       )}
 
-      {/* Main 3D model wrapped with transform controls */}
-      {currentFile && (
-        <SelectableTransformControls
-          meshRef={modelMeshRef}
-          enabled={true}
-          onTransformChange={(transform) => {
-            setModelTransform({
-              position: transform.position,
-              rotation: transform.rotation,
-              scale: modelTransform.scale,
-            });
-          }}
-          onSelectionChange={(selected) => {
-            // Orbit controls stay enabled - only disabled during drag via events
-          }}
-          onLiveTransformChange={handleLiveTransformChange}
-        >
-          <ModelMesh
-            file={currentFile}
-            meshRef={modelMeshRef}
-            dimensions={modelDimensions}
-            colorsMap={modelColors}
-            setColorsMap={setModelColors}
-            onBoundsChange={setModelBounds}
-            disableDoubleClick={placing.active || editingSupport !== null}
-          />
-        </SelectableTransformControls>
-      )}
+      {/* Render all imported parts with transform controls */}
+      {importedParts.map((part, index) => {
+        const partMeshRef = getPartMeshRef(part.id);
+        const isSelected = selectedPartId === part.id;
+        
+        // Use stored offset if available, otherwise calculate and store new offset
+        let initialOffset = partInitialOffsetsRef.current.get(part.id);
+        if (!initialOffset && index > 0) {
+          const partDims = part.metadata.dimensions;
+          const spacing = partDims ? Math.max(partDims.x, partDims.z) * 1.5 : 100;
+          initialOffset = new THREE.Vector3(spacing * index, 0, 0);
+          partInitialOffsetsRef.current.set(part.id, initialOffset);
+        }
+        
+        return (
+          <SelectableTransformControls
+            key={part.id}
+            meshRef={partMeshRef}
+            enabled={isSelected}
+            partId={part.id}
+            onLiveTransformChange={isSelected ? handleLiveTransformChange : undefined}
+          >
+            <ModelMesh
+              file={part}
+              meshRef={partMeshRef}
+              dimensions={modelDimensions}
+              colorsMap={modelColors}
+              setColorsMap={setModelColors}
+              initialOffset={initialOffset}
+              onBoundsChange={(bounds) => {
+                setPartBounds(prev => new Map(prev).set(part.id, bounds));
+              }}
+              disableDoubleClick={placing.active || editingSupport !== null}
+              onDoubleClick={() => {
+                onPartSelected(part.id);
+                window.dispatchEvent(new CustomEvent('mesh-double-click', { detail: { partId: part.id } }));
+              }}
+            />
+          </SelectableTransformControls>
+        );
+      })}
 
       {/* Placed fixture components */}
       {placedComponents.map((item) => (
@@ -1696,14 +1932,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         />
       ))}
 
-      {/* Supports vs trimmed supports preview */}
+      {/* Supports rendering */}
       {supportsTrimPreview.length === 0
-        ? supports.map((s) => (
-            <SupportMesh key={s.id} support={s} baseTopY={baseTopY} />
-          ))
-        : supportsTrimPreview.map((mesh, idx) => (
-            <primitive key={mesh.uuid + '-' + idx} object={mesh} />
-          ))}
+        ? supports.map((s) => <SupportMesh key={s.id} support={s} baseTopY={baseTopY} />)
+        : supportsTrimPreview.map((mesh, idx) => <primitive key={`${mesh.uuid}-${idx}`} object={mesh} />)}
 
       {/* Handle-based support editing overlay */}
       {editingSupport && (
@@ -1740,7 +1972,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             setOrbitControlsEnabled(true);
           }}
           defaultCenter={new THREE.Vector2(modelBounds?.center.x || 0, modelBounds?.center.z || 0)}
-          raycastTargets={[modelMeshRef.current as any].filter(Boolean)}
+          raycastTargets={importedParts.map(part => {
+            const ref = modelMeshRefs.current.get(part.id);
+            return ref?.current;
+          }).filter(Boolean) as THREE.Mesh[]}
           baseTopY={baseTopY}
           baseTarget={basePlateMeshRef.current}
           contactOffset={Number(placing.initParams?.contactOffset ?? 0)}
@@ -1785,7 +2020,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         enableRotate={orbitControlsEnabled}
         minDistance={0.01}  // Allow unlimited zoom in
         maxDistance={Infinity}  // Allow unlimited zoom out
-        dampingFactor={0.05}
+        enableDamping={false}
         onChange={(event) => {
           if (event?.target?.object?.quaternion) {
             const q = event.target.object.quaternion;

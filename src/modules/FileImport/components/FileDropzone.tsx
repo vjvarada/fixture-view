@@ -18,6 +18,7 @@ const FileDropzone = ({ onFileSelected, isProcessing = false, className = "" }: 
     setIsDragOver(false);
 
     const files = Array.from(e.dataTransfer.files);
+    // Only take the first file - one at a time for mesh analysis
     const file = files[0];
 
     if (file) {
@@ -58,6 +59,8 @@ const FileDropzone = ({ onFileSelected, isProcessing = false, className = "" }: 
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = SUPPORTED_FORMATS.join(',');
+    // Single file selection - one at a time for mesh analysis
+    input.multiple = false;
     input.onchange = (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (file) {

@@ -257,7 +257,10 @@ export function useFileProcessing(): UseFileProcessingReturn {
       const processingTime = performance.now() - startTime;
       const metadata = computeMetadata(geometry, file, processingTime, units);
 
-      return { mesh, metadata };
+      // Generate unique ID for multi-part support
+      const id = `part-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      return { id, mesh, metadata };
       
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';

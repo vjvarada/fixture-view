@@ -8,7 +8,6 @@ import { useViewer } from "./hooks/useViewer";
 import UnitsDialog from "./components/UnitsDialog";
 import MeshOptimizationDialog from "./components/MeshOptimizationDialog";
 import LoadingOverlay from "@/components/loading/LoadingOverlay";
-import { useLoadingManager } from "@/hooks/useLoadingManager";
 import { ProcessedFile } from "./types";
 import {
   analyzeMesh,
@@ -44,7 +43,6 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
     details?: string;
   }>({ isLoading: false });
 
-  const { startLoading, updateProgress, stopLoading } = useLoadingManager();
   const pendingFileRef = useRef<File | null>(null);
   const { processFile, isProcessing: fileProcessing, error: fileError, clearError } = useFileProcessing();
 

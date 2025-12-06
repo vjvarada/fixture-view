@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 export interface ProcessedFile {
+  id: string;  // Unique identifier for multi-part support
   mesh: THREE.Mesh;
   metadata: FileMetadata;
 }
