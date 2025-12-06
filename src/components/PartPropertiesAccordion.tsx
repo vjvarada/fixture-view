@@ -8,11 +8,12 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { RotateCcw, Move, RotateCw, FileText, Info, ToggleLeft, ToggleRight } from 'lucide-react';
+import { RotateCcw, Move, RotateCw, Box, Info, ToggleLeft, ToggleRight, X } from 'lucide-react';
 import * as THREE from 'three';
 import { ProcessedFile } from '@/modules/FileImport/types';
 import SupportsAccordion from './Supports/SupportsAccordion';
 import { AnySupport } from './Supports/types';
+import PartThumbnail from './PartThumbnail';
 
 interface PartTransform {
   position: { x: number; y: number; z: number };
@@ -24,21 +25,25 @@ type PositioningMode = 'absolute' | 'incremental';
 interface PartPropertiesAccordionProps {
   hasModel: boolean;
   currentFile?: ProcessedFile | null;
+  onClearFile?: () => void;
   supports?: AnySupport[];
   selectedSupportId?: string | null;
   onSupportSelect?: (id: string | null) => void;
   onSupportUpdate?: (support: AnySupport) => void;
   onSupportDelete?: (id: string) => void;
+  modelColor?: string;
 }
 
 const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({ 
   hasModel, 
   currentFile,
+  onClearFile,
   supports = [],
   selectedSupportId = null,
   onSupportSelect,
   onSupportUpdate,
-  onSupportDelete 
+  onSupportDelete,
+  modelColor
 }) => {
   // Current transform (what's displayed in the UI)
   const [transform, setTransform] = useState<PartTransform>({
@@ -369,209 +374,210 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
   const formatDimension = (value: number) => value.toFixed(2);
 
   return (
-    <Accordion type="single" collapsible defaultValue="part-position" className="w-full">
-      {/* File Details Accordion */}
+    <Accordion type="single" collapsible defaultValue="parts" className="w-full">
+      {/* Parts Accordion */}
       {currentFile && (
-        <AccordionItem value="file-details" className="border-border/50">
+        <AccordionItem value="parts" className="border-border/50">
           <AccordionTrigger className="py-2 text-xs font-tech hover:no-underline">
             <div className="flex items-center gap-2">
-              <FileText className="w-3.5 h-3.5 text-primary" />
-              File Details
+              <Box className="w-3.5 h-3.5 text-primary" />
+              Parts
             </div>
           </AccordionTrigger>
           <AccordionContent className="pt-2">
-            <div className="space-y-2 text-[8px]">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Name:</span>
-                <span className="font-mono truncate max-w-[120px]" title={currentFile.metadata.name}>
-                  {currentFile.metadata.name}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Size:</span>
-                <span className="font-mono">{formatFileSize(currentFile.metadata.size)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Triangles:</span>
-                <span className="font-mono">{currentFile.metadata.triangles.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Units:</span>
-                <span className="font-mono">{currentFile.metadata.units}</span>
-              </div>
-              <div className="border-t border-border/30 pt-2 mt-2">
-                <div className="text-muted-foreground mb-1 flex items-center gap-1">
-                  <Info className="w-2.5 h-2.5" />
-                  Dimensions ({currentFile.metadata.units})
-                </div>
-                <div className="grid grid-cols-3 gap-1 text-center">
-                  <div>
-                    <span className="text-red-500 font-mono text-[8px]">X</span>
-                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.x)}</div>
+            {/* Nested Accordion for each part */}
+            <Accordion type="single" collapsible defaultValue={`part-${currentFile.metadata.name}`} className="space-y-1">
+              <AccordionItem 
+                value={`part-${currentFile.metadata.name}`}
+                className="border rounded-md border-border/30"
+              >
+                <AccordionTrigger className="py-1.5 px-2 text-xs font-tech hover:no-underline">
+                  <div className="flex items-center gap-2 flex-1">
+                    <PartThumbnail 
+                      mesh={currentFile.mesh} 
+                      size={28} 
+                      className="flex-shrink-0 border border-border/30"
+                      color={modelColor}
+                    />
+                    <div className="flex-1 min-w-0 text-left">
+                      <p className="font-tech font-medium text-[10px] truncate" title={currentFile.metadata.name}>
+                        {currentFile.metadata.name}
+                      </p>
+                      <p className="text-[8px] text-muted-foreground">
+                        {currentFile.metadata.triangles?.toLocaleString()} tri • {currentFile.metadata.units}
+                      </p>
+                    </div>
+                    {onClearFile && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onClearFile();
+                        }}
+                        className="w-6 h-6 p-0 text-muted-foreground hover:text-destructive"
+                        title="Remove part"
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
+                    )}
                   </div>
-                  <div>
-                    <span className="text-green-500 font-mono text-[8px]">Y</span>
-                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.z)}</div>
+                </AccordionTrigger>
+                <AccordionContent className="px-2 pb-2">
+                  {/* Part Info */}
+                  <div className="text-[8px] text-muted-foreground font-tech mb-3 p-2 rounded bg-muted/30">
+                    <span>Size: </span>
+                    <span className="font-mono">
+                      {currentFile.metadata.dimensions.x.toFixed(1)} ×{' '}
+                      {currentFile.metadata.dimensions.z.toFixed(1)} ×{' '}
+                      {currentFile.metadata.dimensions.y.toFixed(1)} {currentFile.metadata.units}
+                    </span>
                   </div>
-                  <div>
-                    <span className="text-blue-500 font-mono text-[8px]">Z</span>
-                    <div className="font-mono">{formatDimension(currentFile.metadata.dimensions.y)}</div>
+
+                  {/* Position & Rotation Controls */}
+                  <div className="space-y-3">
+                    {/* Mode Toggle */}
+                    <div className="flex items-center justify-between border-b border-border/30 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleModeToggle}
+                          className="h-5 px-1.5 text-[8px] gap-1"
+                          title={`Switch to ${positioningMode === 'absolute' ? 'incremental' : 'absolute'} mode`}
+                        >
+                          {positioningMode === 'absolute' ? (
+                            <ToggleLeft className="w-3.5 h-3.5" />
+                          ) : (
+                            <ToggleRight className="w-3.5 h-3.5 text-primary" />
+                          )}
+                          <span className={positioningMode === 'incremental' ? 'text-primary font-medium' : ''}>
+                            {positioningMode === 'absolute' ? 'Absolute' : 'Incremental'}
+                          </span>
+                        </Button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleRestore}
+                        className="h-5 px-1.5 text-[8px] gap-1"
+                        title={positioningMode === 'absolute' 
+                          ? 'Restore to original position' 
+                          : 'Restore to last incremental position'}
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        Restore
+                      </Button>
+                    </div>
+
+                    {/* Position Controls */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
+                          <Move className="w-2.5 h-2.5" />
+                          Position (mm){positioningMode === 'incremental' && ' Δ'}
+                        </Label>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleResetPosition}
+                          className="h-5 px-1.5 text-[8px]"
+                          title="Reset position to zero"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 pl-1">
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-red-500 font-mono">X</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayPosition().x}
+                            onChange={(e) => handlePositionChangeWithMode('x', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="0.1"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-green-500 font-mono">Y</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayPosition().y}
+                            onChange={(e) => handlePositionChangeWithMode('y', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="0.1"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayPosition().z}
+                            onChange={(e) => handlePositionChangeWithMode('z', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="0.1"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Rotation Controls */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
+                          <RotateCw className="w-2.5 h-2.5" />
+                          Rotation (°){positioningMode === 'incremental' && ' Δ'}
+                        </Label>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleResetRotation}
+                          className="h-5 px-1.5 text-[8px]"
+                          title="Reset rotation to zero"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 pl-1">
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-red-500 font-mono">X</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayRotation().x}
+                            onChange={(e) => handleRotationChangeWithMode('x', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="1"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-green-500 font-mono">Y</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayRotation().y}
+                            onChange={(e) => handleRotationChangeWithMode('y', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="1"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
+                          <Input
+                            type="number"
+                            value={getDisplayRotation().z}
+                            onChange={(e) => handleRotationChangeWithMode('z', e.target.value)}
+                            className="h-7 !text-[10px] font-mono"
+                            step="1"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            </div>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </AccordionContent>
         </AccordionItem>
       )}
-
-      {/* Part Position Accordion */}
-      <AccordionItem value="part-position" className="border-border/50">
-        <AccordionTrigger className="py-2 text-xs font-tech hover:no-underline">
-          <div className="flex items-center gap-2">
-            <Move className="w-3.5 h-3.5 text-primary" />
-            Part Position
-          </div>
-        </AccordionTrigger>
-        <AccordionContent className="pt-2">
-          <div className="space-y-4">
-            {/* Mode Toggle */}
-            <div className="flex items-center justify-between border-b border-border/30 pb-2">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleModeToggle}
-                  className="h-5 px-1.5 text-[8px] gap-1"
-                  title={`Switch to ${positioningMode === 'absolute' ? 'incremental' : 'absolute'} mode`}
-                >
-                  {positioningMode === 'absolute' ? (
-                    <ToggleLeft className="w-3.5 h-3.5" />
-                  ) : (
-                    <ToggleRight className="w-3.5 h-3.5 text-primary" />
-                  )}
-                  <span className={positioningMode === 'incremental' ? 'text-primary font-medium' : ''}>
-                    {positioningMode === 'absolute' ? 'Absolute' : 'Incremental'}
-                  </span>
-                </Button>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRestore}
-                className="h-5 px-1.5 text-[8px] gap-1"
-                title={positioningMode === 'absolute' 
-                  ? 'Restore to original position' 
-                  : 'Restore to last incremental position'}
-              >
-                <RotateCcw className="w-2.5 h-2.5" />
-                Restore
-              </Button>
-            </div>
-
-            {/* Position Controls */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
-                  <Move className="w-2.5 h-2.5" />
-                  Position (mm){positioningMode === 'incremental' && ' Δ'}
-                </Label>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleResetPosition}
-                  className="h-5 px-1.5 text-[8px]"
-                  title="Reset position to zero"
-                >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                </Button>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-red-500 font-mono">X</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayPosition().x}
-                    onChange={(e) => handlePositionChangeWithMode('x', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="0.1"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-green-500 font-mono">Y</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayPosition().y}
-                    onChange={(e) => handlePositionChangeWithMode('y', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="0.1"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayPosition().z}
-                    onChange={(e) => handlePositionChangeWithMode('z', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="0.1"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Rotation Controls */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
-                  <RotateCw className="w-2.5 h-2.5" />
-                  Rotation (°){positioningMode === 'incremental' && ' Δ'}
-                </Label>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleResetRotation}
-                  className="h-5 px-1.5 text-[8px]"
-                  title="Reset rotation to zero"
-                >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                </Button>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-red-500 font-mono">X</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayRotation().x}
-                    onChange={(e) => handleRotationChangeWithMode('x', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="1"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-green-500 font-mono">Y</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayRotation().y}
-                    onChange={(e) => handleRotationChangeWithMode('y', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="1"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-[8px] text-blue-500 font-mono">Z</Label>
-                  <Input
-                    type="number"
-                    value={getDisplayRotation().z}
-                    onChange={(e) => handleRotationChangeWithMode('z', e.target.value)}
-                    className="h-7 !text-[10px] font-mono"
-                    step="1"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </AccordionContent>
-      </AccordionItem>
 
       {/* Supports Accordion */}
       <SupportsAccordion

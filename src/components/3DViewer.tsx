@@ -8,12 +8,14 @@ interface ThreeDViewerProps {
   currentFile: ProcessedFile | null;
   isProcessing: boolean;
   onComponentPlaced?: (component: any, position: any) => void;
+  onModelColorAssigned?: (modelId: string, color: string) => void;
 }
 
 const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
   currentFile,
   isProcessing,
   onComponentPlaced,
+  onModelColorAssigned,
 }) => {
   const [internalFile, setInternalFile] = useState<ProcessedFile | null>(null);
   const [modelTransform, setModelTransform] = useState<{
@@ -70,6 +72,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
           currentFile={displayFile}
           modelTransform={modelTransform}
           setModelTransform={setModelTransform}
+          onModelColorAssigned={onModelColorAssigned}
         />
       </Canvas>
 

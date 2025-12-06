@@ -19,6 +19,7 @@ interface ThreeDSceneProps {
   currentFile: ProcessedFile | null;
   modelTransform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 };
   setModelTransform: (transform: { position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }) => void;
+  onModelColorAssigned?: (modelId: string, color: string) => void;
 }
 
 const computeDominantUpQuaternion = (geometry: THREE.BufferGeometry) => {
@@ -542,6 +543,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   currentFile,
   modelTransform,
   setModelTransform,
+  onModelColorAssigned,
 }) => {
   const { camera, size } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -562,6 +564,15 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const [modelBounds, setModelBounds] = useState<BoundsSummary | null>(null);
   const [currentOrientation, setCurrentOrientation] = useState<ViewOrientation>('iso');
   const prevOrientationRef = useRef<ViewOrientation>('iso');
+
+  // Report model colors to parent when they change
+  useEffect(() => {
+    if (onModelColorAssigned) {
+      modelColors.forEach((color, modelId) => {
+        onModelColorAssigned(modelId, color);
+      });
+    }
+  }, [modelColors, onModelColorAssigned]);
   
   // Support placement state
   const [placing, setPlacing] = useState<{ active: boolean; type: SupportType | null; initParams?: Record<string, number> }>({ active: false, type: null });

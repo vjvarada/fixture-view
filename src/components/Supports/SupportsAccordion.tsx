@@ -42,12 +42,12 @@ const SupportsAccordion: React.FC<SupportsAccordionProps> = ({
   onSupportUpdate,
   onSupportDelete,
 }) => {
-  const [expandedItems, setExpandedItems] = useState<string[]>([]);
+  const [expandedItem, setExpandedItem] = useState<string | undefined>(undefined);
 
   // Auto-expand newly selected support
   useEffect(() => {
-    if (selectedSupportId && !expandedItems.includes(selectedSupportId)) {
-      setExpandedItems(prev => [...prev, selectedSupportId]);
+    if (selectedSupportId) {
+      setExpandedItem(selectedSupportId);
     }
   }, [selectedSupportId]);
 
@@ -328,9 +328,10 @@ const SupportsAccordion: React.FC<SupportsAccordionProps> = ({
       </AccordionTrigger>
       <AccordionContent className="pt-2">
         <Accordion 
-          type="multiple" 
-          value={expandedItems}
-          onValueChange={setExpandedItems}
+          type="single" 
+          collapsible
+          value={expandedItem}
+          onValueChange={setExpandedItem}
           className="space-y-1"
         >
           {supports.map((support, index) => (

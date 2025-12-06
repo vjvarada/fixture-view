@@ -164,6 +164,9 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [selectedSupportType, setSelectedSupportType] = useState<SupportType>('cylindrical');
     const [selectedSupportId, setSelectedSupportId] = useState<string | null>(null);
 
+    // Model colors state - tracks colors assigned to models in 3D scene
+    const [modelColors, setModelColors] = useState<Map<string, string>>(new Map());
+
     // Cavity state
     const [cavityClearance, setCavityClearance] = useState(0.5);
 
@@ -841,7 +844,6 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                       isProcessing={actualProcessing}
                       error={fileError}
                       onFileSelected={handleFileSelected}
-                      onClearFile={handleClearFile}
                     />
                   )}
                   {activeStep === 'baseplates' && (
@@ -930,6 +932,13 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               currentFile={actualFile}
               isProcessing={actualProcessing}
               onComponentPlaced={handleComponentPlaced}
+              onModelColorAssigned={(modelId, color) => {
+                setModelColors(prev => {
+                  const newMap = new Map(prev);
+                  newMap.set(modelId, color);
+                  return newMap;
+                });
+              }}
             />
 
             {/* Floating Tips Overlay */}
@@ -1007,11 +1016,13 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                 <PartPropertiesAccordion 
                   hasModel={!!actualFile} 
                   currentFile={actualFile}
+                  onClearFile={handleClearFile}
                   supports={supports}
                   selectedSupportId={selectedSupportId}
                   onSupportSelect={setSelectedSupportId}
                   onSupportUpdate={handleSupportUpdate}
                   onSupportDelete={handleSupportDelete}
+                  modelColor={actualFile ? modelColors.get(actualFile.metadata.name) : undefined}
                 />
 
                 {/* Subtract Workpieces panel anchored here */}

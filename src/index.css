@@ -3,30 +3,23 @@
 @tailwind utilities;
 
 /* Force show number input spinners - must be outside @layer to override Tailwind preflight */
+/* Ensure number inputs have minimum height for spin buttons */
+input[type="number"] {
+  min-height: 28px !important;
+  -moz-appearance: number-input !important;
+}
+
 /* Chrome, Safari, Edge, Opera */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: inner-spin-button !important;
-  appearance: auto !important;
   opacity: 1 !important;
-  display: block !important;
-  width: 14px !important;
-  height: 100% !important;
-  cursor: pointer;
-  background: transparent;
-  margin: 0;
-  margin-left: 2px;
-}
-
-/* Firefox */
-input[type="number"] {
-  -moz-appearance: number-input !important;
-  appearance: auto !important;
-}
-
-/* Ensure the input doesn't hide overflow */
-input[type="number"] {
-  overflow: visible;
+  height: 80% !important;
+  position: absolute !important;
+  top: 10% !important;
+  right: 2px !important;
+  cursor: pointer !important;
+  margin: 0 !important;
 }
 
 /* Fixturemate Design System - Professional 3D Viewer Theme */
