@@ -36,10 +36,10 @@ export function useFileProcessing(): UseFileProcessingReturn {
       throw new Error(`Unsupported file format: ${extension}. Supported formats: ${SUPPORTED_FORMATS.join(', ')}`);
     }
 
-    // Check file size (max 50MB)
-    const maxSize = 50 * 1024 * 1024; // 50MB
+    // Check file size (max 100MB)
+    const maxSize = 100 * 1024 * 1024; // 100MB
     if (file.size > maxSize) {
-      throw new Error('File too large. Maximum size is 50MB.');
+      throw new Error('File too large. Maximum size is 100MB.');
     }
   };
 

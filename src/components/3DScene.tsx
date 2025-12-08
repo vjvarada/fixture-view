@@ -125,6 +125,49 @@ const computeDominantUpQuaternion = (geometry: THREE.BufferGeometry) => {
 // Reusable temp vector for world position calculations (module-level)
 const tempVec = new THREE.Vector3();
 
+/**
+ * Get the actual minimum Y value from mesh geometry vertices in world space.
+ * This uses the actual mesh vertices instead of the bounding box for more accurate
+ * collision detection with the buildplate.
+ * 
+ * @param object - The THREE.Object3D to analyze (typically a Mesh or Group)
+ * @returns The minimum Y coordinate in world space
+ */
+const getActualMinYFromMesh = (object: THREE.Object3D): number => {
+  let minY = Infinity;
+  const worldVertex = new THREE.Vector3();
+  
+  object.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.geometry) {
+      const geometry = child.geometry;
+      const positionAttribute = geometry.getAttribute('position');
+      
+      if (positionAttribute) {
+        // Get the world matrix for this mesh
+        child.updateMatrixWorld(true);
+        const worldMatrix = child.matrixWorld;
+        
+        // Check all vertices
+        for (let i = 0; i < positionAttribute.count; i++) {
+          worldVertex.set(
+            positionAttribute.getX(i),
+            positionAttribute.getY(i),
+            positionAttribute.getZ(i)
+          );
+          // Transform to world space
+          worldVertex.applyMatrix4(worldMatrix);
+          
+          if (worldVertex.y < minY) {
+            minY = worldVertex.y;
+          }
+        }
+      }
+    }
+  });
+  
+  return minY === Infinity ? 0 : minY;
+};
+
 // Utility function for model colors
 const modelColorPalette = [
   '#4ade80', // Green
@@ -1842,6 +1885,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
   // Handle check-baseplate-collision event (triggered when position is reset from Properties panel)
   // This lifts the part above the baseplate if there's a collision
+  // Uses actual mesh vertices for accurate collision detection instead of bounding box
   React.useEffect(() => {
     const handleCheckBaseplateCollision = (e: CustomEvent) => {
       if (!basePlate) return;
@@ -1855,8 +1899,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const baseplateTopY = basePlate.depth ?? 4;
       
       partRef.current.updateMatrixWorld(true);
-      const partBox = new THREE.Box3().setFromObject(partRef.current);
-      const currentMinY = partBox.min.y;
+      // Use actual mesh vertices for accurate collision detection
+      const currentMinY = getActualMinYFromMesh(partRef.current);
       
       // If part's bottom is below baseplate top, lift it
       if (currentMinY < baseplateTopY) {
@@ -1882,6 +1926,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
   // Handle delayed baseplate collision check - runs AFTER pivot controls finish baking transform
   // This ensures the mesh position is stable before we check and adjust
+  // Uses actual mesh vertices for accurate collision detection instead of bounding box
   React.useEffect(() => {
     const handleDelayedCollisionCheck = (e: CustomEvent) => {
       if (!basePlate) return;
@@ -1894,12 +1939,11 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       
       const baseplateTopY = basePlate.depth ?? 4;
       
-      // Force update world matrix to get accurate bounds
+      // Force update world matrix to get accurate vertex positions
       partRef.current.updateMatrixWorld(true);
       
-      // Get the world-space bounding box (accounts for rotation)
-      const partBox = new THREE.Box3().setFromObject(partRef.current);
-      const currentMinY = partBox.min.y;
+      // Use actual mesh vertices for accurate collision detection
+      const currentMinY = getActualMinYFromMesh(partRef.current);
       
       // If part's bottom is below baseplate top, lift it
       if (currentMinY < baseplateTopY - 0.01) {
@@ -1924,6 +1968,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   }, [basePlate]);
 
   // Handle set-part-to-baseplate event - positions part so its bottom touches baseplate top
+  // Uses actual mesh vertices for accurate positioning instead of bounding box
   React.useEffect(() => {
     const handleSetPartToBaseplate = (e: CustomEvent) => {
       if (!basePlate) return;
@@ -1937,8 +1982,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const baseplateTopY = basePlate.depth ?? 4;
       
       partRef.current.updateMatrixWorld(true);
-      const partBox = new THREE.Box3().setFromObject(partRef.current);
-      const currentMinY = partBox.min.y;
+      // Use actual mesh vertices for accurate positioning
+      const currentMinY = getActualMinYFromMesh(partRef.current);
       
       // Calculate offset to place part's bottom exactly on baseplate top
       const offsetY = baseplateTopY - currentMinY;

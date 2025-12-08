@@ -25,6 +25,7 @@ import { AnySupport } from "@/components/Supports/types";
 import UnitsDialog from "@/modules/FileImport/components/UnitsDialog";
 import MeshOptimizationDialog from "@/modules/FileImport/components/MeshOptimizationDialog";
 import { useFileProcessing } from "@/modules/FileImport/hooks/useFileProcessing";
+import { LARGE_FILE_THRESHOLD } from "@/modules/FileImport/hooks/useFileProcessingRefactored";
 import { ProcessedFile } from "@/modules/FileImport/types";
 import {
   analyzeMesh,
@@ -35,6 +36,10 @@ import {
   DECIMATION_THRESHOLD,
   DECIMATION_TARGET,
 } from "@/modules/FileImport/services/meshAnalysis";
+import {
+  repairAndDecimateMesh,
+  initManifold,
+} from "@/modules/FileImport/services/manifoldMeshService";
 import * as THREE from 'three';
 import {
   Aperture,
@@ -152,9 +157,32 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [meshProgress, setMeshProgress] = useState<MeshProcessingProgress | null>(null);
     const [isMeshProcessing, setIsMeshProcessing] = useState(false);
     const [pendingProcessedFile, setPendingProcessedFile] = useState<ProcessedFile | null>(null);
+    const [pendingFileSize, setPendingFileSize] = useState<number | undefined>(undefined);
+    
+    // Processing results state - shown after repair/optimization completes
+    const [processingResult, setProcessingResult] = useState<{
+      success: boolean;
+      wasRepaired: boolean;
+      wasDecimated: boolean;
+      originalTriangles: number;
+      finalTriangles: number;
+      reductionPercent: number;
+      actions: string[];
+      error?: string;
+      processedFile?: ProcessedFile;
+    } | null>(null);
 
     const pendingFileRef = useRef<File | null>(null);
     const { processFile, error: fileProcessingError, clearError } = useFileProcessing();
+
+    // Initialize Manifold3D module early
+    useEffect(() => {
+      initManifold().then(success => {
+        if (success) {
+          console.log('[AppShell] Manifold3D pre-initialized');
+        }
+      });
+    }, []);
 
     // Determine the actual file to use (first imported part for backward compatibility)
     const actualFile = currentFile || (importedParts.length > 0 ? importedParts[0] : null);
@@ -187,8 +215,9 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
     // Handle file selection - show units dialog
     const handleFileSelected = useCallback((file: File) => {
-      console.log('File selected:', file.name);
+      console.log('File selected:', file.name, 'Size:', (file.size / 1024 / 1024).toFixed(2), 'MB');
       pendingFileRef.current = file;
+      setPendingFileSize(file.size);
       setIsUnitsDialogOpen(true);
     }, []);
 
@@ -212,10 +241,17 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           // Store the processed file for later use
           setPendingProcessedFile(processedFile);
           
-          // If mesh has issues or needs decimation, show the optimization dialog
-          if (analysis.issues.length > 0 || analysis.triangleCount > DECIMATION_THRESHOLD) {
+          // Check if file is large (>5MB) - should be decimated for performance
+          const isLargeFile = pendingFileRef.current && pendingFileRef.current.size > LARGE_FILE_THRESHOLD;
+          
+          // If mesh has issues, needs decimation, or is a large file, show the optimization dialog
+          if (analysis.issues.length > 0 || analysis.triangleCount > DECIMATION_THRESHOLD || isLargeFile) {
             setIsProcessing(false);
             setIsOptimizationDialogOpen(true);
+            
+            if (isLargeFile) {
+              console.log(`[Mesh Import] Large file detected (${(pendingFileRef.current!.size / 1024 / 1024).toFixed(2)} MB) - optimization recommended`);
+            }
           } else {
             // Mesh is fine, proceed directly
             finalizeMeshImport(processedFile);
@@ -243,6 +279,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       setIsProcessing(false);
       setIsOptimizationDialogOpen(false);
       setPendingProcessedFile(null);
+      setPendingFileSize(undefined);
       setMeshAnalysis(null);
       setMeshProgress(null);
 
@@ -252,20 +289,51 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       }
     }, [completedSteps]);
 
-    // Handle proceeding with original mesh (no optimization)
-    const handleProceedWithOriginal = useCallback(async () => {
+    // Handle proceeding with original mesh (with optional repair using Manifold3D)
+    const handleProceedWithOriginal = useCallback(async (shouldRepair?: boolean) => {
       if (!pendingProcessedFile) return;
 
       setIsMeshProcessing(true);
       
       try {
-        if (meshAnalysis && meshAnalysis.issues.length > 0 && !meshAnalysis.issues.every(i => i.includes('High triangle count'))) {
-          setMeshProgress({ stage: 'repairing', progress: 0, message: 'Repairing mesh...' });
-          const repairResult = await repairMesh(pendingProcessedFile.mesh.geometry, setMeshProgress);
+        const hasRepairableIssues = meshAnalysis && meshAnalysis.issues.length > 0 && !meshAnalysis.issues.every(i => i.includes('High triangle count'));
+        const doRepair = shouldRepair === true;
+        
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
+        console.log('[Mesh Import] Processing mesh');
+        console.log(`[Mesh Import]   Repair requested: ${shouldRepair}`);
+        console.log(`[Mesh Import]   Has repairable issues: ${hasRepairableIssues}`);
+        console.log(`[Mesh Import]   Will repair: ${doRepair}`);
+        
+        if (doRepair && hasRepairableIssues) {
+          console.log('[Mesh Import] Starting Manifold3D repair...');
           
-          if (repairResult.success && repairResult.repairedGeometry) {
+          // Set initial progress immediately
+          setMeshProgress({ 
+            stage: 'repairing', 
+            progress: 0, 
+            message: 'Initializing repair...' 
+          });
+          
+          const result = await repairAndDecimateMesh(
+            pendingProcessedFile.mesh.geometry,
+            DECIMATION_TARGET,
+            { repair: true, decimate: false },
+            (p) => setMeshProgress({ 
+              stage: p.stage === 'complete' ? 'complete' : 'repairing', 
+              progress: p.progress, 
+              message: p.message 
+            })
+          );
+          
+          if (result.success && result.geometry) {
+            console.log('[Mesh Import] ✓ Repair complete');
+            console.log(`[Mesh Import]   Was repaired: ${result.wasRepaired}`);
+            console.log(`[Mesh Import]   Original triangles: ${result.originalTriangles.toLocaleString()}`);
+            console.log(`[Mesh Import]   Final triangles: ${result.finalTriangles.toLocaleString()}`);
+            
             const repairedMesh = new THREE.Mesh(
-              repairResult.repairedGeometry,
+              result.geometry,
               pendingProcessedFile.mesh.material
             );
             repairedMesh.castShadow = true;
@@ -276,47 +344,68 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               mesh: repairedMesh,
               metadata: {
                 ...pendingProcessedFile.metadata,
-                triangles: repairResult.triangleCount,
+                triangles: result.finalTriangles,
               },
             };
             
             finalizeMeshImport(updatedFile);
           } else {
+            console.log('[Mesh Import] ✗ Repair failed:', result.error);
             finalizeMeshImport(pendingProcessedFile);
           }
         } else {
+          console.log('[Mesh Import] Skipping repair, using original mesh');
           finalizeMeshImport(pendingProcessedFile);
         }
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
       } catch (err) {
-        console.error('Error during mesh repair:', err);
+        console.error('[Mesh Import] Error during mesh repair:', err);
         finalizeMeshImport(pendingProcessedFile);
       } finally {
         setIsMeshProcessing(false);
       }
     }, [pendingProcessedFile, meshAnalysis, finalizeMeshImport]);
 
-    // Handle mesh optimization (decimation)
-    const handleOptimizeMesh = useCallback(async () => {
+    // Handle mesh optimization (decimation only, using fallback method)
+    const handleOptimizeMesh = useCallback(async (shouldRepair?: boolean) => {
       if (!pendingProcessedFile) return;
 
       setIsMeshProcessing(true);
       
+      // Set initial progress immediately
+      setMeshProgress({ 
+        stage: 'decimating', 
+        progress: 0, 
+        message: 'Initializing optimization...' 
+      });
+      
       try {
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
+        console.log('[Mesh Import] Starting mesh optimization');
+        console.log(`[Mesh Import]   Repair requested: ${shouldRepair}`);
+        
         let currentGeometry = pendingProcessedFile.mesh.geometry;
         
-        if (meshAnalysis && meshAnalysis.issues.length > 0 && !meshAnalysis.issues.every(i => i.includes('High triangle count'))) {
+        // Use legacy repair if requested (faster but less robust)
+        if (shouldRepair && meshAnalysis && meshAnalysis.issues.length > 0 && !meshAnalysis.issues.every(i => i.includes('High triangle count'))) {
           setMeshProgress({ stage: 'repairing', progress: 0, message: 'Repairing mesh...' });
           const repairResult = await repairMesh(currentGeometry, setMeshProgress);
           
           if (repairResult.success && repairResult.repairedGeometry) {
+            console.log('[Mesh Import] ✓ Quick repair complete');
             currentGeometry = repairResult.repairedGeometry;
           }
         }
         
-        setMeshProgress({ stage: 'decimating', progress: 0, message: 'Decimating mesh...' });
+        setMeshProgress({ stage: 'decimating', progress: 0, message: 'Optimizing mesh...' });
         const decimationResult = await decimateMesh(currentGeometry, DECIMATION_TARGET, setMeshProgress);
         
         if (decimationResult.success && decimationResult.decimatedGeometry) {
+          console.log('[Mesh Import] ✓ Optimization complete');
+          console.log(`[Mesh Import]   Original: ${decimationResult.originalTriangles.toLocaleString()}`);
+          console.log(`[Mesh Import]   Final: ${decimationResult.finalTriangles.toLocaleString()}`);
+          console.log(`[Mesh Import]   Reduction: ${decimationResult.reductionPercent.toFixed(1)}%`);
+          
           const decimatedMesh = new THREE.Mesh(
             decimationResult.decimatedGeometry,
             pendingProcessedFile.mesh.material
@@ -335,11 +424,14 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           
           finalizeMeshImport(updatedFile);
         } else {
-          setFileError(decimationResult.error || 'Decimation failed');
+          console.log('[Mesh Import] ✗ Optimization failed:', decimationResult.error);
+          setFileError(decimationResult.error || 'Optimization failed');
           finalizeMeshImport(pendingProcessedFile);
         }
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Failed to optimize mesh';
+        console.error('[Mesh Import] Error:', errorMessage);
         setFileError(errorMessage);
         finalizeMeshImport(pendingProcessedFile);
       } finally {
@@ -347,12 +439,141 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       }
     }, [pendingProcessedFile, meshAnalysis, finalizeMeshImport]);
 
+    // Handle combined repair and optimization using Manifold3D (most robust)
+    const handleRepairAndOptimize = useCallback(async () => {
+      if (!pendingProcessedFile) return;
+
+      console.log('[Mesh Import] handleRepairAndOptimize called');
+      console.log('[Mesh Import] Setting isMeshProcessing=true');
+      setIsMeshProcessing(true);
+      
+      // For large files (>5MB), use aggressive decimation target (50K triangles)
+      // Otherwise use standard target (500K)
+      const isLargeFile = pendingFileSize && pendingFileSize > LARGE_FILE_THRESHOLD;
+      const LARGE_FILE_DECIMATION_TARGET = 50_000;
+      const effectiveTarget = isLargeFile ? LARGE_FILE_DECIMATION_TARGET : DECIMATION_TARGET;
+      
+      // Set initial progress immediately
+      console.log('[Mesh Import] Setting initial meshProgress');
+      setMeshProgress({ 
+        stage: 'repairing', 
+        progress: 0, 
+        message: 'Initializing mesh processing...' 
+      });
+      
+      // IMPORTANT: Allow UI to update before starting heavy processing
+      // Without this delay, React can't re-render before the main thread is blocked
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      try {
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
+        console.log('[Mesh Import] Starting ROBUST Repair & Optimize with Manifold3D');
+        console.log(`[Mesh Import]   Original triangles: ${pendingProcessedFile.metadata.triangles.toLocaleString()}`);
+        console.log(`[Mesh Import]   Target triangles: ${effectiveTarget.toLocaleString()}`);
+        console.log(`[Mesh Import]   File size: ${pendingFileSize ? (pendingFileSize / 1024 / 1024).toFixed(2) + ' MB' : 'unknown'}`);
+        console.log(`[Mesh Import]   Large file mode (>5MB): ${!!isLargeFile}`);
+        
+        const result = await repairAndDecimateMesh(
+          pendingProcessedFile.mesh.geometry,
+          effectiveTarget,
+          { 
+            repair: true, 
+            decimate: true, 
+            forceDecimate: !!isLargeFile // Force decimation for large files
+          },
+          (p) => setMeshProgress({ 
+            stage: p.stage === 'complete' ? 'complete' : p.stage === 'repairing' ? 'repairing' : 'decimating', 
+            progress: p.progress, 
+            message: p.message 
+          })
+        );
+        
+        if (result.success && result.geometry) {
+          console.log('[Mesh Import] ✓ Repair & Optimize complete');
+          console.log(`[Mesh Import]   Was repaired: ${result.wasRepaired}`);
+          console.log(`[Mesh Import]   Was decimated: ${result.wasDecimated}`);
+          console.log(`[Mesh Import]   Original: ${result.originalTriangles.toLocaleString()}`);
+          console.log(`[Mesh Import]   Final: ${result.finalTriangles.toLocaleString()}`);
+          console.log(`[Mesh Import]   Reduction: ${result.reductionPercent.toFixed(1)}%`);
+          result.actions.forEach(action => console.log(`[Mesh Import]   → ${action}`));
+          
+          const processedMesh = new THREE.Mesh(
+            result.geometry,
+            pendingProcessedFile.mesh.material
+          );
+          processedMesh.castShadow = true;
+          processedMesh.receiveShadow = true;
+          
+          const updatedFile: ProcessedFile = {
+            ...pendingProcessedFile,
+            mesh: processedMesh,
+            metadata: {
+              ...pendingProcessedFile.metadata,
+              triangles: result.finalTriangles,
+            },
+          };
+          
+          // Store results for display - don't auto-close
+          setProcessingResult({
+            success: true,
+            wasRepaired: result.wasRepaired,
+            wasDecimated: result.wasDecimated,
+            originalTriangles: result.originalTriangles,
+            finalTriangles: result.finalTriangles,
+            reductionPercent: result.reductionPercent,
+            actions: result.actions,
+            processedFile: updatedFile,
+          });
+        } else {
+          console.log('[Mesh Import] ✗ Repair & Optimize failed:', result.error);
+          setProcessingResult({
+            success: false,
+            wasRepaired: false,
+            wasDecimated: false,
+            originalTriangles: pendingProcessedFile.metadata.triangles,
+            finalTriangles: pendingProcessedFile.metadata.triangles,
+            reductionPercent: 0,
+            actions: [],
+            error: result.error || 'Processing failed',
+            processedFile: pendingProcessedFile,
+          });
+        }
+        console.log('[Mesh Import] ═══════════════════════════════════════════');
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Failed to process mesh';
+        console.error('[Mesh Import] Error:', errorMessage);
+        setProcessingResult({
+          success: false,
+          wasRepaired: false,
+          wasDecimated: false,
+          originalTriangles: pendingProcessedFile.metadata.triangles,
+          finalTriangles: pendingProcessedFile.metadata.triangles,
+          reductionPercent: 0,
+          actions: [],
+          error: errorMessage,
+          processedFile: pendingProcessedFile,
+        });
+      } finally {
+        setIsMeshProcessing(false);
+      }
+    }, [pendingProcessedFile, finalizeMeshImport]);
+
+    // Handle confirming processing results and finalizing import
+    const handleConfirmProcessingResult = useCallback(() => {
+      if (processingResult?.processedFile) {
+        finalizeMeshImport(processingResult.processedFile);
+      }
+      setProcessingResult(null);
+    }, [processingResult, finalizeMeshImport]);
+
     // Handle canceling mesh optimization
     const handleCancelOptimization = useCallback(() => {
       setIsOptimizationDialogOpen(false);
       setPendingProcessedFile(null);
+      setPendingFileSize(undefined);
       setMeshAnalysis(null);
       setMeshProgress(null);
+      setProcessingResult(null);
       setIsProcessing(false);
     }, []);
 
@@ -1144,9 +1365,13 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           analysis={meshAnalysis}
           progress={meshProgress}
           isProcessing={isMeshProcessing}
+          fileSize={pendingFileSize}
           onProceedWithOriginal={handleProceedWithOriginal}
           onOptimizeMesh={handleOptimizeMesh}
+          onRepairAndOptimize={handleRepairAndOptimize}
           onCancel={handleCancelOptimization}
+          processingResult={processingResult}
+          onConfirmResult={handleConfirmProcessingResult}
         />
       </div>
     );

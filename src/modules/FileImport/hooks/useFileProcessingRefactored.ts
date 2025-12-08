@@ -25,7 +25,11 @@ interface UseFileProcessingReturn {
 // Configuration
 // ============================================================================
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+/** Maximum allowed file size (100MB) */
+export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+
+/** Files larger than this will be automatically optimized (5MB) */
+export const LARGE_FILE_THRESHOLD = 5 * 1024 * 1024; // 5MB
 
 const UNIT_SCALES: Record<string, number> = {
   mm: 1,
