@@ -42,6 +42,10 @@ const SupportTransformControls: React.FC<SupportTransformControlsProps> = ({
   const anchorRef = useRef<THREE.Mesh>(null);
   const isDraggingRef = useRef(false);
   
+  // Store initial group transform at drag start to prevent feedback loop
+  const dragStartGroupPos = useRef<THREE.Vector3 | null>(null);
+  const dragStartGroupRotY = useRef<number>(0);
+  
   const center = (support as any).center as THREE.Vector2;
   const effectiveBaseY = (support as any).baseY ?? baseTopY;
   const supportHeight = (support as any).height ?? 10;
@@ -49,6 +53,12 @@ const SupportTransformControls: React.FC<SupportTransformControlsProps> = ({
   
   // Position the gizmo at the top of the support
   const gizmoY = effectiveBaseY + supportHeight + 5;
+  
+  // Use locked position during drag to prevent janky feedback loop
+  const displayPos = isDraggingRef.current && dragStartGroupPos.current 
+    ? dragStartGroupPos.current 
+    : new THREE.Vector3(center.x, gizmoY, center.y);
+  const displayRotY = isDraggingRef.current ? dragStartGroupRotY.current : currentRotationY;
   
   // Gizmo scale based on support size
   const gizmoScale = useMemo(() => {
@@ -87,16 +97,19 @@ const SupportTransformControls: React.FC<SupportTransformControlsProps> = ({
     }
   }, [getTransformFromAnchor, onTransformChange]);
 
-  // Drag start
+  // Drag start - lock the group position to prevent feedback loop
   const handleDragStart = useCallback(() => {
     isDraggingRef.current = true;
+    dragStartGroupPos.current = new THREE.Vector3(center.x, gizmoY, center.y);
+    dragStartGroupRotY.current = currentRotationY;
     window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: true } }));
     gl.domElement.style.cursor = 'grabbing';
-  }, [gl]);
+  }, [gl, center, gizmoY, currentRotationY]);
 
   // Drag end - emit final transform and reset pivot
   const handleDragEnd = useCallback(() => {
     isDraggingRef.current = false;
+    dragStartGroupPos.current = null;
     window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: false } }));
     gl.domElement.style.cursor = 'auto';
     
@@ -156,7 +169,10 @@ const SupportTransformControls: React.FC<SupportTransformControlsProps> = ({
   }, [onDeselect]);
 
   return (
-    <group position={[center.x, gizmoY, center.y]} rotation={[0, currentRotationY, 0]}>
+    <group 
+      position={[displayPos.x, displayPos.y, displayPos.z]} 
+      rotation={[0, displayRotY, 0]}
+    >
       <PivotControls
         ref={pivotRef}
         scale={gizmoScale}
