@@ -120,6 +120,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         // Step 1: Calculate resolution
         if (progressCallback) progressCallback(5, 100, 'Calculating resolution');
         
+        // Yield to browser to keep UI responsive
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
         const box = new THREE.Box3();
         box.setFromArray(workingVertices);
         const size = new THREE.Vector3();
@@ -136,6 +139,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         
         // Step 2: Generate heightmap
         if (progressCallback) progressCallback(10, 100, 'Generating heightmap');
+        
+        // Yield to browser before GPU work
+        await new Promise(resolve => setTimeout(resolve, 0));
         
         const heightmapProgressCallback = clampedResolution > tileSize ? (current, total) => {
             const percent = 10 + (current / total) * 40;
@@ -154,6 +160,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         
         // Step 3: Load heightmap data
         if (progressCallback) progressCallback(50, 100, 'Loading heightmap data');
+        
+        // Yield to browser after GPU work
+        await new Promise(resolve => setTimeout(resolve, 0));
         
         let heightMap;
         if ('usesIndexedDB' in heightmapResult && heightmapResult.usesIndexedDB) {
@@ -179,6 +188,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         // Step 5: Create watertight mesh
         if (progressCallback) progressCallback(75, 100, 'Creating watertight mesh');
         
+        // Yield to browser before mesh generation
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
         // For Y-up coordinate system, clip values are based on Y (height) bounds
         const originalBox = box;
         const clipYMin = originalBox.min.y - offsetDistance;  // Bottom of mesh (ground level)
@@ -193,6 +205,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
             clipYMax,  // Was clipZMax - now represents Y max
             meshSettings
         );
+        
+        // Yield to browser after mesh generation
+        await new Promise(resolve => setTimeout(resolve, 0));
         
         result.geometry = geometry;
         result.metadata.originalTriangleCount = geometry.index.count / 3;

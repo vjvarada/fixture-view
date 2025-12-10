@@ -15,7 +15,12 @@ import { getSupportFootprintBounds, getSupportFootprintPoints } from './Supports
 import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
+import { performBatchCSGSubtractionInWorker } from '@/lib/workers';
+import { decimateMesh } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
+
+/** Target triangle count for offset mesh decimation */
+const OFFSET_MESH_DECIMATION_TARGET = 50_000;
 
 interface ThreeDSceneProps {
   importedParts: ProcessedFile[];
@@ -1290,6 +1295,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           fillHoles: settings.fillHoles,
         });
 
+        // Yield to browser before heavy computation
+        await new Promise(resolve => setTimeout(resolve, 0));
+
         // Generate the offset mesh with user settings
         const result = await createOffsetMesh(vertices, {
           offsetDistance: settings.offsetDistance ?? 0.5,
@@ -1299,10 +1307,60 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           fillHoles: settings.fillHoles ?? true,
           progressCallback: (current, total, stage) => {
             console.log(`[OffsetMesh] ${stage}: ${current}/${total}`);
+            // Dispatch progress event for UI updates
+            window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+              detail: { current, total, stage }
+            }));
           },
         });
 
+        // Yield to browser after heavy computation
+        await new Promise(resolve => setTimeout(resolve, 0));
+
         if (result.geometry) {
+          let finalGeometry = result.geometry;
+          let finalTriangleCount = result.metadata.triangleCount;
+          
+          // Decimate if triangle count exceeds threshold (for CSG performance)
+          if (result.metadata.triangleCount > OFFSET_MESH_DECIMATION_TARGET) {
+            console.log(`[3DScene] Decimating offset mesh from ${result.metadata.triangleCount} to ~${OFFSET_MESH_DECIMATION_TARGET} triangles...`);
+            
+            window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+              detail: { current: 90, total: 100, stage: 'Decimating mesh...' }
+            }));
+            
+            // Yield to browser before decimation
+            await new Promise(resolve => setTimeout(resolve, 0));
+            
+            // decimateMesh expects non-indexed geometry, so convert if needed
+            let geometryToDecimate = result.geometry;
+            if (result.geometry.index) {
+              geometryToDecimate = result.geometry.toNonIndexed();
+              result.geometry.dispose();
+            }
+            
+            const decimationResult = await decimateMesh(
+              geometryToDecimate,
+              OFFSET_MESH_DECIMATION_TARGET,
+              (progressInfo) => {
+                console.log(`[3DScene] Decimation: ${progressInfo.message}`);
+              }
+            );
+            
+            // Dispose intermediate geometry if we converted
+            if (geometryToDecimate !== result.geometry) {
+              geometryToDecimate.dispose();
+            }
+            
+            if (decimationResult.success && decimationResult.geometry) {
+              console.log(`[3DScene] Decimation complete: ${decimationResult.originalTriangles} -> ${decimationResult.finalTriangles} triangles (${decimationResult.reductionPercent.toFixed(1)}% reduction)`);
+              finalGeometry = decimationResult.geometry;
+              finalTriangleCount = Math.round(decimationResult.finalTriangles);
+            } else {
+              console.warn('[3DScene] Decimation failed, using original geometry');
+            }
+          }
+          
           // Create preview material - translucent blue to match color scheme
           const previewMaterial = new THREE.MeshStandardMaterial({
             color: 0x3b82f6, // Blue-500 for visibility
@@ -1314,13 +1372,13 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             metalness: 0.1,
           });
 
-          const previewMesh = new THREE.Mesh(result.geometry, previewMaterial);
+          const previewMesh = new THREE.Mesh(finalGeometry, previewMaterial);
           
           // The offset mesh is already in world space (we applied the transform before processing)
           // No need to apply transform again
           previewMesh.name = 'offset-mesh-preview';
           
-          console.log(`[3DScene] Offset mesh generated: ${result.metadata.triangleCount} triangles in ${result.metadata.processingTime.toFixed(0)}ms`);
+          console.log(`[3DScene] Offset mesh generated: ${finalTriangleCount} triangles in ${result.metadata.processingTime.toFixed(0)}ms`);
           
           setOffsetMeshPreview(previewMesh);
           
@@ -1851,10 +1909,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('supports-trim-request', handler as EventListener);
   }, [supports, baseTopY, buildSupportMesh]);
 
-  // Handle cavity subtraction - cut supports with the offset mesh using three-bvh-csg
-  // Strategy: Cut each support individually, but extend supports slightly below baseplate
-  // to ensure the bottom cap is fully embedded, giving the CSG cut solid faces to connect to
-  // After cutting all supports, union them with the baseplate to create a single solid fixture
+  // Handle cavity subtraction - cut supports with the offset mesh using web worker
+  // Strategy: Cut each support individually in a background thread to avoid blocking UI
   React.useEffect(() => {
     const handleExecuteCavitySubtraction = async (e: CustomEvent) => {
       const { settings } = e.detail || {};
@@ -1878,11 +1934,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         return;
       }
 
-      // Use three-bvh-csg for CSG operations
-      const { Brush, Evaluator, SUBTRACTION, ADDITION } = await import('three-bvh-csg');
-      const evaluator = new Evaluator();
-      evaluator.useGroups = false;
-
       try {
         // Get the cutter (offset mesh) geometry in world space
         let cutterGeometry = offsetMeshPreview.geometry.clone();
@@ -1903,166 +1954,79 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           cutterGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
         }
         cutterGeometry.computeVertexNormals();
+
+        // Prepare support geometries for batch processing
+        const supportsToProcess: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
         
-        const cutterBrush = new Brush(cutterGeometry);
-        cutterBrush.updateMatrixWorld();
-
-        const newModifiedGeometries = new Map<string, THREE.BufferGeometry>();
-        const cutSupportGeometries: THREE.BufferGeometry[] = [];
-        let successCount = 0;
-        let errorCount = 0;
-
-        // Process each support individually
         for (const support of supports) {
-          try {
-            // Build support geometry at its actual position
-            const supportGeometry = buildFullSupportGeometry(support, baseTopY, false);
-            if (!supportGeometry) {
-              errorCount++;
-              continue;
-            }
-            
-            // Prepare support geometry for CSG
-            if (!supportGeometry.index) {
-              const posAttr = supportGeometry.getAttribute('position');
-              const vertexCount = posAttr.count;
-              const indices = new Uint32Array(vertexCount);
-              for (let i = 0; i < vertexCount; i++) indices[i] = i;
-              supportGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
-            }
-            if (!supportGeometry.getAttribute('uv')) {
-              const position = supportGeometry.getAttribute('position');
-              const uvArray = new Float32Array(position.count * 2);
-              supportGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
-            }
-            supportGeometry.computeVertexNormals();
-            
-            // Create support brush
-            const supportBrush = new Brush(supportGeometry);
-            supportBrush.updateMatrixWorld();
-
-            // Perform CSG subtraction: support - cutter
-            const resultBrush = evaluator.evaluate(supportBrush, cutterBrush, SUBTRACTION);
-            
-            if (resultBrush && resultBrush.geometry) {
-              const resultGeometry = resultBrush.geometry.clone();
-              resultGeometry.computeVertexNormals();
-              
-              newModifiedGeometries.set(support.id, resultGeometry);
-              cutSupportGeometries.push(resultGeometry);
-              successCount++;
-            } else {
-              errorCount++;
-            }
-          } catch (err) {
-            console.error(`[3DScene] Error processing support ${support.id}:`, err);
-            errorCount++;
+          const supportGeometry = buildFullSupportGeometry(support, baseTopY, false);
+          if (!supportGeometry) continue;
+          
+          // Prepare support geometry for CSG
+          if (!supportGeometry.index) {
+            const posAttr = supportGeometry.getAttribute('position');
+            const vertexCount = posAttr.count;
+            const indices = new Uint32Array(vertexCount);
+            for (let i = 0; i < vertexCount; i++) indices[i] = i;
+            supportGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
           }
+          if (!supportGeometry.getAttribute('uv')) {
+            const position = supportGeometry.getAttribute('position');
+            const uvArray = new Float32Array(position.count * 2);
+            supportGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+          }
+          supportGeometry.computeVertexNormals();
+          
+          supportsToProcess.push({ id: support.id, geometry: supportGeometry });
         }
+
+        if (supportsToProcess.length === 0) {
+          window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
+            detail: { success: false, error: 'No valid support geometries' }
+          }));
+          return;
+        }
+
+        console.log(`[3DScene] Starting batch CSG subtraction in worker for ${supportsToProcess.length} supports...`);
+        
+        // Perform batch CSG subtraction in web worker
+        const resultGeometries = await performBatchCSGSubtractionInWorker(
+          supportsToProcess,
+          cutterGeometry,
+          (current, total, supportId, stage) => {
+            console.log(`[3DScene] CSG Progress: ${current}/${total} (${supportId}) - Stage: ${stage}`);
+            // Dispatch progress event for UI updates
+            window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+              detail: { 
+                current, 
+                total, 
+                supportId, 
+                stage: stage === 'reconstruct' 
+                  ? `Finalizing support ${current}/${total}` 
+                  : `Cutting support ${current}/${total}`
+              }
+            }));
+          }
+        );
+
+        const successCount = resultGeometries.size;
+        const errorCount = supportsToProcess.length - successCount;
 
         // Update state with modified geometries
-        setModifiedSupportGeometries(newModifiedGeometries);
-
-        // After cutting all supports, union them with the baseplate
-        let baseplateUnionSuccess = false;
-        if (successCount > 0 && basePlateMeshRef.current && cutSupportGeometries.length > 0) {
-          try {
-            console.log('[3DScene] Starting CSG union of cut supports with baseplate...');
-            
-            // Get baseplate geometry in world space
-            let baseplateGeometry = basePlateMeshRef.current.geometry.clone();
-            basePlateMeshRef.current.updateMatrixWorld(true);
-            baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
-            
-            // Prepare baseplate geometry for CSG
-            if (!baseplateGeometry.index) {
-              const posAttr = baseplateGeometry.getAttribute('position');
-              const vertexCount = posAttr.count;
-              const indices = new Uint32Array(vertexCount);
-              for (let i = 0; i < vertexCount; i++) indices[i] = i;
-              baseplateGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
-            }
-            if (!baseplateGeometry.getAttribute('uv')) {
-              const position = baseplateGeometry.getAttribute('position');
-              const uvArray = new Float32Array(position.count * 2);
-              baseplateGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
-            }
-            baseplateGeometry.computeVertexNormals();
-            
-            let combinedBrush = new Brush(baseplateGeometry);
-            combinedBrush.updateMatrixWorld();
-            
-            // Union each cut support with the baseplate
-            for (let i = 0; i < cutSupportGeometries.length; i++) {
-              const supportGeom = cutSupportGeometries[i];
-              
-              // Prepare support geometry for CSG union
-              if (!supportGeom.index) {
-                const posAttr = supportGeom.getAttribute('position');
-                const vertexCount = posAttr.count;
-                const indices = new Uint32Array(vertexCount);
-                for (let j = 0; j < vertexCount; j++) indices[j] = j;
-                supportGeom.setIndex(new THREE.BufferAttribute(indices, 1));
-              }
-              if (!supportGeom.getAttribute('uv')) {
-                const position = supportGeom.getAttribute('position');
-                const uvArray = new Float32Array(position.count * 2);
-                supportGeom.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
-              }
-              
-              const supportBrush = new Brush(supportGeom);
-              supportBrush.updateMatrixWorld();
-              
-              // Perform CSG union: combined = combined + support
-              const unionResult = evaluator.evaluate(combinedBrush, supportBrush, ADDITION);
-              
-              if (unionResult && unionResult.geometry) {
-                combinedBrush = unionResult;
-                console.log(`[3DScene] Union ${i + 1}/${cutSupportGeometries.length} complete`);
-              } else {
-                console.warn(`[3DScene] Union ${i + 1}/${cutSupportGeometries.length} failed`);
-              }
-            }
-            
-            // Update baseplate with the combined geometry
-            if (combinedBrush && combinedBrush.geometry) {
-              const finalGeometry = combinedBrush.geometry.clone();
-              finalGeometry.computeVertexNormals();
-              
-              // Reset the baseplate's world matrix before applying the new geometry
-              // The new geometry is already in world space, so we need to transform it back to local space
-              const inverseMatrix = basePlateMeshRef.current.matrixWorld.clone().invert();
-              finalGeometry.applyMatrix4(inverseMatrix);
-              
-              // Update the baseplate geometry
-              basePlateMeshRef.current.geometry.dispose();
-              basePlateMeshRef.current.geometry = finalGeometry;
-              
-              // Clear the modified support geometries since they're now part of the baseplate
-              setModifiedSupportGeometries(new Map());
-              
-              // Clear the supports array since they're merged into baseplate
-              setSupports([]);
-              
-              baseplateUnionSuccess = true;
-              console.log('[3DScene] CSG union with baseplate complete - supports merged into baseplate');
-            }
-          } catch (err) {
-            console.error('[3DScene] CSG union with baseplate failed:', err);
-          }
-        }
+        setModifiedSupportGeometries(resultGeometries);
 
         if (successCount > 0) {
           setOffsetMeshPreview(null);
         }
+        
+        console.log(`[3DScene] Batch CSG completed: ${successCount} success, ${errorCount} failed`);
         
         window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
           detail: { 
             success: successCount > 0, 
             successCount, 
             errorCount,
-            totalSupports: supports.length,
-            baseplateUnionSuccess
+            totalSupports: supports.length
           }
         }));
 

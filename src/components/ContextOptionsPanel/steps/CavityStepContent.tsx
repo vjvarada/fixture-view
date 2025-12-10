@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -50,6 +51,30 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
   hasPreview = false,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  
+  // Real progress tracking for cavity subtraction
+  const [cavityProgress, setCavityProgress] = useState({ current: 0, total: 0, stage: '' });
+  
+  // Listen for progress events from the worker
+  useEffect(() => {
+    const handleProgress = (e: CustomEvent<{ current: number; total: number; supportId: string; stage?: string }>) => {
+      const { current, total, stage } = e.detail;
+      setCavityProgress({ current, total, stage: stage || `Processing support ${current}/${total}` });
+    };
+    
+    const handleComplete = () => {
+      // Reset progress when complete
+      setCavityProgress({ current: 0, total: 0, stage: '' });
+    };
+    
+    window.addEventListener('cavity-subtraction-progress', handleProgress as EventListener);
+    window.addEventListener('cavity-subtraction-complete', handleComplete as EventListener);
+    
+    return () => {
+      window.removeEventListener('cavity-subtraction-progress', handleProgress as EventListener);
+      window.removeEventListener('cavity-subtraction-complete', handleComplete as EventListener);
+    };
+  }, []);
   
   const canProceed = hasWorkpiece && (hasBaseplate || hasSupports);
 
@@ -299,13 +324,29 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
                     {isApplying ? 'Applying Cavity' : 'Generating Preview'}
                   </p>
                   <p className="text-[10px] text-muted-foreground">
-                    {isApplying ? 'Cutting cavity from supports...' : 'Processing offset mesh...'}
+                    {isApplying 
+                      ? (cavityProgress.total > 0 
+                          ? `Processing support ${cavityProgress.current}/${cavityProgress.total}` 
+                          : 'Preparing CSG operations...')
+                      : 'Processing offset mesh...'}
                   </p>
                 </div>
               </div>
-              <div className="h-1.5 bg-primary/10 rounded-full overflow-hidden">
-                <div className="h-full bg-primary/60 rounded-full animate-pulse" style={{ width: '60%' }} />
-              </div>
+              {isApplying && cavityProgress.total > 0 ? (
+                <div className="space-y-1">
+                  <Progress 
+                    value={(cavityProgress.current / cavityProgress.total) * 100} 
+                    className="h-1.5" 
+                  />
+                  <p className="text-[8px] text-muted-foreground text-right font-mono">
+                    {cavityProgress.current}/{cavityProgress.total} supports
+                  </p>
+                </div>
+              ) : (
+                <div className="h-1.5 bg-primary/10 rounded-full overflow-hidden">
+                  <div className="h-full bg-primary/60 rounded-full animate-pulse" style={{ width: '60%' }} />
+                </div>
+              )}
             </div>
           </Card>
         ) : (
