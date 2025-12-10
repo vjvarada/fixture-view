@@ -1285,24 +1285,18 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         console.log('[3DScene] Generating offset mesh preview...', {
           offsetDistance: settings.offsetDistance,
           pixelsPerUnit: Math.min(safePPU, 2000 / span),
-          simplifyRatio: settings.simplifyRatio,
           rotationXZ: settings.rotationXZ,
           rotationYZ: settings.rotationYZ,
           fillHoles: settings.fillHoles,
-          verifyManifold: settings.verifyManifold,
-          useManifold: settings.useManifold,
         });
 
         // Generate the offset mesh with user settings
         const result = await createOffsetMesh(vertices, {
           offsetDistance: settings.offsetDistance ?? 0.5,
           pixelsPerUnit: Math.min(safePPU, 2000 / span),
-          simplifyRatio: settings.simplifyRatio ?? 0.8,
           rotationXZ: settings.rotationXZ ?? 0,
           rotationYZ: settings.rotationYZ ?? 0,
-          verifyManifold: settings.verifyManifold ?? true,
           fillHoles: settings.fillHoles ?? true,
-          useManifold: settings.useManifold ?? true,
           progressCallback: (current, total, stage) => {
             console.log(`[OffsetMesh] ${stage}: ${current}/${total}`);
           },
@@ -1778,8 +1772,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               const result = await createOffsetMesh(vertices, {
                 offsetDistance: advancedOffsetOptions.offsetDistance ?? (Math.abs(offset) || 0.2),
                 pixelsPerUnit: safePPU,
-                simplifyRatio: advancedOffsetOptions.simplifyRatio ?? 0.8,
-                verifyManifold: advancedOffsetOptions.verifyManifold ?? false,
                 rotationXZ: advancedOffsetOptions.rotationXZ ?? 0,
                 rotationYZ: advancedOffsetOptions.rotationYZ ?? 0,
               });
@@ -1862,6 +1854,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Handle cavity subtraction - cut supports with the offset mesh using three-bvh-csg
   // Strategy: Cut each support individually, but extend supports slightly below baseplate
   // to ensure the bottom cap is fully embedded, giving the CSG cut solid faces to connect to
+  // After cutting all supports, union them with the baseplate to create a single solid fixture
   React.useEffect(() => {
     const handleExecuteCavitySubtraction = async (e: CustomEvent) => {
       const { settings } = e.detail || {};
@@ -1886,7 +1879,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
 
       // Use three-bvh-csg for CSG operations
-      const { Brush, Evaluator, SUBTRACTION } = await import('three-bvh-csg');
+      const { Brush, Evaluator, SUBTRACTION, ADDITION } = await import('three-bvh-csg');
       const evaluator = new Evaluator();
       evaluator.useGroups = false;
 
@@ -1915,6 +1908,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         cutterBrush.updateMatrixWorld();
 
         const newModifiedGeometries = new Map<string, THREE.BufferGeometry>();
+        const cutSupportGeometries: THREE.BufferGeometry[] = [];
         let successCount = 0;
         let errorCount = 0;
 
@@ -1955,6 +1949,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               resultGeometry.computeVertexNormals();
               
               newModifiedGeometries.set(support.id, resultGeometry);
+              cutSupportGeometries.push(resultGeometry);
               successCount++;
             } else {
               errorCount++;
@@ -1968,6 +1963,95 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         // Update state with modified geometries
         setModifiedSupportGeometries(newModifiedGeometries);
 
+        // After cutting all supports, union them with the baseplate
+        let baseplateUnionSuccess = false;
+        if (successCount > 0 && basePlateMeshRef.current && cutSupportGeometries.length > 0) {
+          try {
+            console.log('[3DScene] Starting CSG union of cut supports with baseplate...');
+            
+            // Get baseplate geometry in world space
+            let baseplateGeometry = basePlateMeshRef.current.geometry.clone();
+            basePlateMeshRef.current.updateMatrixWorld(true);
+            baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
+            
+            // Prepare baseplate geometry for CSG
+            if (!baseplateGeometry.index) {
+              const posAttr = baseplateGeometry.getAttribute('position');
+              const vertexCount = posAttr.count;
+              const indices = new Uint32Array(vertexCount);
+              for (let i = 0; i < vertexCount; i++) indices[i] = i;
+              baseplateGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+            }
+            if (!baseplateGeometry.getAttribute('uv')) {
+              const position = baseplateGeometry.getAttribute('position');
+              const uvArray = new Float32Array(position.count * 2);
+              baseplateGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+            }
+            baseplateGeometry.computeVertexNormals();
+            
+            let combinedBrush = new Brush(baseplateGeometry);
+            combinedBrush.updateMatrixWorld();
+            
+            // Union each cut support with the baseplate
+            for (let i = 0; i < cutSupportGeometries.length; i++) {
+              const supportGeom = cutSupportGeometries[i];
+              
+              // Prepare support geometry for CSG union
+              if (!supportGeom.index) {
+                const posAttr = supportGeom.getAttribute('position');
+                const vertexCount = posAttr.count;
+                const indices = new Uint32Array(vertexCount);
+                for (let j = 0; j < vertexCount; j++) indices[j] = j;
+                supportGeom.setIndex(new THREE.BufferAttribute(indices, 1));
+              }
+              if (!supportGeom.getAttribute('uv')) {
+                const position = supportGeom.getAttribute('position');
+                const uvArray = new Float32Array(position.count * 2);
+                supportGeom.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+              }
+              
+              const supportBrush = new Brush(supportGeom);
+              supportBrush.updateMatrixWorld();
+              
+              // Perform CSG union: combined = combined + support
+              const unionResult = evaluator.evaluate(combinedBrush, supportBrush, ADDITION);
+              
+              if (unionResult && unionResult.geometry) {
+                combinedBrush = unionResult;
+                console.log(`[3DScene] Union ${i + 1}/${cutSupportGeometries.length} complete`);
+              } else {
+                console.warn(`[3DScene] Union ${i + 1}/${cutSupportGeometries.length} failed`);
+              }
+            }
+            
+            // Update baseplate with the combined geometry
+            if (combinedBrush && combinedBrush.geometry) {
+              const finalGeometry = combinedBrush.geometry.clone();
+              finalGeometry.computeVertexNormals();
+              
+              // Reset the baseplate's world matrix before applying the new geometry
+              // The new geometry is already in world space, so we need to transform it back to local space
+              const inverseMatrix = basePlateMeshRef.current.matrixWorld.clone().invert();
+              finalGeometry.applyMatrix4(inverseMatrix);
+              
+              // Update the baseplate geometry
+              basePlateMeshRef.current.geometry.dispose();
+              basePlateMeshRef.current.geometry = finalGeometry;
+              
+              // Clear the modified support geometries since they're now part of the baseplate
+              setModifiedSupportGeometries(new Map());
+              
+              // Clear the supports array since they're merged into baseplate
+              setSupports([]);
+              
+              baseplateUnionSuccess = true;
+              console.log('[3DScene] CSG union with baseplate complete - supports merged into baseplate');
+            }
+          } catch (err) {
+            console.error('[3DScene] CSG union with baseplate failed:', err);
+          }
+        }
+
         if (successCount > 0) {
           setOffsetMeshPreview(null);
         }
@@ -1977,7 +2061,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             success: successCount > 0, 
             successCount, 
             errorCount,
-            totalSupports: supports.length
+            totalSupports: supports.length,
+            baseplateUnionSuccess
           }
         }));
 

@@ -63,13 +63,6 @@ const CavityAccordion: React.FC<CavityAccordionProps> = ({
               
               <span className="text-muted-foreground">Resolution:</span>
               <span className="font-mono">{settings.pixelsPerUnit} px/unit</span>
-              
-              <span className="text-muted-foreground">Simplification:</span>
-              <span className="font-mono">
-                {settings.simplifyRatio !== null 
-                  ? `${Math.round((1 - settings.simplifyRatio) * 100)}%` 
-                  : 'None'}
-              </span>
             </div>
           </div>
 

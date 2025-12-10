@@ -45,8 +45,6 @@ interface OperationState {
   useAdvancedOffset: boolean;
   qualityPreset: 'fast' | 'balanced' | 'high';
   pixelsPerUnit: number;
-  simplifyRatio: number | null;
-  verifyManifold: boolean;
   rotationXZ: number;
   rotationYZ: number;
 }
@@ -73,8 +71,6 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
     qualityPreset: 'balanced',
     // Lighter default GPU config when it is enabled.
     pixelsPerUnit: 8,
-    simplifyRatio: 0.7,
-    verifyManifold: false,
     rotationXZ: 0,
     rotationYZ: 0
   });
@@ -104,8 +100,6 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
         advancedOffsetOptions: {
           offsetDistance: Math.abs(operationState.offset) || 0.2,
           pixelsPerUnit: operationState.pixelsPerUnit,
-          simplifyRatio: operationState.simplifyRatio,
-          verifyManifold: operationState.verifyManifold,
           rotationXZ: operationState.rotationXZ,
           rotationYZ: operationState.rotationYZ
         }
@@ -124,8 +118,6 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
           ...prev,
           qualityPreset: preset,
           pixelsPerUnit: 8,
-          simplifyRatio: 0.7,
-          verifyManifold: false,
         }));
         break;
       case 'high':
@@ -133,8 +125,6 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
           ...prev,
           qualityPreset: preset,
           pixelsPerUnit: 24,
-          simplifyRatio: 0.3,
-          verifyManifold: true,
         }));
         break;
       case 'balanced':
@@ -143,8 +133,6 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
           ...prev,
           qualityPreset: 'balanced',
           pixelsPerUnit: 14,
-          simplifyRatio: 0.5,
-          verifyManifold: true,
         }));
         break;
     }
@@ -425,18 +413,9 @@ const BooleanOperationsPanel: React.FC<BooleanOperationsPanelProps> = ({
                   <div className="space-y-3 border border-border/40 rounded-md p-3 bg-muted/40">
                     <p className="text-[11px] text-muted-foreground">
                       Uses a GPU offset for the model cutter with a performance-oriented
-                      configuration (around 8 px/unit, extra simplification). Enable only
+                      configuration (around 8 px/unit). Enable only
                       when you need additional clearance around complex workpieces.
                     </p>
-
-                    <label className="inline-flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={operationState.verifyManifold}
-                        onChange={(e) => handleParameterChange('verifyManifold', e.target.checked)}
-                      />
-                      <span>Verify &amp; repair manifold</span>
-                    </label>
                   </div>
                 )}
               </div>

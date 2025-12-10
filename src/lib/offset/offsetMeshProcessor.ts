@@ -7,8 +7,6 @@ import * as THREE from 'three';
 import { createOffsetHeightMap, loadHeightMapFromTiles, cleanupOffscreenResources } from './offsetHeightmap.js';
 import { createWatertightMeshFromHeightmap, calculateOptimalMeshSettings } from './meshGenerator.js';
 import { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller.js';
-import { processWithManifold, initManifold, isManifoldReady } from './manifoldProcessor.js';
-import { MeshoptSimplifier } from 'meshoptimizer';
 import type { OffsetMeshOptions, OffsetMeshResult, HeightmapResult } from './types';
 
 // ============================================
@@ -22,12 +20,9 @@ import type { OffsetMeshOptions, OffsetMeshResult, HeightmapResult } from './typ
  * @param {number} options.offsetDistance - Offset distance in world units
  * @param {number} options.pixelsPerUnit - Resolution (pixels per unit)
  * @param {number} [options.tileSize=2048] - Tile size for large heightmaps
- * @param {number} [options.simplifyRatio=null] - Simplification ratio (0.1-1.0), null to disable
- * @param {boolean} [options.verifyManifold=true] - Verify manifold and repair/fallback if needed
  * @param {number} [options.rotationXZ=0] - Rotation around Y axis in degrees (XZ plane)
  * @param {number} [options.rotationYZ=0] - Rotation around X axis in degrees (YZ plane, inverted: 180-input)
  * @param {boolean} [options.fillHoles=true] - Fill holes in input mesh before heightmap generation
- * @param {boolean} [options.useManifold=true] - Use Manifold 3D for final mesh optimization
  * @param {Function} [options.progressCallback] - Progress callback (current, total, stage)
  * @returns {Promise<Object>} Result with geometry and metadata
  */
@@ -36,12 +31,9 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         offsetDistance,
         pixelsPerUnit,
         tileSize = 2048,
-        simplifyRatio = null,
-        verifyManifold = true,
         rotationXZ = 0,
         rotationYZ = 0,
         fillHoles = true,
-        useManifold = true,
         progressCallback = null
     } = options;
     
@@ -55,9 +47,6 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
     if (pixelsPerUnit <= 0) {
         throw new Error('Pixels per unit must be positive');
     }
-    if (simplifyRatio !== null && (simplifyRatio <= 0 || simplifyRatio >= 1)) {
-        throw new Error('Simplify ratio must be between 0 and 1 (exclusive)');
-    }
     
     const result: OffsetMeshResult = {
         heightmapResult: null,
@@ -69,14 +58,10 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
             vertexCount: 0,
             triangleCount: 0,
             processingTime: 0,
-            simplificationApplied: false,
-            simplificationTime: 0,
             originalTriangleCount: 0,
             geometryCreationTime: 0,
             holesFilled: 0,
-            holesCapTriangles: 0,
-            manifoldProcessed: false,
-            manifoldTime: 0
+            holesCapTriangles: 0
         }
     };
     
@@ -212,86 +197,6 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         result.geometry = geometry;
         result.metadata.originalTriangleCount = geometry.index.count / 3;
         
-        // Step 6: Optional mesh simplification
-        if (simplifyRatio !== null && simplifyRatio > 0 && simplifyRatio < 1) {
-            if (progressCallback) progressCallback(90, 100, 'Simplifying mesh');
-            
-            const simplifyStartTime = performance.now();
-            try {
-                console.log(`Attempting mesh simplification with ratio ${simplifyRatio}`);
-                const simplifiedGeometry = await simplifyGeometry(geometry, simplifyRatio);
-                
-                let finalGeometry = simplifiedGeometry;
-                let acceptMesh = true;
-                
-                // Only verify/repair if manifold checking is enabled
-                if (verifyManifold) {
-                    console.log('Verifying manifold properties...');
-                    const { verifyWatertightness, repairNonManifoldMesh, fillSmallHoles } = await import('./meshOptimizer.js');
-                    let manifoldCheck = verifyWatertightness(simplifiedGeometry);
-                    
-                    acceptMesh = manifoldCheck.isWatertight;
-                    
-                    // If non-manifold, attempt repair
-                    if (!manifoldCheck.isWatertight && manifoldCheck.overSharedEdges > 0) {
-                        console.log(`Attempting to repair ${manifoldCheck.overSharedEdges} over-shared edges...`);
-                        const repairedGeometry = repairNonManifoldMesh(simplifiedGeometry, 3);
-                        
-                        // Verify repair worked
-                        const repairedCheck = verifyWatertightness(repairedGeometry);
-                        
-                        if (repairedCheck.isWatertight) {
-                            console.log('✓ Successfully repaired non-manifold geometry');
-                            finalGeometry = repairedGeometry;
-                            acceptMesh = true;
-                        } else if (repairedCheck.nonManifoldEdges < manifoldCheck.nonManifoldEdges * 0.1) {
-                            console.log(`✓ Significantly improved: ${manifoldCheck.nonManifoldEdges} → ${repairedCheck.nonManifoldEdges} non-manifold edges (${((1 - repairedCheck.nonManifoldEdges / manifoldCheck.nonManifoldEdges) * 100).toFixed(1)}% reduction)`);
-                            finalGeometry = repairedGeometry;
-                            acceptMesh = true;
-                        } else {
-                            console.warn(`Repair incomplete: ${repairedCheck.nonManifoldEdges} non-manifold edges remain. Using full mesh.`);
-                        }
-                    }
-                    
-                    // Fill small holes if mesh still has boundary edges
-                    if (!manifoldCheck.isWatertight && manifoldCheck.boundaryEdges > 0) {
-                        console.log(`Attempting to fill holes (${manifoldCheck.boundaryEdges} boundary edges)...`);
-                        const filledGeometry = fillSmallHoles(finalGeometry, 50);
-                        
-                        // Verify hole filling worked
-                        const filledCheck = verifyWatertightness(filledGeometry);
-                        
-                        if (filledCheck.isWatertight) {
-                            console.log('✓ Successfully filled all holes - mesh is now watertight');
-                            finalGeometry = filledGeometry;
-                            acceptMesh = true;
-                        } else if (filledCheck.boundaryEdges < manifoldCheck.boundaryEdges * 0.5) {
-                            console.log(`✓ Partially filled holes: ${manifoldCheck.boundaryEdges} → ${filledCheck.boundaryEdges} boundary edges (${((1 - filledCheck.boundaryEdges / manifoldCheck.boundaryEdges) * 100).toFixed(1)}% reduction)`);
-                            finalGeometry = filledGeometry;
-                            acceptMesh = true;
-                        }
-                    }
-                } else {
-                    console.log('Manifold verification disabled - using simplified mesh as-is');
-                }
-                
-                if (acceptMesh) {
-                    result.geometry = finalGeometry;
-                    result.metadata.simplificationApplied = true;
-                    result.metadata.simplificationTime = performance.now() - simplifyStartTime;
-                    console.log(`Mesh simplified: ${result.metadata.originalTriangleCount.toLocaleString()} → ${(finalGeometry.index.count / 3).toLocaleString()} triangles`);
-                } else {
-                    console.warn(`Simplification created non-manifold geometry that couldn't be repaired. Using full mesh.`);
-                    result.metadata.simplificationApplied = false;
-                    result.metadata.simplificationTime = 0;
-                }
-            } catch (error) {
-                console.warn(`Mesh simplification failed: ${error.message}. Using full mesh.`);
-                result.metadata.simplificationApplied = false;
-                result.metadata.simplificationTime = 0;
-            }
-        }
-        
         // Apply inverse rotation to restore original orientation
         if (needsRotation) {
             if (progressCallback) progressCallback(92, 100, 'Restoring orientation');
@@ -303,41 +208,12 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
             console.log('Restored original orientation');
         }
         
-        // Step 7: Manifold 3D processing (final optimization)
-        if (useManifold) {
-            if (progressCallback) progressCallback(95, 100, 'Optimizing with Manifold 3D');
-            
-            const manifoldStartTime = performance.now();
-            try {
-                console.log('Processing with Manifold 3D...');
-                const manifoldResult = await processWithManifold(result.geometry, {
-                    decimate: false, // Decimation already handled by meshoptimizer
-                    ensureManifold: true
-                });
-                
-                if (manifoldResult.isManifold) {
-                    result.geometry = manifoldResult.geometry;
-                    result.metadata.manifoldProcessed = true;
-                    console.log(`✓ Manifold processing complete: ${manifoldResult.finalTriangles} triangles`);
-                } else {
-                    console.warn('Manifold processing could not ensure watertight mesh');
-                    result.metadata.manifoldProcessed = false;
-                }
-                
-                result.metadata.manifoldTime = performance.now() - manifoldStartTime;
-            } catch (error) {
-                console.warn('Manifold processing failed:', error);
-                result.metadata.manifoldProcessed = false;
-                result.metadata.manifoldTime = 0;
-            }
-        }
-        
         result.metadata.vertexCount = result.geometry.getAttribute('position').count;
         result.metadata.triangleCount = result.geometry.index.count / 3;
         
         const endTime = performance.now();
         result.metadata.processingTime = endTime - startTime;
-        result.metadata.geometryCreationTime = result.metadata.processingTime - result.metadata.simplificationTime;
+        result.metadata.geometryCreationTime = result.metadata.processingTime;
         
         if (progressCallback) progressCallback(100, 100, 'Complete');
         
@@ -349,63 +225,6 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         console.error('Error in createOffsetMesh:', error);
         throw error;
     }
-}
-
-/**
- * Simplify mesh geometry using meshoptimizer
- * @param {THREE.BufferGeometry} geometry - Geometry to simplify
- * @param {number} targetRatio - Target ratio (0.1-1.0)
- * @returns {Promise<THREE.BufferGeometry>} Simplified geometry
- */
-async function simplifyGeometry(geometry, targetRatio) {
-    // Wait for meshoptimizer to be ready
-    await MeshoptSimplifier.ready;
-    
-    // Extract mesh data
-    const positions = geometry.attributes.position.array;
-    const indices = geometry.index.array;
-    
-    // Validate input
-    if (!indices || indices.length === 0) {
-        throw new Error('Geometry has no indices');
-    }
-    if (!positions || positions.length === 0) {
-        throw new Error('Geometry has no positions');
-    }
-    
-    // Convert to Uint32Array and Float32Array if needed
-    const uint32Indices = indices instanceof Uint32Array ? indices : new Uint32Array(indices);
-    const float32Positions = positions instanceof Float32Array ? positions : new Float32Array(positions);
-    
-    // Calculate target index count with minimum threshold
-    const minIndexCount = 3;
-    const targetIndexCount = Math.max(minIndexCount, Math.floor(uint32Indices.length * targetRatio));
-    
-    // Ensure target is divisible by 3 (triangles)
-    const adjustedTargetIndexCount = Math.floor(targetIndexCount / 3) * 3;
-    
-    console.log(`Simplifying: ${uint32Indices.length} → ${adjustedTargetIndexCount} indices (ratio: ${targetRatio})`);
-    
-    // Simplify using meshoptimizer with LockBorder flag to preserve manifold topology
-    // This prevents collapsing edges on the border which can create non-manifold geometry
-    const [simplifiedIndices, error] = MeshoptSimplifier.simplify(
-        uint32Indices,
-        float32Positions,
-        3, // stride (xyz)
-        adjustedTargetIndexCount,
-        0.01, // target error
-        ['LockBorder'] // lock border vertices to preserve topology
-    );
-    
-    console.log(`Simplification result: ${simplifiedIndices.length} indices, error: ${error.toFixed(6)}`);
-    
-    // Create new geometry with simplified indices
-    const simplifiedGeometry = new THREE.BufferGeometry();
-    simplifiedGeometry.setAttribute('position', geometry.attributes.position.clone());
-    simplifiedGeometry.setIndex(Array.from(simplifiedIndices));
-    simplifiedGeometry.computeVertexNormals();
-    
-    return simplifiedGeometry;
 }
 
 /**

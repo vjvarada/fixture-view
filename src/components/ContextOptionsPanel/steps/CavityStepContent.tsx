@@ -191,28 +191,6 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             </p>
           </div>
 
-          {/* Simplification */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Mesh Simplification
-              </Label>
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {settings.simplifyRatio !== null 
-                  ? `${Math.round((1 - settings.simplifyRatio) * 100)}% reduction` 
-                  : 'Off'}
-              </span>
-            </div>
-            <Slider
-              value={[settings.simplifyRatio !== null ? settings.simplifyRatio : 1]}
-              onValueChange={([value]) => handleSettingChange('simplifyRatio', value >= 0.99 ? null : value)}
-              min={0.1}
-              max={1}
-              step={0.05}
-              disabled={isProcessing}
-            />
-          </div>
-
           {/* Rotation XZ */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -268,36 +246,6 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             </div>
             <p className="text-[8px] text-muted-foreground italic">
               Repair holes in mesh before processing
-            </p>
-
-            {/* Watertight Check */}
-            <div className="flex items-center justify-between pt-1">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Watertight Check
-              </Label>
-              <Switch
-                checked={settings.verifyManifold}
-                onCheckedChange={(checked) => handleSettingChange('verifyManifold', checked)}
-                disabled={isProcessing}
-              />
-            </div>
-            <p className="text-[8px] text-muted-foreground italic">
-              Verify mesh is manifold/watertight
-            </p>
-
-            {/* Mesh Optimization */}
-            <div className="flex items-center justify-between pt-1">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Mesh Optimization
-              </Label>
-              <Switch
-                checked={settings.useManifold}
-                onCheckedChange={(checked) => handleSettingChange('useManifold', checked)}
-                disabled={isProcessing}
-              />
-            </div>
-            <p className="text-[8px] text-muted-foreground italic">
-              Use Manifold 3D for optimization
             </p>
           </div>
 
