@@ -16,7 +16,7 @@ import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
 import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
-import { decimateMesh, repairMesh, analyzeMesh } from '@/modules/FileImport/services/meshAnalysisService';
+import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 
 /** Target triangle count for offset mesh decimation */
@@ -1324,44 +1324,90 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           let finalGeometry = result.geometry;
           let finalTriangleCount = result.metadata.triangleCount;
           
-          // Decimate if triangle count exceeds threshold (for CSG performance)
-          if (result.metadata.triangleCount > OFFSET_MESH_DECIMATION_TARGET) {
-            console.log(`[3DScene] Decimating offset mesh from ${result.metadata.triangleCount} to ~${OFFSET_MESH_DECIMATION_TARGET} triangles...`);
+          // Process offset mesh based on settings
+          const shouldDecimate = settings.enableDecimation !== false && result.metadata.triangleCount > OFFSET_MESH_DECIMATION_TARGET;
+          const shouldSmooth = settings.enableSmoothing !== false;
+          
+          if (shouldDecimate || shouldSmooth) {
+            let currentGeometry = result.geometry;
             
-            window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-              detail: { current: 90, total: 100, stage: 'Decimating mesh...' }
-            }));
-            
-            // Yield to browser before decimation
-            await new Promise(resolve => setTimeout(resolve, 0));
-            
-            // decimateMesh expects non-indexed geometry, so convert if needed
-            let geometryToDecimate = result.geometry;
-            if (result.geometry.index) {
-              geometryToDecimate = result.geometry.toNonIndexed();
-              result.geometry.dispose();
-            }
-            
-            const decimationResult = await decimateMesh(
-              geometryToDecimate,
-              OFFSET_MESH_DECIMATION_TARGET,
-              (progressInfo) => {
-                console.log(`[3DScene] Decimation: ${progressInfo.message}`);
+            // === Step 1: Decimation (if enabled and needed) ===
+            if (shouldDecimate) {
+              console.log(`[3DScene] Decimating offset mesh from ${result.metadata.triangleCount} to ~${OFFSET_MESH_DECIMATION_TARGET} triangles...`);
+              
+              window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+                detail: { current: 70, total: 100, stage: 'Decimating mesh...' }
+              }));
+              
+              // Yield to browser before decimation
+              await new Promise(resolve => setTimeout(resolve, 0));
+              
+              // decimateMesh expects non-indexed geometry, so convert if needed
+              let geometryToDecimate = currentGeometry;
+              if (currentGeometry.index) {
+                geometryToDecimate = currentGeometry.toNonIndexed();
+                currentGeometry.dispose();
+                currentGeometry = geometryToDecimate;
               }
-            );
-            
-            // Dispose intermediate geometry if we converted
-            if (geometryToDecimate !== result.geometry) {
-              geometryToDecimate.dispose();
+              
+              const decimationResult = await decimateMesh(
+                geometryToDecimate,
+                OFFSET_MESH_DECIMATION_TARGET,
+                (progressInfo) => {
+                  console.log(`[3DScene] Decimation: ${progressInfo.message}`);
+                }
+              );
+              
+              if (decimationResult.success && decimationResult.geometry) {
+                console.log(`[3DScene] Decimation complete: ${decimationResult.originalTriangles} -> ${decimationResult.finalTriangles} triangles (${decimationResult.reductionPercent.toFixed(1)}% reduction)`);
+                currentGeometry.dispose();
+                currentGeometry = decimationResult.geometry;
+                finalTriangleCount = Math.round(decimationResult.finalTriangles);
+              } else {
+                console.warn('[3DScene] Decimation failed, proceeding with original geometry');
+              }
             }
             
-            if (decimationResult.success && decimationResult.geometry) {
-              console.log(`[3DScene] Decimation complete: ${decimationResult.originalTriangles} -> ${decimationResult.finalTriangles} triangles (${decimationResult.reductionPercent.toFixed(1)}% reduction)`);
-              finalGeometry = decimationResult.geometry;
-              finalTriangleCount = Math.round(decimationResult.finalTriangles);
-            } else {
-              console.warn('[3DScene] Decimation failed, using original geometry');
+            // === Step 2: Smoothing (if enabled) ===
+            if (shouldSmooth) {
+              const iterations = settings.smoothingIterations ?? 5;
+              const method = settings.smoothingMethod ?? 'taubin';
+              const passBand = settings.smoothingPassBand ?? 0.1;
+              
+              console.log(`[3DScene] Applying ${method} smoothing (${iterations} iterations, passBand=${passBand})...`);
+              
+              window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+                detail: { current: 85, total: 100, stage: `Smoothing mesh (${method})...` }
+              }));
+              
+              // Yield to browser before smoothing
+              await new Promise(resolve => setTimeout(resolve, 0));
+              
+              // Use taubin-smooth library
+              const smoothingResult = await laplacianSmooth(
+                currentGeometry,
+                {
+                  iterations,
+                  method,
+                  passBand,
+                },
+                (progressInfo) => {
+                  console.log(`[3DScene] Smoothing: ${progressInfo.message}`);
+                }
+              );
+              
+              if (smoothingResult.success && smoothingResult.geometry) {
+                console.log(`[3DScene] ${method} smoothing complete (${smoothingResult.iterations} iterations)`);
+                currentGeometry.dispose();
+                currentGeometry = smoothingResult.geometry;
+                // Update triangle count after smoothing (smoothing outputs non-indexed)
+                finalTriangleCount = Math.round(currentGeometry.getAttribute('position').count / 3);
+              } else {
+                console.warn('[3DScene] Smoothing failed, using previous geometry');
+              }
             }
+            
+            finalGeometry = currentGeometry;
           }
           
           // Create preview material - translucent blue to match color scheme

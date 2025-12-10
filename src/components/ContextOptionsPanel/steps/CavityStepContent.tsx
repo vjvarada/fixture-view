@@ -278,6 +278,110 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             </p>
           </div>
 
+          {/* Mesh Processing Options */}
+          <div className="space-y-3 pt-2 border-t border-border/30">
+            <Label className="text-[10px] font-tech text-muted-foreground uppercase tracking-wider">
+              Mesh Processing
+            </Label>
+            
+            {/* Decimation Toggle */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] font-tech text-muted-foreground">
+                  Decimation
+                </Label>
+                <Switch
+                  checked={settings.enableDecimation}
+                  onCheckedChange={(checked) => handleSettingChange('enableDecimation', checked)}
+                  disabled={isProcessing}
+                />
+              </div>
+              <p className="text-[8px] text-muted-foreground italic">
+                Reduce triangle count for faster CSG
+              </p>
+            </div>
+
+            {/* Smoothing Toggle */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] font-tech text-muted-foreground">
+                  Taubin Smoothing
+                </Label>
+                <Switch
+                  checked={settings.enableSmoothing}
+                  onCheckedChange={(checked) => handleSettingChange('enableSmoothing', checked)}
+                  disabled={isProcessing}
+                />
+              </div>
+              <p className="text-[8px] text-muted-foreground italic">
+                Remove jagged edges (volume-preserving)
+              </p>
+            </div>
+
+            {/* Smoothing Options */}
+            {settings.enableSmoothing && (
+              <div className="space-y-3 pl-2 border-l-2 border-border/30">
+                {/* Smoothing Method */}
+                <div className="space-y-1">
+                  <Label className="text-[10px] font-tech text-muted-foreground">
+                    Method
+                  </Label>
+                  <select
+                    value={settings.smoothingMethod ?? 'taubin'}
+                    onChange={(e) => handleSettingChange('smoothingMethod', e.target.value)}
+                    disabled={isProcessing}
+                    className="w-full h-7 text-[10px] px-2 rounded border border-border bg-background"
+                  >
+                    <option value="taubin">Taubin Smoothing</option>
+                  </select>
+                </div>
+
+                {/* Iterations */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-[10px] font-tech text-muted-foreground">
+                      Iterations
+                    </Label>
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {settings.smoothingIterations}
+                    </span>
+                  </div>
+                  <Slider
+                    value={[settings.smoothingIterations]}
+                    onValueChange={([value]) => handleSettingChange('smoothingIterations', value)}
+                    min={1}
+                    max={50}
+                    step={1}
+                    disabled={isProcessing}
+                  />
+                </div>
+
+                {/* Pass Band */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-[10px] font-tech text-muted-foreground">
+                      Pass Band
+                    </Label>
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {(settings.smoothingPassBand ?? 0.1).toFixed(2)}
+                    </span>
+                  </div>
+                  <Slider
+                    value={[settings.smoothingPassBand ?? 0.1]}
+                    onValueChange={([value]) => handleSettingChange('smoothingPassBand', value)}
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    disabled={isProcessing}
+                  />
+                  <p className="text-[8px] text-muted-foreground italic">
+                    Lower = smoother (more aggressive)
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Reset Button */}
           <Button
             variant="outline"

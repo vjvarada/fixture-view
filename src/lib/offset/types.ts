@@ -67,6 +67,20 @@ export interface CavitySettings {
   showPreview: boolean;
   /** Preview mesh opacity (0-1) */
   previewOpacity: number;
+  /** Enable mesh decimation to reduce triangle count */
+  enableDecimation: boolean;
+  /** Enable Taubin smoothing to remove jagged edges */
+  enableSmoothing: boolean;
+  /** Number of smoothing iterations */
+  smoothingIterations: number;
+  /** Smoothing method: 'taubin', 'hc', or 'combined' */
+  smoothingMethod: 'taubin' | 'hc' | 'combined';
+  /** Taubin pass band frequency (0-1, lower = smoother) */
+  smoothingPassBand: number;
+  /** HC smoothing alpha parameter (0-1, higher = more original shape preservation) - legacy */
+  smoothingAlpha: number;
+  /** HC smoothing beta parameter (0-1, higher = more smoothing) - legacy */
+  smoothingBeta: number;
 }
 
 export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
@@ -78,4 +92,11 @@ export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   fillHoles: true,
   showPreview: true,
   previewOpacity: 0.3,
+  enableDecimation: true,
+  enableSmoothing: true,
+  smoothingIterations: 10,
+  smoothingMethod: 'taubin',
+  smoothingPassBand: 0.1,
+  smoothingAlpha: 0.5,
+  smoothingBeta: 0.5,
 };

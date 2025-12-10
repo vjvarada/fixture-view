@@ -6,6 +6,10 @@
  */
 
 import * as THREE from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { simplifyGeometry } from '@/lib/fastQuadricSimplify';
+// @ts-ignore - taubin-smooth doesn't have types
+import taubinSmooth from 'taubin-smooth';
 
 // ============================================================================
 // Types & Interfaces
@@ -43,8 +47,33 @@ export interface DecimationResult {
   error?: string;
 }
 
+export interface SmoothingResult {
+  success: boolean;
+  geometry: THREE.BufferGeometry | null;
+  iterations: number;
+  method?: 'taubin' | 'hc' | 'combined';
+  error?: string;
+}
+
+export interface SmoothingOptions {
+  /** Number of iterations */
+  iterations: number;
+  /** Smoothing method - note: taubin-smooth library only supports Taubin method */
+  method: 'taubin' | 'hc' | 'combined';
+  /** Pass band frequency (0-1, lower = smoother, default 0.1) */
+  passBand?: number;
+  /** Taubin lambda (shrink factor, 0-1) - legacy, use passBand instead */
+  lambda?: number;
+  /** Taubin mu (inflate factor, negative) - legacy, use passBand instead */
+  mu?: number;
+  /** HC alpha (original position weight, 0-1) - legacy, use passBand instead */
+  alpha?: number;
+  /** HC beta (difference damping, 0-1) - legacy, use passBand instead */
+  beta?: number;
+}
+
 export interface ProcessingProgress {
-  stage: 'analyzing' | 'repairing' | 'decimating' | 'complete';
+  stage: 'analyzing' | 'repairing' | 'decimating' | 'smoothing' | 'complete';
   progress: number;
   message: string;
 }
@@ -350,16 +379,27 @@ export async function repairMesh(
 /**
  * Decimates a mesh using vertex clustering to reduce triangle count
  */
+/**
+ * Mesh decimation using Fast Quadric Mesh Simplification (WASM).
+ * 
+ * Uses the WASM build of Fast-Quadric-Mesh-Simplification which implements
+ * the Garland & Heckbert QEM algorithm. This produces high-quality results
+ * without self-intersections or sawtooth patterns.
+ * 
+ * @see https://github.com/MyMiniFactory/Fast-Quadric-Mesh-Simplification
+ */
 export async function decimateMesh(
   geometry: THREE.BufferGeometry,
   targetTriangles: number = DECIMATION_TARGET,
   onProgress?: ProgressCallback
 ): Promise<DecimationResult> {
   try {
-    reportProgress(onProgress, 'decimating', 0, 'Starting decimation...');
+    reportProgress(onProgress, 'decimating', 0, 'Starting mesh simplification...');
     
-    const positions = getPositionArray(geometry);
-    const originalTriangles = positions.length / 9;
+    // Get position attribute
+    const positions = geometry.getAttribute('position');
+    const indices = geometry.index;
+    const originalTriangles = indices ? indices.count / 3 : positions.count / 3;
     
     // Skip if already below target
     if (originalTriangles <= targetTriangles) {
@@ -372,116 +412,207 @@ export async function decimateMesh(
       };
     }
     
-    reportProgress(onProgress, 'decimating', 10, 'Computing spatial grid...');
+    // Calculate target ratio
+    const ratio = Math.max(0.01, Math.min(0.99, targetTriangles / originalTriangles));
     
-    // Calculate reduction parameters
-    const ratio = targetTriangles / originalTriangles;
-    geometry.computeBoundingBox();
-    const bbox = geometry.boundingBox!;
-    const size = bbox.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
+    reportProgress(onProgress, 'decimating', 10, 'Running Fast Quadric simplification...');
     
-    // Cell size determines vertex merging granularity
-    const cellSize = maxDim * Math.pow(1 - ratio, 0.5) * 0.01;
-    
-    reportProgress(onProgress, 'decimating', 20, 'Merging vertices...');
-    
-    // Vertex clustering
-    const vertexMap = new Map<string, number>();
-    const mergedPositions: number[] = [];
-    const indexMap = new Map<number, number>();
-    
-    const vertexCount = positions.length / 3;
-    
-    for (let i = 0; i < vertexCount; i++) {
-      const x = positions[i * 3];
-      const y = positions[i * 3 + 1];
-      const z = positions[i * 3 + 2];
-      
-      // Quantize to grid cell
-      const key = `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)},${Math.floor(z / cellSize)}`;
-      
-      if (vertexMap.has(key)) {
-        indexMap.set(i, vertexMap.get(key)!);
-      } else {
-        const newIndex = mergedPositions.length / 3;
-        mergedPositions.push(x, y, z);
-        vertexMap.set(key, newIndex);
-        indexMap.set(i, newIndex);
+    // Use Fast Quadric Mesh Simplification WASM
+    const result = await simplifyGeometry(geometry, {
+      ratio,
+      onProgress: (stage, percent, message) => {
+        // Map internal progress to our 10-100 range
+        const mappedPercent = 10 + (percent * 0.9);
+        reportProgress(onProgress, 'decimating', mappedPercent, message);
       }
+    });
+    
+    if (!result.success || !result.geometry) {
+      throw new Error(result.error || 'Simplification failed');
     }
     
-    reportProgress(onProgress, 'decimating', 50, 'Rebuilding triangles...');
-    
-    // Rebuild triangles, filtering degenerate ones
-    const newIndices: number[] = [];
-    const v0 = new THREE.Vector3();
-    const v1 = new THREE.Vector3();
-    const v2 = new THREE.Vector3();
-    const edge1 = new THREE.Vector3();
-    const edge2 = new THREE.Vector3();
-    const cross = new THREE.Vector3();
-    
-    for (let i = 0; i < originalTriangles; i++) {
-      const i0 = indexMap.get(i * 3)!;
-      const i1 = indexMap.get(i * 3 + 1)!;
-      const i2 = indexMap.get(i * 3 + 2)!;
-      
-      // Skip collapsed triangles
-      if (i0 === i1 || i1 === i2 || i2 === i0) continue;
-      
-      // Check for degenerate triangles
-      v0.fromArray(mergedPositions, i0 * 3);
-      v1.fromArray(mergedPositions, i1 * 3);
-      v2.fromArray(mergedPositions, i2 * 3);
-      
-      if (triangleAreaSquared(v0, v1, v2, edge1, edge2, cross) < MIN_TRIANGLE_AREA_SQ) {
-        continue;
-      }
-      
-      newIndices.push(i0, i1, i2);
-    }
-    
-    reportProgress(onProgress, 'decimating', 75, 'Creating optimized geometry...');
-    
-    // Create indexed geometry
-    const decimatedGeometry = new THREE.BufferGeometry();
-    decimatedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(mergedPositions, 3));
-    decimatedGeometry.setIndex(newIndices);
-    
-    reportProgress(onProgress, 'decimating', 85, 'Finalizing...');
-    
-    // Compute normals
-    decimatedGeometry.computeVertexNormals();
-    
-    // Convert to non-indexed for compatibility
-    const finalGeometry = decimatedGeometry.toNonIndexed();
-    
-    // Compute bounds tree if available
-    if (typeof (finalGeometry as any).computeBoundsTree === 'function') {
-      (finalGeometry as any).computeBoundsTree();
-    }
+    // Compute vertex normals for the result
+    result.geometry.computeVertexNormals();
     
     reportProgress(onProgress, 'decimating', 100, 'Decimation complete');
     
-    const finalTriangles = newIndices.length / 3;
-    const reductionPercent = ((originalTriangles - finalTriangles) / originalTriangles) * 100;
-    
     return {
       success: true,
-      geometry: finalGeometry,
-      originalTriangles,
-      finalTriangles,
-      reductionPercent,
+      geometry: result.geometry,
+      originalTriangles: result.originalTriangles,
+      finalTriangles: result.finalTriangles,
+      reductionPercent: result.reductionPercent,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown decimation error';
+    console.error('Decimation error:', error);
     return {
       success: false,
       geometry: null,
       originalTriangles: 0,
       finalTriangles: 0,
       reductionPercent: 0,
+      error: errorMessage,
+    };
+  }
+}
+
+// ============================================================================
+// Mesh Smoothing using taubin-smooth library
+// ============================================================================
+
+/**
+ * Performs mesh smoothing using the taubin-smooth library.
+ * 
+ * This uses Mikola Lysenko's implementation of Taubin's mesh smoothing algorithm
+ * which is fast, well-tested, and produces high-quality results.
+ * 
+ * @param geometry - The input BufferGeometry
+ * @param options - Smoothing options or number of iterations (for backward compat)
+ * @param lambdaOrProgress - Progress callback (backward compat)
+ * @param onProgress - Optional progress callback
+ * @returns SmoothingResult with the smoothed geometry
+ * 
+ * @see https://github.com/mikolalysenko/taubin-smooth
+ */
+export async function laplacianSmooth(
+  geometry: THREE.BufferGeometry,
+  options: SmoothingOptions | number = 5,
+  lambdaOrProgress?: number | ProgressCallback,
+  onProgress?: ProgressCallback,
+): Promise<SmoothingResult> {
+  // Handle backward compatibility
+  let opts: SmoothingOptions;
+  let progressCb: ProgressCallback | undefined;
+  
+  if (typeof options === 'number') {
+    opts = {
+      iterations: options,
+      method: 'taubin',
+    };
+    progressCb = typeof lambdaOrProgress === 'function' ? lambdaOrProgress : onProgress;
+  } else {
+    opts = options;
+    progressCb = typeof lambdaOrProgress === 'function' ? lambdaOrProgress : onProgress;
+  }
+  
+  const {
+    iterations = 5,
+    passBand = 0.1, // taubin-smooth's passBand parameter (0-1, lower = more smoothing)
+  } = opts;
+  
+  try {
+    reportProgress(progressCb, 'smoothing', 0, 'Starting Taubin smoothing...');
+    
+    // Clone geometry to avoid modifying the original
+    let workGeometry = geometry.clone();
+    
+    // Convert to indexed geometry if not already
+    if (!workGeometry.index) {
+      workGeometry = mergeVertices(workGeometry);
+    }
+    
+    // If still no index, create one manually
+    if (!workGeometry.index) {
+      const posAttr = workGeometry.getAttribute('position');
+      const vertexCount = posAttr.count;
+      
+      const vertexMap = new Map<string, number>();
+      const uniquePositions: number[] = [];
+      const indexMap: number[] = [];
+      
+      for (let i = 0; i < vertexCount; i++) {
+        const x = posAttr.getX(i);
+        const y = posAttr.getY(i);
+        const z = posAttr.getZ(i);
+        const key = `${x.toFixed(6)},${y.toFixed(6)},${z.toFixed(6)}`;
+        
+        if (vertexMap.has(key)) {
+          indexMap.push(vertexMap.get(key)!);
+        } else {
+          const newIndex = uniquePositions.length / 3;
+          uniquePositions.push(x, y, z);
+          vertexMap.set(key, newIndex);
+          indexMap.push(newIndex);
+        }
+      }
+      
+      const indexedGeometry = new THREE.BufferGeometry();
+      indexedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(uniquePositions, 3));
+      indexedGeometry.setIndex(indexMap);
+      workGeometry.dispose();
+      workGeometry = indexedGeometry;
+    }
+    
+    reportProgress(progressCb, 'smoothing', 10, 'Converting to taubin-smooth format...');
+    
+    const posAttr = workGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const indexAttr = workGeometry.index!;
+    const vertexCount = posAttr.count;
+    const triangleCount = indexAttr.count / 3;
+    
+    // Convert to taubin-smooth format
+    // positions: [[x,y,z], [x,y,z], ...]
+    // cells: [[i0,i1,i2], [i0,i1,i2], ...]
+    const positions: [number, number, number][] = [];
+    for (let i = 0; i < vertexCount; i++) {
+      positions.push([posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)]);
+    }
+    
+    const cells: [number, number, number][] = [];
+    for (let i = 0; i < triangleCount; i++) {
+      cells.push([
+        indexAttr.getX(i * 3),
+        indexAttr.getX(i * 3 + 1),
+        indexAttr.getX(i * 3 + 2)
+      ]);
+    }
+    
+    reportProgress(progressCb, 'smoothing', 20, `Running ${iterations} Taubin iterations...`);
+    
+    // Run taubin-smooth
+    // The library modifies positions in-place and returns them
+    const smoothedPositions = taubinSmooth(cells, positions, {
+      iters: iterations,
+      passBand: passBand,
+    });
+    
+    reportProgress(progressCb, 'smoothing', 80, 'Creating smoothed geometry...');
+    
+    // Convert back to THREE.js geometry
+    const newPositions = new Float32Array(vertexCount * 3);
+    for (let i = 0; i < vertexCount; i++) {
+      newPositions[i * 3] = smoothedPositions[i][0];
+      newPositions[i * 3 + 1] = smoothedPositions[i][1];
+      newPositions[i * 3 + 2] = smoothedPositions[i][2];
+    }
+    
+    // Update positions in geometry
+    posAttr.array.set(newPositions);
+    posAttr.needsUpdate = true;
+    
+    // Recompute normals
+    workGeometry.computeVertexNormals();
+    
+    // Convert back to non-indexed for compatibility
+    const finalGeometry = workGeometry.toNonIndexed();
+    workGeometry.dispose();
+    
+    reportProgress(progressCb, 'smoothing', 100, 'Smoothing complete');
+    
+    return {
+      success: true,
+      geometry: finalGeometry,
+      iterations,
+      method: 'taubin',
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown smoothing error';
+    console.error('Smoothing error:', error);
+    return {
+      success: false,
+      geometry: null,
+      iterations: 0,
       error: errorMessage,
     };
   }
