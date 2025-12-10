@@ -16,7 +16,7 @@ import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
 import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
-import { decimateMesh } from '@/modules/FileImport/services/meshAnalysisService';
+import { decimateMesh, repairMesh, analyzeMesh } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 
 /** Target triangle count for offset mesh decimation */
@@ -2015,8 +2015,33 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         const successCount = resultGeometries.size;
         const errorCount = supportsToProcess.length - successCount;
 
-        // Update state with modified geometries
-        setModifiedSupportGeometries(resultGeometries);
+        // Clean up individual support geometries - repair bad triangles from CSG operations
+        console.log('[3DScene] Cleaning up individual support geometries...');
+        const cleanedGeometries = new Map<string, THREE.BufferGeometry>();
+        
+        for (const [supportId, geometry] of resultGeometries) {
+          try {
+            const analysis = await analyzeMesh(geometry);
+            if (analysis.hasDegenerateFaces || !analysis.isManifold) {
+              console.log(`[3DScene] Repairing support ${supportId}: degenerate=${analysis.hasDegenerateFaces}, manifold=${analysis.isManifold}`);
+              const repairResult = await repairMesh(geometry);
+              if (repairResult.success && repairResult.geometry) {
+                cleanedGeometries.set(supportId, repairResult.geometry);
+                geometry.dispose(); // Dispose the original unrepaired geometry
+              } else {
+                cleanedGeometries.set(supportId, geometry); // Keep original if repair fails
+              }
+            } else {
+              cleanedGeometries.set(supportId, geometry);
+            }
+          } catch (err) {
+            console.warn(`[3DScene] Failed to analyze/repair support ${supportId}:`, err);
+            cleanedGeometries.set(supportId, geometry);
+          }
+        }
+        
+        // Update state with cleaned geometries
+        setModifiedSupportGeometries(cleanedGeometries);
 
         if (successCount > 0) {
           setOffsetMeshPreview(null);
@@ -2087,6 +2112,36 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             );
             
             if (mergedGeometry) {
+              // Analyze and repair the merged geometry to fix bad triangles
+              console.log('[3DScene] Analyzing merged geometry for defects...');
+              const analysisResult = await analyzeMesh(mergedGeometry);
+              console.log('[3DScene] Mesh analysis:', {
+                triangleCount: analysisResult.triangleCount,
+                isManifold: analysisResult.isManifold,
+                hasDegenerateFaces: analysisResult.hasDegenerateFaces,
+                hasNonManifoldEdges: analysisResult.hasNonManifoldEdges,
+                boundaryEdgeCount: analysisResult.boundaryEdgeCount,
+                issues: analysisResult.issues,
+              });
+              
+              // Repair the mesh if there are degenerate faces or other issues
+              let cleanedGeometry = mergedGeometry;
+              if (analysisResult.hasDegenerateFaces || !analysisResult.isManifold) {
+                console.log('[3DScene] Repairing merged geometry to remove degenerate triangles...');
+                const repairResult = await repairMesh(mergedGeometry);
+                if (repairResult.success && repairResult.geometry) {
+                  cleanedGeometry = repairResult.geometry;
+                  console.log('[3DScene] Mesh repair result:', {
+                    success: repairResult.success,
+                    originalTriangles: analysisResult.triangleCount,
+                    finalTriangles: repairResult.triangleCount,
+                    actions: repairResult.actions,
+                  });
+                } else {
+                  console.warn('[3DScene] Mesh repair failed:', repairResult.error);
+                }
+              }
+              
               // Create merged fixture mesh with amber color
               const amberMaterial = new THREE.MeshStandardMaterial({
                 color: 0xFFBF00, // Amber
@@ -2095,7 +2150,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 side: THREE.DoubleSide,
               });
               
-              const fixtureMesh = new THREE.Mesh(mergedGeometry, amberMaterial);
+              const fixtureMesh = new THREE.Mesh(cleanedGeometry, amberMaterial);
               fixtureMesh.name = 'merged-fixture';
               fixtureMesh.castShadow = true;
               fixtureMesh.receiveShadow = true;
@@ -2113,7 +2168,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               }
               
               setMergedFixtureMesh(fixtureMesh);
-              console.log(`[3DScene] Merged fixture created with ${mergedGeometry.getAttribute('position').count / 3} vertices`);
+              console.log(`[3DScene] Merged fixture created with ${cleanedGeometry.getAttribute('position').count / 3} vertices`);
             } else {
               console.warn('[3DScene] CSG union returned no result');
             }
@@ -2149,6 +2204,55 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       window.removeEventListener('execute-cavity-subtraction', handleExecuteCavitySubtraction as EventListener);
     };
   }, [offsetMeshPreview, supports, basePlate, baseTopY]);
+
+  // Handle reset cavity event
+  React.useEffect(() => {
+    const handleResetCavity = () => {
+      console.log('[3DScene] Resetting cavity - clearing merged fixture and restoring original supports');
+      
+      // Dispose and clear the merged fixture mesh
+      if (mergedFixtureMesh) {
+        mergedFixtureMesh.geometry?.dispose();
+        if (mergedFixtureMesh.material) {
+          if (Array.isArray(mergedFixtureMesh.material)) {
+            mergedFixtureMesh.material.forEach(m => m.dispose());
+          } else {
+            mergedFixtureMesh.material.dispose();
+          }
+        }
+        setMergedFixtureMesh(null);
+      }
+      
+      // Dispose and clear modified support geometries to restore original supports
+      modifiedSupportGeometries.forEach((geometry) => {
+        geometry.dispose();
+      });
+      setModifiedSupportGeometries(new Map());
+      
+      // Clear the trimmed supports preview to show original supports again
+      setSupportsTrimPreview([]);
+      
+      // Clear offset mesh preview
+      if (offsetMeshPreview) {
+        offsetMeshPreview.geometry?.dispose();
+        if (offsetMeshPreview.material) {
+          if (Array.isArray(offsetMeshPreview.material)) {
+            offsetMeshPreview.material.forEach(m => m.dispose());
+          } else {
+            offsetMeshPreview.material.dispose();
+          }
+        }
+        setOffsetMeshPreview(null);
+      }
+      
+      console.log('[3DScene] Cavity reset complete - supports restored to original state');
+    };
+
+    window.addEventListener('reset-cavity', handleResetCavity as EventListener);
+    return () => {
+      window.removeEventListener('reset-cavity', handleResetCavity as EventListener);
+    };
+  }, [mergedFixtureMesh, offsetMeshPreview, modifiedSupportGeometries]);
 
   // Handle base plate creation events
   React.useEffect(() => {

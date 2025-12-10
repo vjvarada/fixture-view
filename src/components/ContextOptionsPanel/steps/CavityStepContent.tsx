@@ -31,9 +31,11 @@ interface CavityStepContentProps {
   onGeneratePreview: () => void;
   onClearPreview: () => void;
   onExecuteCavity: () => void;
+  onResetCavity: () => void;
   isProcessing?: boolean;
   isApplying?: boolean;
   hasPreview?: boolean;
+  isCavityApplied?: boolean;
 }
 
 const CavityStepContent: React.FC<CavityStepContentProps> = ({
@@ -46,9 +48,11 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
   onGeneratePreview,
   onClearPreview,
   onExecuteCavity,
+  onResetCavity,
   isProcessing = false,
   isApplying = false,
   hasPreview = false,
+  isCavityApplied = false,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
   
@@ -349,6 +353,16 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
               )}
             </div>
           </Card>
+        ) : isCavityApplied ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full font-tech"
+            onClick={onResetCavity}
+          >
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Reset Cavity
+          </Button>
         ) : (
           <Button
             variant="outline"
@@ -361,7 +375,7 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
           </Button>
         )}
         
-        {hasPreview && (
+        {hasPreview && !isCavityApplied && (
           <Button
             variant="default"
             size="sm"
@@ -376,7 +390,16 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
       </div>
 
       {/* Status */}
-      {hasPreview && (
+      {isCavityApplied ? (
+        <Card className="tech-glass p-3 bg-amber-500/5 border-amber-500/30">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500" />
+            <p className="text-xs font-tech text-amber-600 dark:text-amber-400">
+              Cavity applied - click Reset Cavity to start over
+            </p>
+          </div>
+        </Card>
+      ) : hasPreview && (
         <Card className="tech-glass p-3 bg-green-500/5 border-green-500/30">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />

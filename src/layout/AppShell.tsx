@@ -203,6 +203,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [isCavityProcessing, setIsCavityProcessing] = useState(false);
     const [isApplyingCavity, setIsApplyingCavity] = useState(false);
     const [hasCavityPreview, setHasCavityPreview] = useState(false);
+    const [isCavityApplied, setIsCavityApplied] = useState(false);
 
     // Cavity settings handlers
     const handleCavitySettingsChange = useCallback((settings: CavitySettings) => {
@@ -242,6 +243,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         setIsCavityProcessing(false);
         setIsApplyingCavity(false);
         setHasCavityPreview(false);
+        setIsCavityApplied(true);
         window.removeEventListener('cavity-subtraction-complete', handleComplete);
       };
       window.addEventListener('cavity-subtraction-complete', handleComplete);
@@ -250,6 +252,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         setIsApplyingCavity(false);
       }, 60000);
     }, [cavitySettings]);
+
+    const handleResetCavity = useCallback(() => {
+      setIsCavityApplied(false);
+      setHasCavityPreview(false);
+      window.dispatchEvent(new CustomEvent('reset-cavity'));
+    }, []);
 
     const handleOpenFilePicker = () => {
       const input = document.createElement('input');
@@ -1175,9 +1183,11 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                       onGeneratePreview={handleGenerateCavityPreview}
                       onClearPreview={handleClearCavityPreview}
                       onExecuteCavity={handleExecuteCavity}
+                      onResetCavity={handleResetCavity}
                       isProcessing={isCavityProcessing}
                       isApplying={isApplyingCavity}
                       hasPreview={hasCavityPreview}
+                      isCavityApplied={isCavityApplied}
                     />
                   )}
                   {activeStep === 'clamps' && (
