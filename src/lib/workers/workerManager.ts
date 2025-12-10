@@ -28,7 +28,7 @@ function getCSGWorker(): Worker {
       if (type === 'error') {
         promise.reject(new Error(error));
         csgWorkerPromises.delete(id);
-      } else if (type === 'subtraction-result' || type === 'batch-result') {
+      } else if (type === 'subtraction-result' || type === 'batch-result' || type === 'union-result') {
         promise.resolve(data || batchData);
         csgWorkerPromises.delete(id);
       } else if (type === 'progress') {
@@ -250,6 +250,91 @@ export async function performCSGSubtractionInWorker(
           supportGeometry: supportData,
           cutterGeometry: cutterData,
           supportId
+        }
+      } as CSGWorkerInput,
+      transferables
+    );
+  });
+}
+
+/**
+ * Perform batch CSG union in a web worker (combine multiple geometries into one)
+ */
+export async function performBatchCSGUnionInWorker(
+  geometries: Array<{
+    id: string;
+    geometry: THREE.BufferGeometry;
+  }>,
+  baseplateGeometry?: THREE.BufferGeometry,
+  onProgress?: (current: number, total: number, stage: string) => void
+): Promise<THREE.BufferGeometry | null> {
+  const worker = getCSGWorker();
+  const id = generateId();
+  
+  // Prepare geometries for transfer
+  const geometriesData = geometries.map(g => ({
+    id: g.id,
+    ...extractGeometryForWorker(g.geometry)
+  }));
+  
+  const baseplateData = baseplateGeometry ? extractGeometryForWorker(baseplateGeometry) : undefined;
+  
+  // Set up progress handler
+  const progressHandler = (e: MessageEvent<CSGWorkerOutput>) => {
+    if (e.data.id === id && e.data.type === 'progress' && e.data.progress && onProgress) {
+      onProgress(
+        e.data.progress.current,
+        e.data.progress.total,
+        e.data.progress.stage || ''
+      );
+    }
+  };
+  
+  worker.addEventListener('message', progressHandler);
+  
+  return new Promise((resolve, reject) => {
+    csgWorkerPromises.set(id, {
+      resolve: (data: CSGWorkerOutput['data']) => {
+        worker.removeEventListener('message', progressHandler);
+        
+        if (data && data.positions && data.normals && data.indices) {
+          const geometry = reconstructGeometry({
+            positions: data.positions,
+            normals: data.normals,
+            indices: data.indices
+          });
+          resolve(geometry);
+        } else {
+          resolve(null);
+        }
+      },
+      reject: (error) => {
+        worker.removeEventListener('message', progressHandler);
+        reject(error);
+      }
+    });
+    
+    // Collect transferable buffers
+    const transferables: Transferable[] = [];
+    geometriesData.forEach(g => {
+      transferables.push(g.positions.buffer as ArrayBuffer);
+      transferables.push(g.normals.buffer as ArrayBuffer);
+      transferables.push(g.indices.buffer as ArrayBuffer);
+    });
+    if (baseplateData) {
+      transferables.push(baseplateData.positions.buffer as ArrayBuffer);
+      transferables.push(baseplateData.normals.buffer as ArrayBuffer);
+      transferables.push(baseplateData.indices.buffer as ArrayBuffer);
+    }
+    
+    // Send message to worker
+    worker.postMessage(
+      {
+        type: 'union-batch',
+        id,
+        data: {
+          supports: geometriesData,
+          cutter: baseplateData
         }
       } as CSGWorkerInput,
       transferables

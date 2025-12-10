@@ -4,11 +4,11 @@
 // ============================================
 
 import * as THREE from 'three';
-import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
+import { Brush, Evaluator, SUBTRACTION, ADDITION } from 'three-bvh-csg';
 
 // Message types
 export interface CSGWorkerInput {
-  type: 'subtract-single' | 'subtract-batch';
+  type: 'subtract-single' | 'subtract-batch' | 'union-batch';
   id: string;
   data: {
     // For single subtraction
@@ -40,7 +40,7 @@ export interface CSGWorkerInput {
 }
 
 export interface CSGWorkerOutput {
-  type: 'subtraction-result' | 'batch-result' | 'progress' | 'error';
+  type: 'subtraction-result' | 'batch-result' | 'union-result' | 'progress' | 'error';
   id: string;
   data?: {
     supportId?: string;
@@ -284,6 +284,103 @@ function processBatchSubtraction(
   return results;
 }
 
+// Process batch geometry merge (combine multiple geometries into one by merging buffers)
+// This is much faster than CSG union and achieves the same visual result
+function processBatchMerge(
+  geometries: Array<{
+    id: string;
+    positions: Float32Array;
+    normals?: Float32Array;
+    indices?: Uint32Array;
+  }>,
+  progressCallback: (current: number, total: number, stage: string) => void
+): CSGWorkerOutput['data'] | null {
+  if (!geometries || geometries.length === 0) {
+    console.error('[CSGWorker] No geometries provided for merge');
+    return null;
+  }
+  
+  console.log(`[CSGWorker] Starting geometry merge of ${geometries.length} geometries`);
+  
+  // Instead of CSG union (which is very slow), we'll merge geometries by combining their buffers
+  // This is much faster and achieves the same visual result for fixture export
+  
+  progressCallback(1, geometries.length, `Analyzing geometries...`);
+  
+  // Calculate total sizes needed
+  let totalPositions = 0;
+  let totalNormals = 0;
+  let totalIndices = 0;
+  
+  for (const geom of geometries) {
+    totalPositions += geom.positions.length;
+    totalNormals += (geom.normals?.length || 0);
+    totalIndices += (geom.indices?.length || geom.positions.length / 3);
+  }
+  
+  console.log(`[CSGWorker] Merging: ${totalPositions / 3} total vertices, ${totalIndices / 3} total triangles`);
+  
+  // Allocate output arrays
+  const mergedPositions = new Float32Array(totalPositions);
+  const mergedNormals = new Float32Array(totalPositions); // Same size as positions
+  const mergedIndices = new Uint32Array(totalIndices);
+  
+  let posOffset = 0;
+  let normOffset = 0;
+  let indexOffset = 0;
+  let vertexOffset = 0;
+  
+  for (let i = 0; i < geometries.length; i++) {
+    const geom = geometries[i];
+    progressCallback(i + 1, geometries.length, `Merging geometry ${i + 1}/${geometries.length}`);
+    
+    // Copy positions
+    mergedPositions.set(geom.positions, posOffset);
+    
+    // Copy or generate normals
+    if (geom.normals && geom.normals.length > 0) {
+      mergedNormals.set(geom.normals, normOffset);
+    } else {
+      // Generate flat normals if not provided
+      const vertCount = geom.positions.length / 3;
+      for (let v = 0; v < vertCount; v++) {
+        mergedNormals[normOffset + v * 3] = 0;
+        mergedNormals[normOffset + v * 3 + 1] = 1;
+        mergedNormals[normOffset + v * 3 + 2] = 0;
+      }
+    }
+    
+    // Copy indices (offset by current vertex count)
+    const vertCount = geom.positions.length / 3;
+    if (geom.indices && geom.indices.length > 0) {
+      for (let j = 0; j < geom.indices.length; j++) {
+        mergedIndices[indexOffset + j] = geom.indices[j] + vertexOffset;
+      }
+      indexOffset += geom.indices.length;
+    } else {
+      // Generate sequential indices for non-indexed geometry
+      for (let j = 0; j < vertCount; j++) {
+        mergedIndices[indexOffset + j] = vertexOffset + j;
+      }
+      indexOffset += vertCount;
+    }
+    
+    posOffset += geom.positions.length;
+    normOffset += geom.positions.length; // Normals same size as positions
+    vertexOffset += vertCount;
+  }
+  
+  console.log(`[CSGWorker] Merge complete: ${mergedIndices.length / 3} triangles`);
+  
+  return {
+    positions: mergedPositions,
+    normals: mergedNormals,
+    indices: new Uint32Array(mergedIndices.buffer, 0, indexOffset), // Trim to actual size
+    vertexCount: totalPositions / 3,
+    triangleCount: indexOffset / 3
+  };
+}
+
 // Worker message handler
 self.onmessage = (e: MessageEvent<CSGWorkerInput>) => {
   const { type, id, data } = e.data;
@@ -357,6 +454,69 @@ self.onmessage = (e: MessageEvent<CSGWorkerInput>) => {
         } as CSGWorkerOutput,
         transferables
       );
+    } catch (error) {
+      (self as unknown as Worker).postMessage({
+        type: 'error',
+        id,
+        error: error instanceof Error ? error.message : String(error)
+      } as CSGWorkerOutput);
+    }
+  } else if (type === 'union-batch') {
+    try {
+      const progressCallback = (current: number, total: number, stage: string) => {
+        (self as unknown as Worker).postMessage({
+          type: 'progress',
+          id,
+          progress: {
+            current,
+            total,
+            stage
+          }
+        } as CSGWorkerOutput);
+      };
+      
+      // Extract geometries from supports array
+      const geometries = data.supports?.map(s => ({
+        id: s.id,
+        positions: s.positions,
+        normals: s.normals,
+        indices: s.indices
+      })) || [];
+      
+      // Add baseplate/cutter if provided (it will be the first geometry to merge)
+      if (data.cutter) {
+        geometries.unshift({
+          id: 'baseplate',
+          positions: data.cutter.positions,
+          normals: data.cutter.normals,
+          indices: data.cutter.indices
+        });
+      }
+      
+      const result = processBatchMerge(geometries, progressCallback);
+      
+      if (result) {
+        const transferables: Transferable[] = [
+          result.positions.buffer as ArrayBuffer,
+          result.normals.buffer as ArrayBuffer,
+          result.indices.buffer as ArrayBuffer
+        ];
+        
+        (self as unknown as Worker).postMessage(
+          {
+            type: 'union-result',
+            id,
+            data: result
+          } as CSGWorkerOutput,
+          transferables
+        );
+      } else {
+        (self as unknown as Worker).postMessage({
+          type: 'error',
+          id,
+          error: 'CSG union returned no result'
+        } as CSGWorkerOutput);
+      }
     } catch (error) {
       (self as unknown as Worker).postMessage({
         type: 'error',

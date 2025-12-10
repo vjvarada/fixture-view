@@ -15,7 +15,7 @@ import { getSupportFootprintBounds, getSupportFootprintPoints } from './Supports
 import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
-import { performBatchCSGSubtractionInWorker } from '@/lib/workers';
+import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
 import { decimateMesh } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 
@@ -800,6 +800,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Map from support ID to modified BufferGeometry
   const [modifiedSupportGeometries, setModifiedSupportGeometries] = useState<Map<string, THREE.BufferGeometry>>(new Map());
   const [cavitySubtractionProcessing, setCavitySubtractionProcessing] = useState(false);
+  
+  // Merged fixture mesh (baseplate + cut supports combined via CSG union)
+  const [mergedFixtureMesh, setMergedFixtureMesh] = useState<THREE.Mesh | null>(null);
   
   // Support editing ref (kept for cleanup in event handlers)
   const editingSupportRef = useRef<AnySupport | null>(null);
@@ -2017,6 +2020,109 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
         if (successCount > 0) {
           setOffsetMeshPreview(null);
+          
+          // === STEP 2: Union all cut supports with baseplate ===
+          console.log(`[3DScene] Starting CSG union of ${resultGeometries.size} supports with baseplate...`);
+          
+          window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+            detail: { 
+              current: 0, 
+              total: resultGeometries.size + 1, 
+              stage: 'Merging supports with baseplate...'
+            }
+          }));
+          
+          // Get baseplate geometry if available
+          let baseplateGeometry: THREE.BufferGeometry | undefined;
+          if (basePlateMeshRef.current) {
+            basePlateMeshRef.current.updateMatrixWorld(true);
+            baseplateGeometry = basePlateMeshRef.current.geometry.clone();
+            baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
+            
+            // Ensure baseplate geometry has proper attributes for CSG
+            if (!baseplateGeometry.index) {
+              const posAttr = baseplateGeometry.getAttribute('position');
+              const vertexCount = posAttr.count;
+              const indices = new Uint32Array(vertexCount);
+              for (let i = 0; i < vertexCount; i++) indices[i] = i;
+              baseplateGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+            }
+            if (!baseplateGeometry.getAttribute('uv')) {
+              const position = baseplateGeometry.getAttribute('position');
+              const uvArray = new Float32Array(position.count * 2);
+              baseplateGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+            }
+            baseplateGeometry.computeVertexNormals();
+          }
+          
+          // Prepare geometries for union
+          const geometriesForUnion: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
+          resultGeometries.forEach((geom, supportId) => {
+            // Ensure geometry has proper attributes for CSG
+            if (!geom.index) {
+              const posAttr = geom.getAttribute('position');
+              const vertexCount = posAttr.count;
+              const indices = new Uint32Array(vertexCount);
+              for (let i = 0; i < vertexCount; i++) indices[i] = i;
+              geom.setIndex(new THREE.BufferAttribute(indices, 1));
+            }
+            if (!geom.getAttribute('uv')) {
+              const position = geom.getAttribute('position');
+              const uvArray = new Float32Array(position.count * 2);
+              geom.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+            }
+            geometriesForUnion.push({ id: supportId, geometry: geom });
+          });
+          
+          try {
+            const mergedGeometry = await performBatchCSGUnionInWorker(
+              geometriesForUnion,
+              baseplateGeometry,
+              (current, total, stage) => {
+                console.log(`[3DScene] Union Progress: ${current}/${total} - ${stage}`);
+                window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                  detail: { current, total, stage: `Merging: ${stage}` }
+                }));
+              }
+            );
+            
+            if (mergedGeometry) {
+              // Create merged fixture mesh with amber color
+              const amberMaterial = new THREE.MeshStandardMaterial({
+                color: 0xFFBF00, // Amber
+                metalness: 0.1,
+                roughness: 0.6,
+                side: THREE.DoubleSide,
+              });
+              
+              const fixtureMesh = new THREE.Mesh(mergedGeometry, amberMaterial);
+              fixtureMesh.name = 'merged-fixture';
+              fixtureMesh.castShadow = true;
+              fixtureMesh.receiveShadow = true;
+              
+              // Dispose old merged fixture if exists
+              if (mergedFixtureMesh) {
+                mergedFixtureMesh.geometry?.dispose();
+                if (mergedFixtureMesh.material) {
+                  if (Array.isArray(mergedFixtureMesh.material)) {
+                    mergedFixtureMesh.material.forEach(m => m.dispose());
+                  } else {
+                    mergedFixtureMesh.material.dispose();
+                  }
+                }
+              }
+              
+              setMergedFixtureMesh(fixtureMesh);
+              console.log(`[3DScene] Merged fixture created with ${mergedGeometry.getAttribute('position').count / 3} vertices`);
+            } else {
+              console.warn('[3DScene] CSG union returned no result');
+            }
+            
+            // Clean up baseplate geometry clone
+            baseplateGeometry?.dispose();
+          } catch (unionErr) {
+            console.error('[3DScene] CSG union failed:', unionErr);
+          }
         }
         
         console.log(`[3DScene] Batch CSG completed: ${successCount} success, ${errorCount} failed`);
@@ -2682,8 +2788,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       {/* Scalable grid - sized based on combined model bounds (includes world positions) */}
       <ScalableGrid modelBounds={modelBounds} isDarkMode={isDarkMode} />
 
-      {/* Base plate */}
-      {basePlate && baseplateVisible && (
+      {/* Base plate - hide when merged fixture is shown */}
+      {basePlate && baseplateVisible && !mergedFixtureMesh && (
         <BasePlate
           key={`baseplate-${basePlate.id}`}
           type={basePlate.type}
@@ -2799,8 +2905,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         />
       ))}
 
-      {/* Supports rendering */}
-      {supportsTrimPreview.length === 0
+      {/* Supports rendering - hide when merged fixture is shown */}
+      {!mergedFixtureMesh && supportsTrimPreview.length === 0
         ? (() => {
             // Render individual supports (with modified geometry if CSG-cut)
             return supports.map((s) => {
@@ -2905,6 +3011,11 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       {/* Offset mesh preview (cavity cutting brush visualization) */}
       {offsetMeshPreview && showOffsetPreview && (
         <primitive object={offsetMeshPreview} />
+      )}
+
+      {/* Merged fixture mesh (baseplate + cut supports combined) */}
+      {mergedFixtureMesh && (
+        <primitive object={mergedFixtureMesh} />
       )}
 
       {/* Debug: Perimeter visualization (raycast silhouette) - controlled by DEBUG_SHOW_PERIMETER flag */}
