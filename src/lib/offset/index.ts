@@ -13,7 +13,6 @@ export {
 } from './manifoldProcessor';
 export { createWatertightMeshFromHeightmap, calculateOptimalMeshSettings } from './meshGenerator';
 export { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller';
-export { mergeCoplanarTriangles } from './meshOptimizer';
 export type { 
   OffsetMeshOptions, 
   OffsetMeshResult, 

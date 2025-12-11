@@ -94,6 +94,9 @@ export const DECIMATION_THRESHOLD = 50_000;
 /** Target triangle count after decimation */
 export const DECIMATION_TARGET = 50_000;
 
+/** MeshOptimizer target - first pass reduces large meshes to this level */
+const MESHOPT_TARGET = 500_000;
+
 /** Minimum area for a valid triangle (avoid degenerate faces) */
 const MIN_TRIANGLE_AREA_SQ = 1e-12;
 
@@ -377,21 +380,166 @@ export async function repairMesh(
 }
 
 // ============================================================================
+// MeshOptimizer Simplification
+// ============================================================================
+
+/**
+ * Simplify mesh using MeshOptimizer's simplify() function.
+ * This is a high-quality WASM-based simplifier that preserves mesh topology.
+ * 
+ * IMPORTANT: MeshOptimizer requires welded vertices (shared vertices between triangles)
+ * to work effectively. Non-indexed "triangle soup" meshes must be converted first.
+ * 
+ * @see https://www.npmjs.com/package/meshoptimizer
+ */
+async function simplifyWithMeshOptimizer(
+  geometry: THREE.BufferGeometry,
+  targetIndexCount: number,
+  onProgress?: ProgressCallback
+): Promise<DecimationResult> {
+  const { MeshoptSimplifier } = await import('meshoptimizer');
+  
+  // Wait for WASM to be ready
+  await MeshoptSimplifier.ready;
+  
+  // MeshOptimizer requires welded/merged vertices to work effectively
+  // Non-indexed geometry (triangle soup) won't simplify because each vertex is unique
+  reportProgress(onProgress, 'decimating', 2, 'Merging vertices for simplification...');
+  
+  // Merge vertices to create shared vertices between triangles
+  let workGeometry = geometry.clone();
+  
+  // Check if geometry needs vertex merging
+  const originalPositions = workGeometry.getAttribute('position');
+  const originalVertexCount = originalPositions.count;
+  const originalTriangles = workGeometry.index 
+    ? workGeometry.index.count / 3 
+    : originalVertexCount / 3;
+  
+  // If non-indexed or vertices == triangles * 3, we need to merge
+  if (!workGeometry.index || originalVertexCount === originalTriangles * 3) {
+    console.log(`[MeshOptimizer] Merging vertices: ${originalVertexCount} vertices for ${originalTriangles} triangles`);
+    workGeometry = mergeVertices(workGeometry, 1e-4); // tolerance for merging
+    console.log(`[MeshOptimizer] After merge: ${workGeometry.getAttribute('position').count} unique vertices`);
+  }
+  
+  const positions = workGeometry.getAttribute('position');
+  const positionArray = positions.array as Float32Array;
+  const vertexCount = positions.count;
+  
+  // Get or create index array
+  let indexArray: Uint32Array;
+  
+  if (workGeometry.index) {
+    const existingIndices = workGeometry.index.array;
+    indexArray = new Uint32Array(existingIndices.length);
+    for (let i = 0; i < existingIndices.length; i++) {
+      indexArray[i] = existingIndices[i];
+    }
+  } else {
+    // This shouldn't happen after mergeVertices, but handle it anyway
+    indexArray = new Uint32Array(vertexCount);
+    for (let i = 0; i < vertexCount; i++) {
+      indexArray[i] = i;
+    }
+  }
+  
+  const triangleCount = indexArray.length / 3;
+  
+  reportProgress(onProgress, 'decimating', 5, 'Running MeshOptimizer simplify...');
+  
+  try {
+    // Call MeshOptimizer's simplify function
+    // simplify(indices, vertex_positions, vertex_positions_stride, target_index_count, target_error, flags?)
+    // target_error is relative (0.01 = 1% of mesh extents)
+    const targetError = 0.01; // Allow up to 1% error
+    const [newIndices, resultError] = MeshoptSimplifier.simplify(
+      indexArray,
+      positionArray,
+      3, // stride in Float32 units (x, y, z)
+      targetIndexCount,
+      targetError,
+      ['LockBorder'] // Preserve border vertices
+    );
+    
+    const finalTriangles = newIndices.length / 3;
+    
+    if (finalTriangles === 0) {
+      throw new Error('MeshOptimizer produced empty mesh');
+    }
+    
+    // Check if simplification actually worked
+    if (finalTriangles >= triangleCount * 0.95) {
+      // Less than 5% reduction - simplifier probably couldn't work with this mesh
+      console.warn(`[MeshOptimizer] Minimal reduction (${triangleCount} → ${finalTriangles}), mesh may have issues`);
+    }
+    
+    reportProgress(onProgress, 'decimating', 15, 'Building simplified geometry...');
+    
+    // Create new geometry with simplified indices
+    const newGeometry = new THREE.BufferGeometry();
+    
+    // Copy position attribute from merged geometry
+    newGeometry.setAttribute('position', new THREE.BufferAttribute(
+      new Float32Array(positionArray), 3
+    ));
+    
+    // Copy other attributes if they exist (from merged geometry)
+    if (workGeometry.getAttribute('normal')) {
+      const normalArray = workGeometry.getAttribute('normal').array as Float32Array;
+      newGeometry.setAttribute('normal', new THREE.BufferAttribute(
+        new Float32Array(normalArray), 3
+      ));
+    }
+    
+    if (workGeometry.getAttribute('uv')) {
+      const uvArray = workGeometry.getAttribute('uv').array as Float32Array;
+      newGeometry.setAttribute('uv', new THREE.BufferAttribute(
+        new Float32Array(uvArray), 2
+      ));
+    }
+    
+    // Set new indices
+    newGeometry.setIndex(new THREE.BufferAttribute(newIndices, 1));
+    
+    const reductionPercent = ((originalTriangles - finalTriangles) / originalTriangles) * 100;
+    
+    console.log(`[MeshOptimizer] Simplified: ${originalTriangles} → ${finalTriangles} triangles (error: ${resultError.toFixed(6)})`);
+    
+    return {
+      success: true,
+      geometry: newGeometry,
+      originalTriangles,
+      finalTriangles,
+      reductionPercent,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.warn('[MeshOptimizer] Simplification failed:', errorMessage);
+    return {
+      success: false,
+      geometry: null,
+      originalTriangles,
+      finalTriangles: 0,
+      reductionPercent: 0,
+      error: errorMessage,
+    };
+  }
+}
+
+// ============================================================================
 // Decimation
 // ============================================================================
 
 /**
- * Decimates a mesh using vertex clustering to reduce triangle count
- */
-/**
- * Mesh decimation using Fast Quadric Mesh Simplification (WASM) with Manifold3D fallback.
+ * Mesh decimation pipeline using MeshOptimizer + Fast Quadric in sequence:
  * 
- * Primary: Fast-Quadric-Mesh-Simplification (Garland & Heckbert QEM algorithm)
- * Fallback: Manifold3D simplify() if Fast Quadric fails
+ * 1. MeshOptimizer simplify() - Reduces large meshes (>500K) to 500K triangles
+ * 2. Fast Quadric - Reduces from 500K (or less) to final target (50K)
+ * 3. Manifold3D - Fallback if Fast Quadric fails
+ * 4. Vertex Clustering - Last resort for problematic meshes
  * 
  * Guarantees output below targetTriangles (default 50,000).
- * 
- * @see https://github.com/MyMiniFactory/Fast-Quadric-Mesh-Simplification
  */
 export async function decimateMesh(
   geometry: THREE.BufferGeometry,
@@ -414,33 +562,69 @@ export async function decimateMesh(
     };
   }
   
-  // Calculate target ratio
-  const ratio = Math.max(0.01, Math.min(0.99, targetTriangles / originalTriangles));
+  let currentGeometry = geometry;
+  let currentTriangles = originalTriangles;
   
-  // Try Fast Quadric first
+  // STAGE 1: MeshOptimizer for large meshes (>500K triangles)
+  // Reduces to 500K first to make Fast Quadric faster and more reliable
+  if (currentTriangles > MESHOPT_TARGET) {
+    try {
+      reportProgress(onProgress, 'decimating', 0, `MeshOptimizer: ${currentTriangles.toLocaleString()} → ${MESHOPT_TARGET.toLocaleString()} triangles...`);
+      
+      const meshoptTargetIndices = MESHOPT_TARGET * 3;
+      const meshoptResult = await simplifyWithMeshOptimizer(currentGeometry, meshoptTargetIndices, onProgress);
+      
+      if (meshoptResult.success && meshoptResult.geometry) {
+        currentGeometry = meshoptResult.geometry;
+        currentTriangles = meshoptResult.finalTriangles;
+        console.log(`[decimateMesh] MeshOptimizer: ${originalTriangles.toLocaleString()} → ${currentTriangles.toLocaleString()} triangles`);
+        reportProgress(onProgress, 'decimating', 40, `MeshOptimizer complete: ${currentTriangles.toLocaleString()} triangles`);
+      } else {
+        console.warn('[decimateMesh] MeshOptimizer failed, continuing with original geometry');
+      }
+    } catch (meshoptError) {
+      console.warn('[decimateMesh] MeshOptimizer error:', meshoptError);
+    }
+  }
+  
+  // If already at or below target after MeshOptimizer, we're done
+  if (currentTriangles <= targetTriangles) {
+    currentGeometry.computeVertexNormals();
+    return {
+      success: true,
+      geometry: currentGeometry,
+      originalTriangles,
+      finalTriangles: currentTriangles,
+      reductionPercent: ((originalTriangles - currentTriangles) / originalTriangles) * 100,
+    };
+  }
+  
+  // STAGE 2: Fast Quadric to reach final target
+  const ratio = Math.max(0.01, Math.min(0.99, targetTriangles / currentTriangles));
+  
   try {
-    reportProgress(onProgress, 'decimating', 0, 'Starting Fast Quadric simplification...');
+    reportProgress(onProgress, 'decimating', 45, `Fast Quadric: ${currentTriangles.toLocaleString()} → ${targetTriangles.toLocaleString()} triangles...`);
     
-    const result = await simplifyGeometry(geometry, {
+    const result = await simplifyGeometry(currentGeometry, {
       ratio,
       onProgress: (stage, percent, message) => {
-        const mappedPercent = percent * 0.7; // 0-70% for Fast Quadric
+        const mappedPercent = 45 + (percent * 0.45); // 45-90%
         reportProgress(onProgress, 'decimating', mappedPercent, message);
       }
     });
     
     if (result.success && result.geometry) {
       result.geometry.computeVertexNormals();
-      reportProgress(onProgress, 'decimating', 100, 'Fast Quadric decimation complete');
+      reportProgress(onProgress, 'decimating', 100, 'Decimation complete');
       
-      console.log(`[decimateMesh] Fast Quadric success: ${originalTriangles} → ${result.finalTriangles} triangles`);
+      console.log(`[decimateMesh] Fast Quadric: ${currentTriangles.toLocaleString()} → ${result.finalTriangles.toLocaleString()} triangles`);
       
       return {
         success: true,
         geometry: result.geometry,
-        originalTriangles: result.originalTriangles,
+        originalTriangles,
         finalTriangles: result.finalTriangles,
-        reductionPercent: result.reductionPercent,
+        reductionPercent: ((originalTriangles - result.finalTriangles) / originalTriangles) * 100,
       };
     }
     
@@ -450,12 +634,12 @@ export async function decimateMesh(
     reportProgress(onProgress, 'decimating', 70, 'Fast Quadric failed, trying Manifold3D...');
   }
   
-  // Fallback to Manifold3D
+  // STAGE 3: Manifold3D fallback
   try {
     const { decimateMeshWithManifold } = await import('./manifoldMeshService');
     
     const manifoldResult = await decimateMeshWithManifold(
-      geometry,
+      currentGeometry,
       targetTriangles,
       (p) => {
         const mappedProgress = 70 + (p.progress * 0.3); // 70-100% for Manifold
@@ -468,36 +652,37 @@ export async function decimateMesh(
       manifoldResult.geometry.computeVertexNormals();
       reportProgress(onProgress, 'decimating', 100, 'Manifold3D decimation complete');
       
-      console.log(`[decimateMesh] Manifold3D fallback success: ${originalTriangles} → ${manifoldResult.finalTriangles} triangles`);
+      console.log(`[decimateMesh] Manifold3D fallback success: ${originalTriangles.toLocaleString()} → ${manifoldResult.finalTriangles.toLocaleString()} triangles`);
       
       return {
         success: true,
         geometry: manifoldResult.geometry,
-        originalTriangles: manifoldResult.originalTriangles,
+        originalTriangles,
         finalTriangles: manifoldResult.finalTriangles,
-        reductionPercent: manifoldResult.reductionPercent,
+        reductionPercent: ((originalTriangles - manifoldResult.finalTriangles) / originalTriangles) * 100,
       };
     }
     
     throw new Error(manifoldResult.error || 'Manifold3D returned no geometry');
   } catch (manifoldError) {
-    console.error('[decimateMesh] Both Fast Quadric and Manifold3D failed:', manifoldError);
+    console.error('[decimateMesh] Manifold3D failed:', manifoldError);
     reportProgress(onProgress, 'decimating', 80, 'Trying vertex clustering fallback...');
   }
   
-  // Final fallback: Simple vertex clustering decimation
-  // This is much simpler but can handle any mesh size
+  // STAGE 4: Vertex clustering as last resort
   try {
     console.log('[decimateMesh] Attempting vertex clustering decimation...');
     
-    const clusteredGeometry = vertexClusteringDecimate(geometry, targetTriangles);
-    const finalTriangles = clusteredGeometry.getAttribute('position').count / 3;
+    const clusteredGeometry = vertexClusteringDecimate(currentGeometry, targetTriangles);
+    const finalTriangles = clusteredGeometry.index 
+      ? clusteredGeometry.index.count / 3 
+      : clusteredGeometry.getAttribute('position').count / 3;
     const reductionPercent = ((originalTriangles - finalTriangles) / originalTriangles) * 100;
     
     clusteredGeometry.computeVertexNormals();
     reportProgress(onProgress, 'decimating', 100, 'Vertex clustering decimation complete');
     
-    console.log(`[decimateMesh] Vertex clustering success: ${originalTriangles} → ${finalTriangles} triangles (${reductionPercent.toFixed(1)}% reduction)`);
+    console.log(`[decimateMesh] Vertex clustering success: ${originalTriangles.toLocaleString()} → ${finalTriangles.toLocaleString()} triangles (${reductionPercent.toFixed(1)}% reduction)`);
     
     return {
       success: true,
@@ -509,15 +694,16 @@ export async function decimateMesh(
   } catch (clusteringError) {
     console.error('[decimateMesh] All decimation methods failed:', clusteringError);
     
-    // Return original geometry as last resort
-    console.warn('[decimateMesh] All decimation methods failed, returning original geometry');
+    // Return current geometry (may be partially decimated by MeshOptimizer)
+    console.warn('[decimateMesh] All decimation methods failed, returning best available geometry');
+    currentGeometry.computeVertexNormals();
     return {
       success: true,
-      geometry: geometry.clone(),
+      geometry: currentGeometry,
       originalTriangles,
-      finalTriangles: originalTriangles,
-      reductionPercent: 0,
-      error: `Decimation failed: All methods failed`,
+      finalTriangles: currentTriangles,
+      reductionPercent: ((originalTriangles - currentTriangles) / originalTriangles) * 100,
+      error: `Decimation incomplete: reached ${currentTriangles.toLocaleString()} triangles`,
     };
   }
 }
@@ -924,9 +1110,10 @@ function hcSmoothing(
 }
 
 /**
- * Gaussian filter smoothing - weighted average based on distance in XY plane.
+ * Gaussian filter smoothing - weighted average based on 3D distance.
  * Vertices closer to the center have more influence than farther ones.
  * Produces smoother results than mean filter while preserving features better.
+ * Smooths in all 3 directions (X, Y, Z).
  * 
  * @param sigma - Standard deviation for Gaussian weight calculation (larger = more smoothing)
  */
@@ -959,7 +1146,7 @@ function gaussianSmoothing(
       processed.add(firstInGroup);
       
       const x = current[i * 3];
-      const y = current[i * 3 + 1]; // Y preserved (vertical)
+      const y = current[i * 3 + 1];
       const z = current[i * 3 + 2];
       
       const neighbors = adjacency.get(i);
@@ -972,9 +1159,10 @@ function gaussianSmoothing(
         continue;
       }
       
-      // Gaussian-weighted average in XY plane
+      // Gaussian-weighted average in all 3 directions (X, Y, Z)
       const processedNeighborGroups = new Set<number>();
       let weightedSumX = x; // Self weight is 1.0
+      let weightedSumY = y;
       let weightedSumZ = z;
       let totalWeight = 1.0;
       
@@ -986,28 +1174,32 @@ function gaussianSmoothing(
           processedNeighborGroups.add(neighborFirst);
           
           const nx = current[ni * 3];
+          const ny = current[ni * 3 + 1];
           const nz = current[ni * 3 + 2];
           
-          // Calculate distance in XY plane (X and Z in Three.js)
+          // Calculate 3D distance
           const dx = nx - x;
+          const dy = ny - y;
           const dz = nz - z;
-          const distSq = dx * dx + dz * dz;
+          const distSq = dx * dx + dy * dy + dz * dz;
           
           // Gaussian weight based on distance
           const weight = Math.exp(-distSq / sigma2);
           
           weightedSumX += nx * weight;
+          weightedSumY += ny * weight;
           weightedSumZ += nz * weight;
           totalWeight += weight;
         }
       }
       
       const newX = weightedSumX / totalWeight;
+      const newY = weightedSumY / totalWeight;
       const newZ = weightedSumZ / totalWeight;
       
       for (const vi of group) {
         newPositions[vi * 3] = newX;
-        newPositions[vi * 3 + 1] = y; // Preserve Y (vertical)
+        newPositions[vi * 3 + 1] = newY;
         newPositions[vi * 3 + 2] = newZ;
       }
     }
@@ -1020,12 +1212,12 @@ function gaussianSmoothing(
 
 /**
  * Performs mesh smoothing using Taubin, HC, Combined, or Gaussian methods.
- * All methods operate only in XY plane (X and Z in Three.js), preserving vertical (Y) positions.
+ * All methods now smooth in all 3 directions (X, Y, Z).
  * 
  * Methods:
  * - taubin: Alternates shrinking (λ) and inflating (μ) passes. Good basic smoothing.
  * - hc: HC Laplacian uses original positions as constraint. Better at preserving volume.
- * - combined: Gaussian → Laplacian → Taubin sequence. Best overall quality.
+ * - combined: Uses only Gaussian smoothing (simplest and most effective).
  * - gaussian: Distance-weighted smoothing. Good for noise reduction.
  * 
  * @param geometry - The input BufferGeometry
@@ -1121,28 +1313,13 @@ export async function laplacianSmooth(
         
       case 'combined':
       default:
-        // Combined: Gaussian → Laplacian → Taubin sequence
-        // Use individual iteration counts if provided, otherwise distribute from iterations
-        const gaussianIters = opts.gaussianIterations ?? Math.max(1, Math.floor(iterations / 3));
-        const laplacianIters = opts.laplacianIterations ?? Math.max(1, Math.floor(iterations / 3));
-        const taubinIters = opts.taubinIterations ?? Math.max(1, iterations - gaussianIters - laplacianIters);
+        // Combined now uses only Gaussian smoothing (simplest and most effective)
+        // Use gaussianIterations if provided, otherwise use iterations
+        const gaussianIters = opts.gaussianIterations ?? iterations;
         
-        // Pass 1: Gaussian for initial noise reduction
-        reportProgress(progressCb, 'smoothing', 25, `Gaussian pass (${gaussianIters} iterations)...`);
-        let current = gaussianSmoothing(
+        reportProgress(progressCb, 'smoothing', 30, `Gaussian smoothing (${gaussianIters} iterations)...`);
+        smoothedPositions = gaussianSmoothing(
           positions, adjacency, vertexGroups, gaussianIters, sigma, vertexCount
-        );
-        
-        // Pass 2: Laplacian for smoothing
-        reportProgress(progressCb, 'smoothing', 50, `Laplacian pass (${laplacianIters} iterations)...`);
-        for (let i = 0; i < laplacianIters; i++) {
-          current = laplacianPass(current, adjacency, vertexGroups, lambda, vertexCount);
-        }
-        
-        // Pass 3: Taubin to prevent shrinkage
-        reportProgress(progressCb, 'smoothing', 75, `Taubin pass (${taubinIters} iterations)...`);
-        smoothedPositions = taubinSmoothing(
-          current, adjacency, vertexGroups, taubinIters, lambda, mu, vertexCount
         );
         break;
     }

@@ -131,15 +131,13 @@ export function createWatertightMeshFromHeightmap(
                 const vc = validVertices[c].topIndex;
                 const vd = validVertices[d].topIndex;
                 
-                // Add triangles
                 indices[idxCount++] = va; indices[idxCount++] = vd; indices[idxCount++] = vb;
                 indices[idxCount++] = va; indices[idxCount++] = vc; indices[idxCount++] = vd;
             }
         }
     }
     
-    // Bottom surface - same per-cell triangulation as top for watertight mesh
-    // All vertices must be connected to maintain manifold geometry with walls
+    // Bottom surface
     for (let j = 0; j < workingResolution - 1; j++) {
         for (let i = 0; i < workingResolution - 1; i++) {
             const a = vertexGrid[j * workingResolution + i];
@@ -153,7 +151,6 @@ export function createWatertightMeshFromHeightmap(
                 const vc = validVertices[c].bottomIndex;
                 const vd = validVertices[d].bottomIndex;
                 
-                // Bottom faces down, so opposite winding from top
                 indices[idxCount++] = va; indices[idxCount++] = vb; indices[idxCount++] = vd;
                 indices[idxCount++] = va; indices[idxCount++] = vd; indices[idxCount++] = vc;
             }

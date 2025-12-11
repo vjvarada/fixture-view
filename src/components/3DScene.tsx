@@ -1371,35 +1371,22 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             // === Step 2: Smoothing (if enabled) ===
             if (shouldSmooth) {
               const iterations = settings.smoothingIterations ?? 5;
-              const method = settings.smoothingMethod ?? 'combined';
-              const alpha = settings.smoothingAlpha ?? 0.5;
-              const beta = settings.smoothingBeta ?? 0.5;
-              const gaussianIterations = settings.combinedGaussianIterations ?? 2;
-              const laplacianIterations = settings.combinedLaplacianIterations ?? 2;
-              const taubinIterations = settings.combinedTaubinIterations ?? 2;
               
-              console.log(`[3DScene] Applying ${method} smoothing (${method === 'combined' ? `G:${gaussianIterations} L:${laplacianIterations} T:${taubinIterations}` : `${iterations} iterations`}, alpha=${alpha}, beta=${beta})...`);
+              console.log(`[3DScene] Applying Gaussian smoothing (${iterations} iterations)...`);
               
               window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-                detail: { current: 85, total: 100, stage: `Smoothing mesh (${method})...` }
+                detail: { current: 85, total: 100, stage: `Smoothing mesh...` }
               }));
               
               // Yield to browser before smoothing
               await new Promise(resolve => setTimeout(resolve, 0));
               
-              // Use custom Taubin/HC/Combined smoothing
+              // Use Gaussian smoothing
               const smoothingResult = await laplacianSmooth(
                 currentGeometry,
                 {
                   iterations,
-                  method,
-                  lambda: 0.5,
-                  mu: -0.53,
-                  alpha,
-                  beta,
-                  gaussianIterations,
-                  laplacianIterations,
-                  taubinIterations,
+                  method: 'gaussian',
                 },
                 (progressInfo) => {
                   console.log(`[3DScene] Smoothing: ${progressInfo.message}`);
@@ -1407,7 +1394,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               );
               
               if (smoothingResult.success && smoothingResult.geometry) {
-                console.log(`[3DScene] ${method} smoothing complete (${smoothingResult.iterations} iterations)`);
+                console.log(`[3DScene] Gaussian smoothing complete (${smoothingResult.iterations} iterations)`);
                 currentGeometry.dispose();
                 currentGeometry = smoothingResult.geometry;
                 // Update triangle count after smoothing (smoothing outputs non-indexed)
@@ -2865,6 +2852,36 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       setSupports([]);
       setSupportsTrimPreview([]);
       editingSupportRef.current = null;
+      
+      // Clear merged fixture mesh
+      setMergedFixtureMesh((prev) => {
+        if (prev) {
+          prev.geometry?.dispose();
+          if (prev.material) {
+            if (Array.isArray(prev.material)) {
+              prev.material.forEach(m => m.dispose());
+            } else {
+              prev.material.dispose();
+            }
+          }
+        }
+        return null;
+      });
+      
+      // Clear offset mesh preview
+      setOffsetMeshPreview((prev) => {
+        if (prev) {
+          prev.geometry?.dispose();
+          if (prev.material) {
+            if (Array.isArray(prev.material)) {
+              prev.material.forEach(m => m.dispose());
+            } else {
+              prev.material.dispose();
+            }
+          }
+        }
+        return null;
+      });
     };
 
     window.addEventListener('viewer-reset', handleViewReset as EventListener);

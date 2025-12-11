@@ -45,47 +45,57 @@ export function fillMeshHoles(
 ): Float32Array {
     const startTime = performance.now();
     
+    console.log(`[fillMeshHoles] Input: ${vertices.length / 9} triangles, ${vertices.length / 3} vertices`);
+    
     // Step 1: Build vertex map with spatial hashing for welding
-    console.log('Building vertex map for hole detection...');
+    console.log('[fillMeshHoles] Building vertex map...');
     const { uniqueVertices, vertexToUnique } = buildVertexMap(vertices);
     
     // Step 2: Build edge map and find boundary edges
-    console.log('Finding boundary edges...');
+    console.log('[fillMeshHoles] Finding boundary edges...');
     const boundaryEdges = findBoundaryEdges(vertices, vertexToUnique);
     
     if (boundaryEdges.length === 0) {
-        console.log('✓ No holes detected - mesh appears closed');
+        console.log('[fillMeshHoles] ✓ No holes detected - mesh appears closed');
         return vertices;
     }
     
-    console.log(`Found ${boundaryEdges.length} boundary edges`);
+    console.log(`[fillMeshHoles] Found ${boundaryEdges.length} boundary edges`);
     
     // Step 3: Chain boundary edges into loops
-    console.log('Building boundary loops...');
+    console.log('[fillMeshHoles] Building boundary loops...');
     const loops = buildBoundaryLoops(boundaryEdges, uniqueVertices);
     
     if (loops.length === 0) {
-        console.log('⚠ Could not form closed boundary loops');
+        console.log('[fillMeshHoles] ⚠ Could not form closed boundary loops from edges');
+        console.log('[fillMeshHoles] This may indicate a non-manifold mesh or complex hole geometry');
         return vertices;
     }
     
-    console.log(`Found ${loops.length} boundary loops (potential holes)`);
+    console.log(`[fillMeshHoles] Found ${loops.length} boundary loops (potential holes)`);
     
     // Step 4: Filter and triangulate loops to create cap geometry
     const capTriangles: number[] = [];
     let filledHoles = 0;
+    let skippedSmall = 0;
+    let skippedLarge = 0;
+    let failedTriangulation = 0;
     
-    for (const loop of loops) {
+    for (let loopIdx = 0; loopIdx < loops.length; loopIdx++) {
+        const loop = loops[loopIdx];
+        
         // Skip if outside size limits
         if (loop.vertices.length < minHoleVertices) {
-            console.log(`  Skipping small loop with ${loop.vertices.length} vertices`);
+            skippedSmall++;
             continue;
         }
         
         if (loop.area > maxHoleArea) {
-            console.log(`  Skipping large loop with area ${loop.area.toFixed(2)} (max: ${maxHoleArea})`);
+            skippedLarge++;
             continue;
         }
+        
+        console.log(`[fillMeshHoles] Processing loop ${loopIdx + 1}/${loops.length}: ${loop.vertices.length} vertices, area=${loop.area.toFixed(2)}`);
         
         // Triangulate the loop
         const triangles = triangulateLoop(loop);
@@ -93,12 +103,19 @@ export function fillMeshHoles(
         if (triangles.length > 0) {
             capTriangles.push(...triangles);
             filledHoles++;
-            console.log(`  ✓ Filled hole with ${loop.vertices.length} vertices, ${triangles.length / 9} triangles`);
+            console.log(`[fillMeshHoles]   ✓ Created ${triangles.length / 9} cap triangles`);
+        } else {
+            failedTriangulation++;
+            console.log(`[fillMeshHoles]   ✗ Triangulation failed`);
         }
     }
     
+    if (skippedSmall > 0) console.log(`[fillMeshHoles] Skipped ${skippedSmall} small loops`);
+    if (skippedLarge > 0) console.log(`[fillMeshHoles] Skipped ${skippedLarge} large loops`);
+    if (failedTriangulation > 0) console.log(`[fillMeshHoles] Failed to triangulate ${failedTriangulation} loops`);
+    
     if (capTriangles.length === 0) {
-        console.log('No holes were filled');
+        console.log('[fillMeshHoles] No cap triangles generated');
         return vertices;
     }
     
@@ -108,7 +125,7 @@ export function fillMeshHoles(
     combinedVertices.set(new Float32Array(capTriangles), vertices.length);
     
     const endTime = performance.now();
-    console.log(`✓ Hole filling complete: ${filledHoles} holes, ${capTriangles.length / 9} cap triangles added in ${(endTime - startTime).toFixed(1)}ms`);
+    console.log(`[fillMeshHoles] ✓ Complete: ${filledHoles} holes filled, ${capTriangles.length / 9} cap triangles added [${(endTime - startTime).toFixed(0)}ms]`);
     
     return combinedVertices;
 }
@@ -121,7 +138,8 @@ function buildVertexMap(vertices: Float32Array): {
     uniqueVertices: THREE.Vector3[], 
     vertexToUnique: Map<number, number> 
 } {
-    const EPSILON = 1e-6;
+    // Use larger epsilon for better vertex welding - 1e-4 is about 0.1mm for mm-scale models
+    const EPSILON = 1e-4;
     const uniqueVertices: THREE.Vector3[] = [];
     const vertexToUnique = new Map<number, number>();
     
@@ -258,77 +276,135 @@ function findBoundaryEdges(
 function buildBoundaryLoops(edges: Edge[], uniqueVertices: THREE.Vector3[]): BoundaryLoop[] {
     const loops: BoundaryLoop[] = [];
     
-    // Build adjacency map
-    const adjacency = new Map<number, { vertex: number, position: THREE.Vector3 }[]>();
+    if (edges.length === 0) return loops;
+    
+    // Build adjacency map: vertex -> list of connected vertices with edge info
+    const adjacency = new Map<number, Map<number, THREE.Vector3>>();
     
     for (const edge of edges) {
-        if (!adjacency.has(edge.v1)) adjacency.set(edge.v1, []);
-        if (!adjacency.has(edge.v2)) adjacency.set(edge.v2, []);
+        if (!adjacency.has(edge.v1)) adjacency.set(edge.v1, new Map());
+        if (!adjacency.has(edge.v2)) adjacency.set(edge.v2, new Map());
         
-        adjacency.get(edge.v1)!.push({ vertex: edge.v2, position: edge.p2 });
-        adjacency.get(edge.v2)!.push({ vertex: edge.v1, position: edge.p1 });
+        adjacency.get(edge.v1)!.set(edge.v2, edge.p2);
+        adjacency.get(edge.v2)!.set(edge.v1, edge.p1);
     }
     
-    // Track visited vertices
-    const visited = new Set<number>();
+    // Debug: Check vertex degrees (should be 2 for simple holes)
+    let degree1Count = 0;
+    let degree2Count = 0;
+    let degree3PlusCount = 0;
+    for (const [vertex, neighbors] of adjacency) {
+        const degree = neighbors.size;
+        if (degree === 1) degree1Count++;
+        else if (degree === 2) degree2Count++;
+        else degree3PlusCount++;
+    }
+    console.log(`  Boundary vertex degrees: 1=${degree1Count}, 2=${degree2Count}, 3+=${degree3PlusCount}`);
     
-    // Find all loops
+    if (degree1Count > 0) {
+        console.log(`  ⚠ Found ${degree1Count} degree-1 vertices (open boundary, cannot form closed loops)`);
+    }
+    
+    // Track which edges have been used
+    const usedEdges = new Set<string>();
+    const getEdgeKey = (v1: number, v2: number) => v1 < v2 ? `${v1}_${v2}` : `${v2}_${v1}`;
+    
+    // Find all loops by following unused edges
     for (const startVertex of adjacency.keys()) {
-        if (visited.has(startVertex)) continue;
+        const startNeighbors = adjacency.get(startVertex)!;
         
-        const loopVertices: THREE.Vector3[] = [];
-        const loopIndices: number[] = [];
-        let current = startVertex;
-        let prev = -1;
-        
-        while (true) {
-            if (visited.has(current) && current !== startVertex) break;
+        // Try to start a loop from each unused edge from this vertex
+        for (const [firstNeighbor, _] of startNeighbors) {
+            const firstEdgeKey = getEdgeKey(startVertex, firstNeighbor);
+            if (usedEdges.has(firstEdgeKey)) continue;
             
-            visited.add(current);
+            // Try to form a loop
+            const loopVertices: THREE.Vector3[] = [];
+            const loopIndices: number[] = [];
+            const loopEdges: string[] = [];
+            
+            let current = startVertex;
+            let next = firstNeighbor;
+            
             loopIndices.push(current);
             loopVertices.push(uniqueVertices[current].clone());
             
-            const neighbors = adjacency.get(current) || [];
+            let iterations = 0;
+            const maxIterations = edges.length + 1;
             
-            // Find next vertex (not the one we came from)
-            let next = -1;
-            for (const n of neighbors) {
-                if (n.vertex !== prev) {
-                    // Prefer unvisited vertices
-                    if (!visited.has(n.vertex)) {
-                        next = n.vertex;
+            while (iterations < maxIterations) {
+                iterations++;
+                
+                const edgeKey = getEdgeKey(current, next);
+                if (usedEdges.has(edgeKey)) {
+                    // Hit an already-used edge, can't continue
+                    break;
+                }
+                
+                loopEdges.push(edgeKey);
+                loopIndices.push(next);
+                loopVertices.push(uniqueVertices[next].clone());
+                
+                // Check if we've closed the loop
+                if (next === startVertex) {
+                    // Successfully closed the loop!
+                    // Remove the duplicate start vertex we just added
+                    loopIndices.pop();
+                    loopVertices.pop();
+                    
+                    if (loopIndices.length >= 3) {
+                        // Mark all edges as used
+                        for (const ek of loopEdges) {
+                            usedEdges.add(ek);
+                        }
+                        
+                        const loop = createBoundaryLoop(loopVertices, loopIndices);
+                        if (loop) {
+                            loops.push(loop);
+                        }
+                    }
+                    break;
+                }
+                
+                // Find next vertex: look for an unused edge from 'next' that isn't going back to 'current'
+                const neighbors = adjacency.get(next);
+                if (!neighbors) break;
+                
+                let found = false;
+                const prev = current;
+                current = next;
+                
+                for (const [neighbor, _] of neighbors) {
+                    if (neighbor === prev) continue; // Don't go back
+                    
+                    const nextEdgeKey = getEdgeKey(current, neighbor);
+                    if (!usedEdges.has(nextEdgeKey)) {
+                        next = neighbor;
+                        found = true;
                         break;
                     }
-                    // Allow returning to start to close the loop
-                    if (n.vertex === startVertex && loopIndices.length > 2) {
-                        next = n.vertex;
-                    }
+                }
+                
+                if (!found) {
+                    // Dead end - this path doesn't form a closed loop
+                    console.log(`    Dead end at vertex ${current}, could not find next unused edge`);
+                    break;
                 }
             }
-            
-            if (next === -1) break;
-            if (next === startVertex && loopIndices.length > 2) {
-                // Successfully closed the loop
-                break;
-            }
-            
-            prev = current;
-            current = next;
-            
-            // Safety limit
-            if (loopIndices.length > 10000) {
-                console.warn('Loop too large, aborting');
-                break;
-            }
         }
-        
-        // Valid loop must have at least 3 vertices
-        if (loopIndices.length >= 3) {
-            const loop = createBoundaryLoop(loopVertices, loopIndices);
-            if (loop) {
-                loops.push(loop);
-            }
-        }
+    }
+    
+    // Count unused edges for diagnostics
+    let unusedEdgeCount = 0;
+    for (const edge of edges) {
+        const key = getEdgeKey(edge.v1, edge.v2);
+        if (!usedEdges.has(key)) unusedEdgeCount++;
+    }
+    
+    console.log(`  Built ${loops.length} closed boundary loops from ${edges.length} edges (${unusedEdgeCount} unused)`);
+    
+    if (unusedEdgeCount > 0 && loops.length === 0) {
+        console.log(`  ⚠ All ${unusedEdgeCount} edges unused - boundary may be open or non-manifold`);
     }
     
     return loops;
@@ -399,22 +475,38 @@ function triangulateLoop(loop: BoundaryLoop): number[] {
     
     if (n < 3) return [];
     if (n === 3) {
-        // Simple triangle
+        // Simple triangle - use normal to determine winding
+        // Cap should face "inward" (opposite to boundary normal for holes)
         return [
             vertices[0].x, vertices[0].y, vertices[0].z,
-            vertices[1].x, vertices[1].y, vertices[1].z,
-            vertices[2].x, vertices[2].y, vertices[2].z
+            vertices[2].x, vertices[2].y, vertices[2].z,
+            vertices[1].x, vertices[1].y, vertices[1].z
         ];
     }
     
     // Project to 2D for triangulation
     const { points2D, basis } = projectTo2D(vertices, loop.normal, loop.center);
     
+    // Check if projection is valid (points have some spread)
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of points2D) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+    }
+    
+    const spread = Math.max(maxX - minX, maxY - minY);
+    if (spread < 1e-6) {
+        console.warn('  Degenerate projection - loop is nearly a line');
+        return fanTriangulate(vertices, loop.center);
+    }
+    
     // Ear clipping triangulation
     const triangleIndices = earClipTriangulate(points2D);
     
     if (triangleIndices.length === 0) {
-        // Fallback: fan triangulation from center
+        console.warn('  Ear clipping failed, using fan triangulation');
         return fanTriangulate(vertices, loop.center);
     }
     
@@ -442,12 +534,15 @@ function projectTo2D(
     center: THREE.Vector3
 ): { points2D: { x: number, y: number }[], basis: { u: THREE.Vector3, v: THREE.Vector3 } } {
     // Create orthonormal basis on the plane
-    let u = new THREE.Vector3(1, 0, 0);
-    if (Math.abs(normal.dot(u)) > 0.9) {
-        u = new THREE.Vector3(0, 1, 0);
+    // Find a vector not parallel to normal to create basis
+    let tempVec = new THREE.Vector3(1, 0, 0);
+    if (Math.abs(normal.dot(tempVec)) > 0.9) {
+        tempVec = new THREE.Vector3(0, 1, 0);
     }
     
-    u.crossVectors(u, normal).normalize();
+    // u = tempVec × normal (perpendicular to normal)
+    const u = new THREE.Vector3().crossVectors(tempVec, normal).normalize();
+    // v = normal × u (perpendicular to both)
     const v = new THREE.Vector3().crossVectors(normal, u).normalize();
     
     // Project vertices to 2D
