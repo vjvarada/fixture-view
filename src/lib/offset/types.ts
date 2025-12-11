@@ -32,6 +32,10 @@ export interface OffsetMeshMetadata {
   geometryCreationTime: number;
   holesFilled: number;
   holesCapTriangles: number;
+  /** Number of internal holes filled in heightmap */
+  internalHolesFilled?: number;
+  /** Number of pixels filled for internal holes */
+  internalHolesPixels?: number;
 }
 
 export interface HeightmapResult {
@@ -87,10 +91,42 @@ export interface CavitySettings {
   combinedTaubinIterations: number;
 }
 
+/**
+ * Calculate adaptive pixels per unit based on part diagonal size.
+ * Larger parts (600mm+) use 2 px/mm for performance.
+ * Smaller parts (100mm-) use 6 px/mm for detail.
+ * Parts in between use discrete integers 2-6.
+ * 
+ * @param diagonal - Part diagonal in mm
+ * @returns pixelsPerUnit value (2-6)
+ */
+export function getAdaptivePixelsPerUnit(diagonal: number): number {
+  // Define the range: 100mm -> 6px/mm, 600mm -> 2px/mm
+  const minDiagonal = 100;
+  const maxDiagonal = 600;
+  const maxPPU = 6;
+  const minPPU = 2;
+  
+  if (diagonal <= minDiagonal) {
+    return maxPPU; // 6 px/mm for small parts
+  }
+  
+  if (diagonal >= maxDiagonal) {
+    return minPPU; // 2 px/mm for large parts
+  }
+  
+  // Linear interpolation between the ranges, then round to integer
+  const t = (diagonal - minDiagonal) / (maxDiagonal - minDiagonal);
+  const ppu = maxPPU - t * (maxPPU - minPPU);
+  
+  // Round to nearest integer (2, 3, 4, 5, or 6)
+  return Math.round(ppu);
+}
+
 export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   enabled: true,
   offsetDistance: 0.5,
-  pixelsPerUnit: 6,
+  pixelsPerUnit: 6, // Default, will be overridden by adaptive calculation
   rotationXZ: 0,
   rotationYZ: 0,
   fillHoles: true,

@@ -23,7 +23,7 @@ import {
 import { SupportType } from "@/components/ContextOptionsPanel/steps/SupportsStepContent";
 import { AnySupport } from "@/components/Supports/types";
 import { autoPlaceSupports, AutoPlacementStrategy } from "@/components/Supports/autoPlacement";
-import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from "@/lib/offset/types";
+import { CavitySettings, DEFAULT_CAVITY_SETTINGS, getAdaptivePixelsPerUnit } from "@/lib/offset/types";
 import UnitsDialog from "@/modules/FileImport/components/UnitsDialog";
 import MeshOptimizationDialog from "@/modules/FileImport/components/MeshOptimizationDialog";
 import { useFileProcessing } from "@/modules/FileImport/hooks/useFileProcessing";
@@ -331,6 +331,25 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       
       // Select the newly imported part
       setSelectedPartId(processedFile.id);
+      
+      // Calculate part diagonal and set adaptive pixels per unit for cavity settings
+      if (processedFile.mesh?.geometry) {
+        processedFile.mesh.geometry.computeBoundingBox();
+        const box = processedFile.mesh.geometry.boundingBox;
+        if (box) {
+          const size = box.getSize(new THREE.Vector3());
+          const diagonal = Math.sqrt(size.x * size.x + size.y * size.y + size.z * size.z);
+          const adaptivePPU = getAdaptivePixelsPerUnit(diagonal);
+          
+          console.log(`[AppShell] Part diagonal: ${diagonal.toFixed(1)}mm, adaptive px/mm: ${adaptivePPU}`);
+          
+          // Update cavity settings with adaptive resolution
+          setCavitySettings(prev => ({
+            ...prev,
+            pixelsPerUnit: adaptivePPU
+          }));
+        }
+      }
       
       // Dispatch event for 3D viewer to pick up (with all parts)
       window.dispatchEvent(new CustomEvent('part-imported', { detail: processedFile }));

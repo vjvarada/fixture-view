@@ -258,12 +258,34 @@ export interface FootprintBounds {
   maxZ: number;
 }
 
+/**
+ * Rotate a point around the origin by a given angle (in radians)
+ * Uses Three.js convention: positive rotation around Y-axis is counter-clockwise
+ * when viewed from above (looking down +Y axis), which means +X rotates towards -Z.
+ * 
+ * In the XZ plane with Y-up:
+ * - Positive angle rotates clockwise in the XZ plane when viewed from above
+ */
+const rotatePoint = (x: number, z: number, angle: number): [number, number] => {
+  if (angle === 0) return [x, z];
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  // Three.js Y-rotation: x' = x*cos + z*sin, z' = -x*sin + z*cos
+  return [
+    x * cos + z * sin,
+    -x * sin + z * cos
+  ];
+};
+
 export const getSupportFootprintBounds = (support: AnySupport): FootprintBounds => {
   const { center } = support;
   let minX = center.x;
   let maxX = center.x;
   let minZ = center.y;
   let maxZ = center.y;
+  
+  // Get rotation (rotationY takes precedence, fall back to rotationZ for backwards compatibility)
+  const rotation = (support as any).rotationY ?? (support as any).rotationZ ?? 0;
 
   const expand = (x: number, z: number) => {
     if (x < minX) minX = x;
@@ -271,8 +293,15 @@ export const getSupportFootprintBounds = (support: AnySupport): FootprintBounds 
     if (z < minZ) minZ = z;
     if (z > maxZ) maxZ = z;
   };
+  
+  // Helper to expand with a rotated local point
+  const expandRotated = (localX: number, localZ: number) => {
+    const [rx, rz] = rotatePoint(localX, localZ, rotation);
+    expand(center.x + rx, center.y + rz);
+  };
 
   if (support.type === 'cylindrical') {
+    // Circles are rotation-invariant
     const radius = (support as any).radius as number;
     expand(center.x - radius, center.y - radius);
     expand(center.x + radius, center.y + radius);
@@ -281,9 +310,13 @@ export const getSupportFootprintBounds = (support: AnySupport): FootprintBounds 
     const depth = (support as any).depth as number;
     const hw = width / 2;
     const hd = depth / 2;
-    expand(center.x - hw, center.y - hd);
-    expand(center.x + hw, center.y + hd);
+    // Rotate all four corners and expand bounds
+    expandRotated(-hw, -hd);
+    expandRotated(hw, -hd);
+    expandRotated(hw, hd);
+    expandRotated(-hw, hd);
   } else if (support.type === 'conical') {
+    // Circles are rotation-invariant
     const radius = (support as any).baseRadius as number;
     expand(center.x - radius, center.y - radius);
     expand(center.x + radius, center.y + radius);
@@ -291,7 +324,7 @@ export const getSupportFootprintBounds = (support: AnySupport): FootprintBounds 
     const polygon = (support as any).polygon as Array<[number, number]>;
     if (Array.isArray(polygon)) {
       polygon.forEach(([x, z]) => {
-        expand(center.x + x, center.y + z);
+        expandRotated(x, z);
       });
     }
   }
@@ -305,13 +338,26 @@ const FILLET_RADIUS = 2.0;
 /**
  * Get all footprint points for a support including fillet margin.
  * These points are used for convex hull calculation.
+ * Accounts for support rotation.
  */
 export const getSupportFootprintPoints = (support: AnySupport, filletMargin: number = FILLET_RADIUS): Array<{x: number; z: number}> => {
   const { center } = support;
   const points: Array<{x: number; z: number}> = [];
   
+  // Get rotation (rotationY takes precedence, fall back to rotationZ for backwards compatibility)
+  const rotation = (support as any).rotationY ?? (support as any).rotationZ ?? 0;
+  
+  // Helper to add a rotated local point
+  const addRotatedPoint = (localX: number, localZ: number) => {
+    const [rx, rz] = rotatePoint(localX, localZ, rotation);
+    points.push({
+      x: center.x + rx,
+      z: center.y + rz
+    });
+  };
+  
   if (support.type === 'cylindrical') {
-    // Circle approximated by 16 points
+    // Circle approximated by 16 points - rotation doesn't affect circles
     const radius = ((support as any).radius as number) + filletMargin;
     const segments = 16;
     for (let i = 0; i < segments; i++) {
@@ -329,36 +375,35 @@ export const getSupportFootprintPoints = (support: AnySupport, filletMargin: num
     const hd = depth / 2 + filletMargin;
     
     if (cornerRadius <= 0) {
-      // No corner radius - four corners
-      points.push({ x: center.x - hw, z: center.y - hd });
-      points.push({ x: center.x + hw, z: center.y - hd });
-      points.push({ x: center.x + hw, z: center.y + hd });
-      points.push({ x: center.x - hw, z: center.y + hd });
+      // No corner radius - four corners, rotated
+      addRotatedPoint(-hw, -hd);
+      addRotatedPoint(hw, -hd);
+      addRotatedPoint(hw, hd);
+      addRotatedPoint(-hw, hd);
     } else {
-      // With corner radius - generate arc points at each corner
+      // With corner radius - generate arc points at each corner, then rotate
       const r = Math.min(cornerRadius + filletMargin, hw, hd);
       const arcSegments = 4; // segments per corner
       
-      // Corner centers (inset by radius from each corner)
+      // Corner centers (inset by radius from each corner) - in local space
       const corners = [
-        { cx: center.x + hw - r, cz: center.y + hd - r, startAngle: 0 },           // top-right
-        { cx: center.x - hw + r, cz: center.y + hd - r, startAngle: Math.PI / 2 }, // top-left
-        { cx: center.x - hw + r, cz: center.y - hd + r, startAngle: Math.PI },     // bottom-left
-        { cx: center.x + hw - r, cz: center.y - hd + r, startAngle: 3 * Math.PI / 2 } // bottom-right
+        { cx: hw - r, cz: hd - r, startAngle: 0 },           // top-right
+        { cx: -hw + r, cz: hd - r, startAngle: Math.PI / 2 }, // top-left
+        { cx: -hw + r, cz: -hd + r, startAngle: Math.PI },     // bottom-left
+        { cx: hw - r, cz: -hd + r, startAngle: 3 * Math.PI / 2 } // bottom-right
       ];
       
       for (const corner of corners) {
         for (let i = 0; i <= arcSegments; i++) {
           const angle = corner.startAngle + (i / arcSegments) * (Math.PI / 2);
-          points.push({
-            x: corner.cx + Math.cos(angle) * r,
-            z: corner.cz + Math.sin(angle) * r
-          });
+          const localX = corner.cx + Math.cos(angle) * r;
+          const localZ = corner.cz + Math.sin(angle) * r;
+          addRotatedPoint(localX, localZ);
         }
       }
     }
   } else if (support.type === 'conical') {
-    // Use base radius (larger) + fillet margin
+    // Use base radius (larger) + fillet margin - rotation doesn't affect circles
     const radius = ((support as any).baseRadius as number) + filletMargin;
     const segments = 16;
     for (let i = 0; i < segments; i++) {
@@ -392,22 +437,21 @@ export const getSupportFootprintPoints = (support: AnySupport, filletMargin: num
     cx /= polygon.length;
     cz /= polygon.length;
     
-    // Generate footprint points by offsetting each vertex outward from local centroid
+    // Generate footprint points by offsetting each vertex outward from local centroid, then rotate
     for (const [x, z] of polygon) {
       const dx = x - cx;
       const dz = z - cz;
       const dist = Math.hypot(dx, dz);
       
       if (dist < 0.001) {
-        // Point is at centroid, just add it directly
-        points.push({ x: center.x + x, z: center.y + z });
+        // Point is at centroid, just add it directly (rotated)
+        addRotatedPoint(x, z);
       } else {
         // Offset outward from centroid by filletMargin
         const scale = (dist + filletMargin) / dist;
-        points.push({
-          x: center.x + cx + dx * scale,
-          z: center.y + cz + dz * scale
-        });
+        const localX = cx + dx * scale;
+        const localZ = cz + dz * scale;
+        addRotatedPoint(localX, localZ);
       }
     }
   }
