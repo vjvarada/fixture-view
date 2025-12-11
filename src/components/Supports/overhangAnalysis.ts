@@ -8,12 +8,17 @@
  * 2. Visible Overhang Detection: Only considers overhangs "visible" from baseplate (not undercuts)
  * 3. 20% Boundary Extension: Extends support polygon beyond shadow for better wall constraint
  * 4. Symmetric Coverage: Ensures supports are distributed to constrain all sides
+ * 5. SYMMETRY-AWARE PLACEMENT: Detects if parts are symmetric (or near-symmetric) about the
+ *    X or Z axis (when viewed from top in the 3D scene). For symmetric parts, supports are
+ *    automatically placed in a symmetric pattern to match the part's symmetry.
  * 
  * The algorithm:
  * 1. Compute the part's shadow (2D projection onto XZ plane)
  * 2. Expand the shadow boundary by 20% to create a "wall" effect
  * 3. Find visible overhangs (raycast from below to filter out undercuts)
- * 4. Generate a single custom support polygon that encompasses:
+ * 4. DETECT SYMMETRY of the part silhouette about X and Z axes
+ * 5. Generate symmetric support positions if symmetry is detected
+ * 6. Generate a single custom support polygon that encompasses:
  *    - The expanded shadow boundary
  *    - All visible overhang regions
  */
@@ -1391,6 +1396,453 @@ function computeAlphaShape(
   return [...leftEdge, ...rightEdge];
 }
 
+// ============================================================================
+// Symmetry Detection and Symmetric Support Placement
+// ============================================================================
+
+/**
+ * Result of symmetry analysis for a 2D perimeter
+ */
+interface SymmetryAnalysis {
+  /** Is the shape symmetric about the X axis (vertical line through center in XZ view)? */
+  isXSymmetric: boolean;
+  /** Is the shape symmetric about the Z axis (horizontal line through center in XZ view)? */
+  isZSymmetric: boolean;
+  /** Center point used for symmetry analysis */
+  center: Point2D;
+  /** Symmetry score for X axis (0-1, higher = more symmetric) */
+  xSymmetryScore: number;
+  /** Symmetry score for Z axis (0-1, higher = more symmetric) */
+  zSymmetryScore: number;
+}
+
+/**
+ * Detect if a 2D perimeter is symmetric about the X and/or Z axes
+ * Uses point-to-reflected-point distance comparison
+ * 
+ * @param perimeter The boundary points of the shape
+ * @param center The center point for symmetry analysis
+ * @param toleranceRatio Tolerance as a ratio of the shape size (default 0.15 = 15%)
+ * @returns Symmetry analysis result
+ */
+function detectSymmetry(
+  perimeter: Point2D[],
+  center: Point2D,
+  toleranceRatio: number = 0.15
+): SymmetryAnalysis {
+  if (perimeter.length < 4) {
+    return {
+      isXSymmetric: false,
+      isZSymmetric: false,
+      center,
+      xSymmetryScore: 0,
+      zSymmetryScore: 0,
+    };
+  }
+
+  // Calculate shape bounds for adaptive tolerance
+  let minX = Infinity, maxX = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (const p of perimeter) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+  }
+  
+  const width = maxX - minX;
+  const depth = maxZ - minZ;
+  const avgSize = (width + depth) / 2;
+  const tolerance = avgSize * toleranceRatio;
+
+  debugLog(`[Symmetry] Analyzing ${perimeter.length} points, size=${width.toFixed(1)}x${depth.toFixed(1)}mm, tolerance=${tolerance.toFixed(1)}mm`);
+
+  // Calculate symmetry scores
+  const xSymmetryScore = calculateAxisSymmetryScore(perimeter, center, 'x', tolerance);
+  const zSymmetryScore = calculateAxisSymmetryScore(perimeter, center, 'z', tolerance);
+
+  // A shape is considered symmetric if score is above threshold
+  const SYMMETRY_THRESHOLD = 0.70; // 70% of points must have a matching reflected point
+
+  debugLog(`[Symmetry] X-axis score: ${(xSymmetryScore * 100).toFixed(1)}%, Z-axis score: ${(zSymmetryScore * 100).toFixed(1)}%`);
+
+  return {
+    isXSymmetric: xSymmetryScore >= SYMMETRY_THRESHOLD,
+    isZSymmetric: zSymmetryScore >= SYMMETRY_THRESHOLD,
+    center,
+    xSymmetryScore,
+    zSymmetryScore,
+  };
+}
+
+/**
+ * Calculate symmetry score for a specific axis
+ * Score is the percentage of points that have a matching reflected point within tolerance
+ */
+function calculateAxisSymmetryScore(
+  perimeter: Point2D[],
+  center: Point2D,
+  axis: 'x' | 'z',
+  tolerance: number
+): number {
+  let matchCount = 0;
+  
+  for (const point of perimeter) {
+    // Reflect point across the axis (through center)
+    let reflected: Point2D;
+    if (axis === 'x') {
+      // Reflect across X axis (vertical line through center) - flip Z coordinate
+      reflected = {
+        x: point.x,
+        z: 2 * center.z - point.z,
+      };
+    } else {
+      // Reflect across Z axis (horizontal line through center) - flip X coordinate
+      reflected = {
+        x: 2 * center.x - point.x,
+        z: point.z,
+      };
+    }
+    
+    // Find closest point on perimeter to the reflected point
+    let minDist = Infinity;
+    for (const other of perimeter) {
+      const dist = Math.hypot(reflected.x - other.x, reflected.z - other.z);
+      minDist = Math.min(minDist, dist);
+    }
+    
+    // Count as match if within tolerance
+    if (minDist <= tolerance) {
+      matchCount++;
+    }
+  }
+  
+  return matchCount / perimeter.length;
+}
+
+/**
+ * Generate symmetric support positions along the perimeter
+ * Ensures supports are placed symmetrically about detected axes of symmetry
+ * 
+ * @param perimeter The boundary points
+ * @param center Center of the shape
+ * @param symmetry Detected symmetry
+ * @param supportCount Number of supports to place
+ * @returns Array of positions (0-1 normalized along perimeter) for supports
+ */
+function generateSymmetricSupportPositions(
+  perimeter: Point2D[],
+  center: Point2D,
+  symmetry: SymmetryAnalysis,
+  supportCount: number
+): number[] {
+  const n = perimeter.length;
+  if (n < 3 || supportCount < 1) return [];
+
+  // Calculate total perimeter length and edge data
+  let totalLength = 0;
+  const edgeLengths: number[] = [];
+  const edgeCumLengths: number[] = [];
+  
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const len = Math.hypot(perimeter[j].x - perimeter[i].x, perimeter[j].z - perimeter[i].z);
+    edgeCumLengths.push(totalLength);
+    edgeLengths.push(len);
+    totalLength += len;
+  }
+
+  // If shape is symmetric about X axis (flip over Z)
+  if (symmetry.isXSymmetric && !symmetry.isZSymmetric) {
+    debugLog(`[Symmetry] Using X-axis symmetric placement`);
+    return generateSingleAxisSymmetricPositions(perimeter, center, totalLength, edgeCumLengths, edgeLengths, supportCount, 'x');
+  }
+  
+  // If shape is symmetric about Z axis (flip over X)
+  if (symmetry.isZSymmetric && !symmetry.isXSymmetric) {
+    debugLog(`[Symmetry] Using Z-axis symmetric placement`);
+    return generateSingleAxisSymmetricPositions(perimeter, center, totalLength, edgeCumLengths, edgeLengths, supportCount, 'z');
+  }
+  
+  // If shape is symmetric about both axes (highly symmetric, like circle or rectangle aligned with axes)
+  if (symmetry.isXSymmetric && symmetry.isZSymmetric) {
+    debugLog(`[Symmetry] Using dual-axis symmetric placement`);
+    return generateDualAxisSymmetricPositions(perimeter, center, totalLength, edgeCumLengths, edgeLengths, supportCount);
+  }
+  
+  // Not symmetric - use default evenly spaced positions
+  debugLog(`[Symmetry] No symmetry detected, using even spacing`);
+  const positions: number[] = [];
+  for (let i = 0; i < supportCount; i++) {
+    positions.push(i / supportCount);
+  }
+  return positions;
+}
+
+/**
+ * Generate support positions for single-axis symmetry
+ * Places supports so that each has a mirrored counterpart across the axis
+ */
+function generateSingleAxisSymmetricPositions(
+  perimeter: Point2D[],
+  center: Point2D,
+  totalLength: number,
+  edgeCumLengths: number[],
+  edgeLengths: number[],
+  supportCount: number,
+  axis: 'x' | 'z'
+): number[] {
+  const n = perimeter.length;
+  
+  // Find the positions on the perimeter that cross the axis of symmetry
+  // These are special "anchor" positions where we can place a support on the axis itself
+  const axisCrossings: number[] = [];
+  
+  for (let i = 0; i < n; i++) {
+    const curr = perimeter[i];
+    const next = perimeter[(i + 1) % n];
+    
+    // Check if this edge crosses the axis
+    if (axis === 'x') {
+      // X-axis symmetry: check if edge crosses the Z = center.z line
+      if ((curr.z - center.z) * (next.z - center.z) < 0) {
+        // Find interpolation parameter
+        const t = (center.z - curr.z) / (next.z - curr.z);
+        const edgeStart = edgeCumLengths[i];
+        const crossingPos = (edgeStart + t * edgeLengths[i]) / totalLength;
+        axisCrossings.push(crossingPos);
+      }
+    } else {
+      // Z-axis symmetry: check if edge crosses the X = center.x line
+      if ((curr.x - center.x) * (next.x - center.x) < 0) {
+        const t = (center.x - curr.x) / (next.x - curr.x);
+        const edgeStart = edgeCumLengths[i];
+        const crossingPos = (edgeStart + t * edgeLengths[i]) / totalLength;
+        axisCrossings.push(crossingPos);
+      }
+    }
+  }
+  
+  debugLog(`[Symmetry] Found ${axisCrossings.length} axis crossings for ${axis}-axis`);
+  
+  // If no crossings found, fall back to even spacing
+  if (axisCrossings.length < 2) {
+    const positions: number[] = [];
+    for (let i = 0; i < supportCount; i++) {
+      positions.push(i / supportCount);
+    }
+    return positions;
+  }
+  
+  // Sort crossings
+  axisCrossings.sort((a, b) => a - b);
+  
+  // We have two "halves" of the perimeter - place supports symmetrically
+  // Half the supports go on each half (or closest odd distribution)
+  const firstCrossing = axisCrossings[0];
+  const secondCrossing = axisCrossings[1] || (firstCrossing + 0.5);
+  
+  const halfLength1 = secondCrossing - firstCrossing;
+  const halfLength2 = 1 - halfLength1;
+  
+  // Distribute supports, potentially placing one at each crossing if count allows
+  const positions: number[] = [];
+  
+  if (supportCount === 4) {
+    // Place 2 supports on each half, centered
+    const offset1 = halfLength1 / 4;
+    const offset2 = halfLength2 / 4;
+    
+    positions.push(firstCrossing + offset1);
+    positions.push(firstCrossing + halfLength1 - offset1);
+    positions.push(secondCrossing + offset2);
+    positions.push((secondCrossing + halfLength2 - offset2) % 1);
+  } else if (supportCount === 5) {
+    // Place 1 on axis, 2 on each half
+    positions.push(firstCrossing); // On axis
+    
+    const offset1 = halfLength1 / 3;
+    const offset2 = halfLength2 / 3;
+    
+    positions.push(firstCrossing + offset1);
+    positions.push(firstCrossing + 2 * offset1);
+    positions.push(secondCrossing + offset2);
+    positions.push(secondCrossing + 2 * offset2);
+  } else if (supportCount === 6) {
+    // Place 3 on each half
+    const offset1 = halfLength1 / 4;
+    const offset2 = halfLength2 / 4;
+    
+    positions.push(firstCrossing + offset1);
+    positions.push(firstCrossing + 2 * offset1);
+    positions.push(firstCrossing + 3 * offset1);
+    positions.push(secondCrossing + offset2);
+    positions.push(secondCrossing + 2 * offset2);
+    positions.push(secondCrossing + 3 * offset2);
+  } else {
+    // General case: distribute evenly across half, mirror to other half
+    const supportsPerHalf = Math.floor(supportCount / 2);
+    const extra = supportCount % 2;
+    
+    // Place supports on first half
+    for (let i = 0; i < supportsPerHalf; i++) {
+      const t = (i + 0.5) / supportsPerHalf;
+      positions.push(firstCrossing + t * halfLength1);
+    }
+    
+    // Place supports on second half (mirrored)
+    for (let i = 0; i < supportsPerHalf; i++) {
+      const t = (i + 0.5) / supportsPerHalf;
+      positions.push(secondCrossing + t * halfLength2);
+    }
+    
+    // If odd, add one at a crossing
+    if (extra > 0) {
+      positions.push(firstCrossing);
+    }
+  }
+  
+  return positions.map(p => ((p % 1) + 1) % 1).sort((a, b) => a - b);
+}
+
+/**
+ * Generate support positions for dual-axis symmetry (like circle, square, or rectangle)
+ * Places supports in a symmetric pattern about both axes
+ */
+function generateDualAxisSymmetricPositions(
+  perimeter: Point2D[],
+  center: Point2D,
+  totalLength: number,
+  edgeCumLengths: number[],
+  edgeLengths: number[],
+  supportCount: number
+): number[] {
+  // For dual-axis symmetry, place supports at angles that maintain symmetry
+  // This creates 4-fold symmetry (or as close as possible with the given count)
+  
+  const positions: number[] = [];
+  
+  if (supportCount === 4) {
+    // Place at 0, 0.25, 0.5, 0.75 (quarters)
+    positions.push(0, 0.25, 0.5, 0.75);
+  } else if (supportCount === 5) {
+    // One at center of each quadrant plus one extra
+    // Actually for 5, we can't have perfect 4-fold symmetry
+    // Use positions that are as symmetric as possible: corners of a pentagon
+    for (let i = 0; i < 5; i++) {
+      positions.push(i / 5);
+    }
+  } else if (supportCount === 6) {
+    // Place at 0, 1/6, 2/6, 3/6, 4/6, 5/6
+    for (let i = 0; i < 6; i++) {
+      positions.push(i / 6);
+    }
+  } else {
+    // General case: evenly spaced
+    for (let i = 0; i < supportCount; i++) {
+      positions.push(i / supportCount);
+    }
+  }
+  
+  // Find the starting position that aligns best with the geometry
+  // We want supports to be at "interesting" positions - like corners or midpoints
+  const bestOffset = findBestSymmetricOffset(perimeter, center, totalLength, edgeCumLengths, edgeLengths, positions);
+  
+  return positions.map(p => ((p + bestOffset) % 1 + 1) % 1).sort((a, b) => a - b);
+}
+
+/**
+ * Find the best offset to align symmetric positions with geometric features
+ * Prefers placing supports at positions far from center (corners) rather than near center
+ */
+function findBestSymmetricOffset(
+  perimeter: Point2D[],
+  center: Point2D,
+  totalLength: number,
+  edgeCumLengths: number[],
+  edgeLengths: number[],
+  basePositions: number[]
+): number {
+  const n = perimeter.length;
+  if (n < 3 || basePositions.length === 0) return 0;
+  
+  // Sample the perimeter at many points to find distance-from-center profile
+  const SAMPLES = 100;
+  const distanceProfile: number[] = [];
+  
+  for (let i = 0; i < SAMPLES; i++) {
+    const pos = i / SAMPLES;
+    const point = getPointAtNormalizedPosition(perimeter, edgeCumLengths, edgeLengths, totalLength, pos);
+    if (point) {
+      const dist = Math.hypot(point.x - center.x, point.z - center.z);
+      distanceProfile.push(dist);
+    } else {
+      distanceProfile.push(0);
+    }
+  }
+  
+  // Find offset that maximizes sum of distances at support positions
+  // (This places supports at corners/far points rather than midpoints)
+  let bestOffset = 0;
+  let bestScore = -Infinity;
+  
+  for (let offset = 0; offset < 1; offset += 0.01) {
+    let score = 0;
+    for (const basePos of basePositions) {
+      const adjustedPos = ((basePos + offset) % 1 + 1) % 1;
+      const sampleIdx = Math.floor(adjustedPos * SAMPLES) % SAMPLES;
+      score += distanceProfile[sampleIdx];
+    }
+    
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = offset;
+    }
+  }
+  
+  return bestOffset;
+}
+
+/**
+ * Get a point at a normalized position (0-1) along the perimeter
+ */
+function getPointAtNormalizedPosition(
+  perimeter: Point2D[],
+  edgeCumLengths: number[],
+  edgeLengths: number[],
+  totalLength: number,
+  normalizedPos: number
+): Point2D | null {
+  const n = perimeter.length;
+  if (n < 2) return null;
+  
+  // Convert normalized position to actual length
+  const pos = normalizedPos * totalLength;
+  
+  // Find which edge this position falls on
+  let edgeIdx = 0;
+  for (let e = 0; e < n; e++) {
+    const nextCum = e < n - 1 ? edgeCumLengths[e + 1] : totalLength;
+    if (pos < nextCum || e === n - 1) {
+      edgeIdx = e;
+      break;
+    }
+  }
+  
+  // Interpolate along this edge
+  const edgeStart = edgeCumLengths[edgeIdx];
+  const edgeLen = edgeLengths[edgeIdx];
+  const t = edgeLen > 0 ? (pos - edgeStart) / edgeLen : 0;
+  
+  const curr = perimeter[edgeIdx];
+  const next = perimeter[(edgeIdx + 1) % n];
+  
+  return {
+    x: curr.x + t * (next.x - curr.x),
+    z: curr.z + t * (next.z - curr.z),
+  };
+}
+
 function computeConvexHull(inputPoints: Array<{ x: number; z: number }>): Array<{ x: number; z: number }> {
   if (inputPoints.length < 3) return inputPoints.map(p => ({ x: p.x, z: p.z }));
   
@@ -2361,6 +2813,10 @@ function mergeOverlappingSupports(
  * Create supports that STRADDLE the boundary line
  * Each support extends both inside and outside the silhouette
  * Uses 8-sided octagons at start and end connected by the boundary line
+ * 
+ * Now with SYMMETRIC PLACEMENT: Detects if the part is symmetric and places
+ * supports symmetrically about the axis of symmetry for better aesthetics
+ * and more balanced support of symmetric parts.
  */
 function createBoundaryStraddlingSupports(
   boundary: Point2D[],
@@ -2408,13 +2864,30 @@ function createBoundaryStraddlingSupports(
   debugLog(`[BoundarySupports] Segment=${segmentLength.toFixed(1)}mm (support=${supportLength.toFixed(1)}mm, gap=${gapLength.toFixed(1)}mm)`);
   debugLog(`[BoundarySupports] Depth: inward=${inwardDepth.toFixed(1)}mm, outward=${outwardDepth}mm`);
   
+  // SYMMETRY DETECTION: Analyze the boundary for symmetry
+  const symmetry = detectSymmetry(boundary, center);
+  
+  // Generate support positions based on symmetry
+  const normalizedPositions = generateSymmetricSupportPositions(
+    boundary,
+    center,
+    symmetry,
+    supportCount
+  );
+  
+  debugLog(`[BoundarySupports] Symmetry: X=${symmetry.isXSymmetric}, Z=${symmetry.isZSymmetric}`);
+  debugLog(`[BoundarySupports] Support positions: ${normalizedPositions.map(p => (p * 100).toFixed(1) + '%').join(', ')}`);
+  
   const supports: Array<{ support: CustomSupport; cluster: OverhangCluster }> = [];
   
   for (let i = 0; i < supportCount; i++) {
-    // Support starts after gap/2, ends before next gap/2
-    const segmentStart = i * segmentLength;
-    const supportStart = segmentStart + gapLength / 2;
-    const supportEnd = supportStart + supportLength;
+    // Use symmetric positions instead of evenly spaced
+    const normalizedPos = normalizedPositions[i] || (i / supportCount);
+    const supportCenter = normalizedPos * totalLength;
+    
+    // Support extends supportLength/2 on each side of center position
+    const supportStart = supportCenter - supportLength / 2;
+    const supportEnd = supportCenter + supportLength / 2;
     
     // Get start and end points on the boundary
     const startPoint = getPointAtPosition(boundary, edgeCumLengths, edgeLengths, totalLength, supportStart);

@@ -791,8 +791,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Cavity operations preview (for CSG operations)
   const [cavityPreview, setCavityPreview] = useState<THREE.Mesh | null>(null);
   
-  // Offset mesh preview (for visualizing the cavity cutting brush before CSG)
-  const [offsetMeshPreview, setOffsetMeshPreview] = useState<THREE.Mesh | null>(null);
+  // Offset mesh previews (for visualizing the cavity cutting brush before CSG)
+  // Map from part ID to its offset mesh preview - supports multiple parts
+  const [offsetMeshPreviews, setOffsetMeshPreviews] = useState<Map<string, THREE.Mesh>>(new Map());
   const [offsetMeshProcessing, setOffsetMeshProcessing] = useState(false);
   const [showOffsetPreview, setShowOffsetPreview] = useState(true); // Controls visibility of the offset mesh preview
   
@@ -1198,41 +1199,60 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('cavity-apply', handleApply as EventListener);
   }, [importedParts]);
 
-  // Listen for offset mesh preview generation requests
+  // Listen for offset mesh preview generation requests - processes ALL parts sequentially
   React.useEffect(() => {
     const handleGenerateOffsetMesh = async (e: CustomEvent) => {
       const { settings } = e.detail || {};
       if (!settings || !settings.enabled) {
-        setOffsetMeshPreview(null);
+        // Clear all offset mesh previews
+        offsetMeshPreviews.forEach(mesh => {
+          mesh.geometry?.dispose();
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(m => m.dispose());
+            } else {
+              mesh.material.dispose();
+            }
+          }
+        });
+        setOffsetMeshPreviews(new Map());
         return;
       }
 
-      // Get first part mesh with its world transform
-      const firstPartRef = importedParts.length > 0 ? modelMeshRefs.current.get(importedParts[0].id) : null;
-      const modelMesh = firstPartRef?.current;
-      if (!modelMesh) {
-        console.warn('[3DScene] Cannot generate offset mesh: no model mesh found');
-        setOffsetMeshPreview(null);
+      if (importedParts.length === 0) {
+        console.warn('[3DScene] Cannot generate offset mesh: no parts loaded');
+        setOffsetMeshPreviews(new Map());
         return;
       }
 
       setOffsetMeshProcessing(true);
       
-      // Calculate how much to move the part up to achieve clearance from baseplate
+      // Calculate how much to move the parts up to achieve clearance from baseplate
       // The goal is to have at least `clearanceTolerance` gap between part bottom and baseplate top
       const clearanceTolerance = settings.offsetDistance ?? 0.5;
       
-      // Get current part's lowest Y point (in world space)
-      modelMesh.updateMatrixWorld(true);
-      const geometry = modelMesh.geometry as THREE.BufferGeometry;
-      const tempGeometry = geometry.clone();
-      tempGeometry.applyMatrix4(modelMesh.matrixWorld);
-      tempGeometry.computeBoundingBox();
-      const partMinY = tempGeometry.boundingBox?.min.y ?? baseTopY;
-      tempGeometry.dispose();
+      // Find the lowest point across all parts
+      let globalMinY = Infinity;
+      for (const part of importedParts) {
+        const partRef = modelMeshRefs.current.get(part.id);
+        const modelMesh = partRef?.current;
+        if (!modelMesh) continue;
+        
+        modelMesh.updateMatrixWorld(true);
+        const geometry = modelMesh.geometry as THREE.BufferGeometry;
+        const tempGeometry = geometry.clone();
+        tempGeometry.applyMatrix4(modelMesh.matrixWorld);
+        tempGeometry.computeBoundingBox();
+        const partMinY = tempGeometry.boundingBox?.min.y ?? baseTopY;
+        tempGeometry.dispose();
+        
+        globalMinY = Math.min(globalMinY, partMinY);
+      }
       
-      // Calculate current gap between part bottom and baseplate top
-      const currentGap = partMinY - baseTopY;
+      if (globalMinY === Infinity) globalMinY = baseTopY;
+      
+      // Calculate current gap between lowest part and baseplate top
+      const currentGap = globalMinY - baseTopY;
       
       // Determine how much to move up:
       // - If currentGap >= clearanceTolerance: no movement needed (already has enough clearance)
@@ -1240,7 +1260,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const moveUpAmount = Math.max(0, clearanceTolerance - currentGap);
       
       if (moveUpAmount > 0) {
-        // Move the part UP by the calculated amount
+        // Move ALL parts UP by the calculated amount
         importedParts.forEach(part => {
           const partRef = modelMeshRefs.current.get(part.id);
           if (partRef?.current) {
@@ -1250,174 +1270,249 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         });
         
         // Extend all support heights by the same amount
-        // This ensures supports still reach the (now elevated) part
+        // This ensures supports still reach the (now elevated) parts
         setSupports(prev => prev.map(s => ({
           ...s,
           height: (s as any).height + moveUpAmount
         } as AnySupport)));
       }
 
+      // Process each part sequentially to generate offset meshes
+      const newOffsetMeshes = new Map<string, THREE.Mesh>();
+      const totalParts = importedParts.length;
+      let processedParts = 0;
+
       try {
-        // Update world matrix to ensure transforms are current
-        modelMesh.updateMatrixWorld(true);
-
-        // Get the geometry and extract vertices
-        const geometry = modelMesh.geometry as THREE.BufferGeometry;
-        
-        // We need to apply the world transform to the vertices before processing
-        // Create a clone of the geometry with world-space vertices
-        const worldGeometry = geometry.clone();
-        worldGeometry.applyMatrix4(modelMesh.matrixWorld);
-        
-        const vertices = extractVertices(worldGeometry);
-        
-        // Calculate safe resolution
-        worldGeometry.computeBoundingBox();
-        const box = worldGeometry.boundingBox ?? new THREE.Box3();
-        const size = box.getSize(new THREE.Vector3());
-        const span = Math.max(size.x, size.y, size.z);
-        
-        // Clamp pixelsPerUnit to avoid GPU memory issues
-        const requestedPPU = settings.pixelsPerUnit ?? 6;
-        const safePPU = Math.min(requestedPPU, 8);
-        const estimatedPixels = span * safePPU;
-        
-        if (!Number.isFinite(estimatedPixels) || estimatedPixels > 2000) {
-          console.warn('[3DScene] Offset mesh resolution clamped for GPU limits');
-        }
-
-        // Yield to browser before heavy computation
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        // Generate the offset mesh with user settings
-        const result = await createOffsetMesh(vertices, {
-          offsetDistance: settings.offsetDistance ?? 0.5,
-          pixelsPerUnit: Math.min(safePPU, 2000 / span),
-          rotationXZ: settings.rotationXZ ?? 0,
-          rotationYZ: settings.rotationYZ ?? 0,
-          fillHoles: settings.fillHoles ?? true,
-          progressCallback: (current, total, stage) => {
-            // Dispatch progress event for UI updates
-            window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-              detail: { current, total, stage }
-            }));
-          },
-        });
-
-        // Yield to browser after heavy computation
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        if (result.geometry) {
-          let finalGeometry = result.geometry;
-          let finalTriangleCount = result.metadata.triangleCount;
-          
-          // Process offset mesh based on settings
-          const shouldDecimate = settings.enableDecimation !== false && result.metadata.triangleCount > OFFSET_MESH_DECIMATION_TARGET;
-          const shouldSmooth = settings.enableSmoothing !== false;
-          
-          if (shouldDecimate || shouldSmooth) {
-            let currentGeometry = result.geometry;
-            
-            // === Step 1: Decimation (if enabled and needed) ===
-            if (shouldDecimate) {
-              window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-                detail: { current: 70, total: 100, stage: 'Decimating mesh...' }
-              }));
-              
-              // Yield to browser before decimation
-              await new Promise(resolve => setTimeout(resolve, 0));
-              
-              // decimateMesh expects non-indexed geometry, so convert if needed
-              let geometryToDecimate = currentGeometry;
-              if (currentGeometry.index) {
-                geometryToDecimate = currentGeometry.toNonIndexed();
-                currentGeometry.dispose();
-                currentGeometry = geometryToDecimate;
-              }
-              
-              const decimationResult = await decimateMesh(
-                geometryToDecimate,
-                OFFSET_MESH_DECIMATION_TARGET
-              );
-              
-              if (decimationResult.success && decimationResult.geometry) {
-                currentGeometry.dispose();
-                currentGeometry = decimationResult.geometry;
-                finalTriangleCount = Math.round(decimationResult.finalTriangles);
-              }
-            }
-            
-            // === Step 2: Smoothing (if enabled) ===
-            if (shouldSmooth) {
-              const iterations = settings.smoothingIterations ?? 2;
-              const sigma = settings.smoothingSigma ?? 0.2;
-              
-              window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-                detail: { current: 85, total: 100, stage: `Smoothing mesh (${iterations} iterations, σ=${sigma})...` }
-              }));
-              
-              // Yield to browser before smoothing
-              await new Promise(resolve => setTimeout(resolve, 0));
-              
-              // Use Gaussian smoothing with configurable parameters
-              const smoothingResult = await laplacianSmooth(
-                currentGeometry,
-                {
-                  iterations,
-                  method: 'gaussian',
-                  sigma,
-                }
-              );
-              
-              if (smoothingResult.success && smoothingResult.geometry) {
-                currentGeometry.dispose();
-                currentGeometry = smoothingResult.geometry;
-                // Update triangle count after smoothing (smoothing outputs non-indexed)
-                finalTriangleCount = Math.round(currentGeometry.getAttribute('position').count / 3);
-              }
-            }
-            
-            finalGeometry = currentGeometry;
+        for (const part of importedParts) {
+          const partRef = modelMeshRefs.current.get(part.id);
+          const modelMesh = partRef?.current;
+          if (!modelMesh) {
+            console.warn(`[3DScene] Skipping part ${part.id}: no mesh found`);
+            continue;
           }
+
+          console.log(`[3DScene] Processing offset mesh for part ${processedParts + 1}/${totalParts}: ${part.metadata?.name || part.id}`);
           
-          // Create preview material - translucent blue to match color scheme
-          const previewMaterial = new THREE.MeshStandardMaterial({
-            color: 0x3b82f6, // Blue-500 for visibility
-            transparent: true,
-            opacity: settings.previewOpacity ?? 0.3,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-            roughness: 0.5,
-            metalness: 0.1,
+          // Dispatch progress for this part
+          window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+            detail: { 
+              current: processedParts, 
+              total: totalParts, 
+              stage: `Processing part ${processedParts + 1}/${totalParts}...` 
+            }
+          }));
+
+          // Update world matrix to ensure transforms are current
+          modelMesh.updateMatrixWorld(true);
+
+          // Get the geometry and extract vertices
+          const geometry = modelMesh.geometry as THREE.BufferGeometry;
+          
+          // We need to apply the world transform to the vertices before processing
+          // Create a clone of the geometry with world-space vertices
+          const worldGeometry = geometry.clone();
+          worldGeometry.applyMatrix4(modelMesh.matrixWorld);
+          
+          const vertices = extractVertices(worldGeometry);
+          
+          // Calculate safe resolution
+          worldGeometry.computeBoundingBox();
+          const box = worldGeometry.boundingBox ?? new THREE.Box3();
+          const size = box.getSize(new THREE.Vector3());
+          const span = Math.max(size.x, size.y, size.z);
+          
+          // Clamp pixelsPerUnit to avoid GPU memory issues
+          const requestedPPU = settings.pixelsPerUnit ?? 6;
+          const safePPU = Math.min(requestedPPU, 8);
+          const estimatedPixels = span * safePPU;
+          
+          if (!Number.isFinite(estimatedPixels) || estimatedPixels > 2000) {
+            console.warn(`[3DScene] Offset mesh resolution clamped for GPU limits (part ${part.id})`);
+          }
+
+          // Yield to browser before heavy computation
+          await new Promise(resolve => setTimeout(resolve, 0));
+
+          // Generate the offset mesh with user settings
+          const result = await createOffsetMesh(vertices, {
+            offsetDistance: settings.offsetDistance ?? 0.5,
+            pixelsPerUnit: Math.min(safePPU, 2000 / span),
+            rotationXZ: settings.rotationXZ ?? 0,
+            rotationYZ: settings.rotationYZ ?? 0,
+            fillHoles: settings.fillHoles ?? true,
+            progressCallback: (current, total, stage) => {
+              // Dispatch progress event for UI updates (scale to part progress)
+              const partProgress = (processedParts + (current / total)) / totalParts;
+              window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+                detail: { 
+                  current: Math.round(partProgress * 100), 
+                  total: 100, 
+                  stage: `Part ${processedParts + 1}/${totalParts}: ${stage}` 
+                }
+              }));
+            },
           });
 
-          const previewMesh = new THREE.Mesh(finalGeometry, previewMaterial);
-          
-          // The offset mesh is already in world space (we applied the transform before processing)
-          // No need to apply transform again
-          previewMesh.name = 'offset-mesh-preview';
-          
-          console.log(`[3DScene] Offset mesh generated: ${finalTriangleCount} triangles in ${result.metadata.processingTime.toFixed(0)}ms`);
-          
-          setOffsetMeshPreview(previewMesh);
-          
-          // Notify completion
-          window.dispatchEvent(new CustomEvent('offset-mesh-preview-complete', { 
-            detail: { success: true, triangles: result.metadata.triangleCount } 
-          }));
-        } else {
-          console.warn('[3DScene] Offset mesh generation returned no geometry');
-          setOffsetMeshPreview(null);
-          window.dispatchEvent(new CustomEvent('offset-mesh-preview-complete', { 
-            detail: { success: false } 
-          }));
+          // Yield to browser after heavy computation
+          await new Promise(resolve => setTimeout(resolve, 0));
+
+          if (result.geometry) {
+            let finalGeometry = result.geometry;
+            let finalTriangleCount = result.metadata.triangleCount;
+            
+            // Process offset mesh based on settings
+            const shouldDecimate = settings.enableDecimation !== false && result.metadata.triangleCount > OFFSET_MESH_DECIMATION_TARGET;
+            const shouldSmooth = settings.enableSmoothing !== false;
+            
+            if (shouldDecimate || shouldSmooth) {
+              let currentGeometry = result.geometry;
+              
+              // === Step 1: Decimation (if enabled and needed) ===
+              if (shouldDecimate) {
+                window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+                  detail: { 
+                    current: Math.round((processedParts + 0.7) / totalParts * 100), 
+                    total: 100, 
+                    stage: `Part ${processedParts + 1}/${totalParts}: Decimating mesh...` 
+                  }
+                }));
+                
+                // Yield to browser before decimation
+                await new Promise(resolve => setTimeout(resolve, 0));
+                
+                // decimateMesh expects non-indexed geometry, so convert if needed
+                let geometryToDecimate = currentGeometry;
+                if (currentGeometry.index) {
+                  geometryToDecimate = currentGeometry.toNonIndexed();
+                  currentGeometry.dispose();
+                  currentGeometry = geometryToDecimate;
+                }
+                
+                const decimationResult = await decimateMesh(
+                  geometryToDecimate,
+                  OFFSET_MESH_DECIMATION_TARGET
+                );
+                
+                if (decimationResult.success && decimationResult.geometry) {
+                  currentGeometry.dispose();
+                  currentGeometry = decimationResult.geometry;
+                  finalTriangleCount = Math.round(decimationResult.finalTriangles);
+                }
+              }
+              
+              // === Step 2: Smoothing (if enabled) ===
+              if (shouldSmooth) {
+                const iterations = settings.smoothingIterations ?? 2;
+                const sigma = settings.smoothingSigma ?? 0.2;
+                
+                window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
+                  detail: { 
+                    current: Math.round((processedParts + 0.85) / totalParts * 100), 
+                    total: 100, 
+                    stage: `Part ${processedParts + 1}/${totalParts}: Smoothing mesh (${iterations} iterations, σ=${sigma})...` 
+                  }
+                }));
+                
+                // Yield to browser before smoothing
+                await new Promise(resolve => setTimeout(resolve, 0));
+                
+                // Use Gaussian smoothing with configurable parameters
+                const smoothingResult = await laplacianSmooth(
+                  currentGeometry,
+                  {
+                    iterations,
+                    method: 'gaussian',
+                    sigma,
+                  }
+                );
+                
+                if (smoothingResult.success && smoothingResult.geometry) {
+                  currentGeometry.dispose();
+                  currentGeometry = smoothingResult.geometry;
+                  // Update triangle count after smoothing (smoothing outputs non-indexed)
+                  finalTriangleCount = Math.round(currentGeometry.getAttribute('position').count / 3);
+                }
+              }
+              
+              finalGeometry = currentGeometry;
+            }
+            
+            // Create preview material - translucent blue to match color scheme
+            const previewMaterial = new THREE.MeshStandardMaterial({
+              color: 0x3b82f6, // Blue-500 for visibility
+              transparent: true,
+              opacity: settings.previewOpacity ?? 0.3,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+              roughness: 0.5,
+              metalness: 0.1,
+            });
+
+            const previewMesh = new THREE.Mesh(finalGeometry, previewMaterial);
+            
+            // The offset mesh is already in world space (we applied the transform before processing)
+            // No need to apply transform again
+            previewMesh.name = `offset-mesh-preview-${part.id}`;
+            
+            console.log(`[3DScene] Offset mesh generated for part ${part.id}: ${finalTriangleCount} triangles in ${result.metadata.processingTime.toFixed(0)}ms`);
+            
+            newOffsetMeshes.set(part.id, previewMesh);
+            
+            // INCREMENTAL UPDATE: Show this offset mesh immediately as it's ready
+            // This provides visual feedback while other parts are still processing
+            setOffsetMeshPreviews(prev => {
+              const updated = new Map(prev);
+              updated.set(part.id, previewMesh);
+              return updated;
+            });
+          } else {
+            console.warn(`[3DScene] Offset mesh generation returned no geometry for part ${part.id}`);
+          }
+
+          // Clean up cloned geometry
+          worldGeometry.dispose();
+          processedParts++;
         }
 
-        // Clean up cloned geometry
-        worldGeometry.dispose();
+        // All parts processed - dispose any old meshes that are no longer needed
+        // (meshes from parts that were removed)
+        offsetMeshPreviews.forEach((mesh, partId) => {
+          if (!newOffsetMeshes.has(partId)) {
+            mesh.geometry?.dispose();
+            if (mesh.material) {
+              if (Array.isArray(mesh.material)) {
+                mesh.material.forEach(m => m.dispose());
+              } else {
+                mesh.material.dispose();
+              }
+            }
+          }
+        });
+        
+        // Final state is already set incrementally, but ensure consistency
+        setOffsetMeshPreviews(newOffsetMeshes);
+        
+        // Notify completion
+        window.dispatchEvent(new CustomEvent('offset-mesh-preview-complete', { 
+          detail: { success: true, partsProcessed: newOffsetMeshes.size, totalParts } 
+        }));
+        
+        console.log(`[3DScene] Offset mesh generation complete: ${newOffsetMeshes.size}/${totalParts} parts processed`);
+        
       } catch (err) {
         console.error('[3DScene] Failed to generate offset mesh preview:', err);
-        setOffsetMeshPreview(null);
+        // Clear any partial results
+        newOffsetMeshes.forEach(mesh => {
+          mesh.geometry?.dispose();
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(m => m.dispose());
+            } else {
+              mesh.material.dispose();
+            }
+          }
+        });
+        setOffsetMeshPreviews(new Map());
         window.dispatchEvent(new CustomEvent('offset-mesh-preview-complete', { 
           detail: { success: false, error: err } 
         }));
@@ -1427,17 +1522,17 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     };
 
     const handleClearOffsetMesh = () => {
-      if (offsetMeshPreview) {
-        offsetMeshPreview.geometry?.dispose();
-        if (offsetMeshPreview.material) {
-          if (Array.isArray(offsetMeshPreview.material)) {
-            offsetMeshPreview.material.forEach(m => m.dispose());
+      offsetMeshPreviews.forEach(mesh => {
+        mesh.geometry?.dispose();
+        if (mesh.material) {
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach(m => m.dispose());
           } else {
-            offsetMeshPreview.material.dispose();
+            mesh.material.dispose();
           }
         }
-      }
-      setOffsetMeshPreview(null);
+      });
+      setOffsetMeshPreviews(new Map());
     };
 
     const handleToggleOffsetPreview = (e: CustomEvent<{ visible: boolean }>) => {
@@ -1453,7 +1548,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       window.removeEventListener('clear-offset-mesh-preview', handleClearOffsetMesh as EventListener);
       window.removeEventListener('toggle-offset-preview', handleToggleOffsetPreview as EventListener);
     };
-  }, [importedParts, offsetMeshPreview]);
+  }, [importedParts, offsetMeshPreviews]);
 
   // TODO: Implement drag-and-drop for fixture components when library panel is ready
   const handlePointerMove = useCallback((_event: unknown) => {
@@ -1928,17 +2023,17 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('supports-trim-request', handler as EventListener);
   }, [supports, baseTopY, buildSupportMesh]);
 
-  // Handle cavity subtraction - cut supports with the offset mesh using web worker
-  // Strategy: Cut each support individually in a background thread to avoid blocking UI
+  // Handle cavity subtraction - cut supports with ALL offset meshes using web worker
+  // Strategy: Cut each support individually against all offset meshes (for all parts)
   React.useEffect(() => {
     const handleExecuteCavitySubtraction = async (e: CustomEvent) => {
       const { settings } = e.detail || {};
       const clearanceTolerance = settings?.offsetDistance ?? 0.5;
       
-      if (!offsetMeshPreview) {
-        console.warn('[3DScene] No offset mesh preview available for cavity subtraction');
+      if (offsetMeshPreviews.size === 0) {
+        console.warn('[3DScene] No offset mesh previews available for cavity subtraction');
         window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
-          detail: { success: false, error: 'No offset mesh preview available' }
+          detail: { success: false, error: 'No offset mesh previews available' }
         }));
         return;
       }
@@ -1954,25 +2049,36 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
 
       try {
-        // Get the cutter (offset mesh) geometry in world space
-        let cutterGeometry = offsetMeshPreview.geometry.clone();
-        offsetMeshPreview.updateMatrixWorld(true);
-        cutterGeometry.applyMatrix4(offsetMeshPreview.matrixWorld);
+        // Collect all cutter geometries from all offset mesh previews (one per part)
+        const cutterGeometries: THREE.BufferGeometry[] = [];
         
-        // Prepare cutter geometry
-        if (!cutterGeometry.index) {
-          const posAttr = cutterGeometry.getAttribute('position');
-          const vertexCount = posAttr.count;
-          const indices = new Uint32Array(vertexCount);
-          for (let i = 0; i < vertexCount; i++) indices[i] = i;
-          cutterGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        for (const [partId, offsetMesh] of offsetMeshPreviews) {
+          console.log(`[3DScene] Preparing cutter geometry for part ${partId}`);
+          
+          // Get the cutter (offset mesh) geometry in world space
+          let cutterGeometry = offsetMesh.geometry.clone();
+          offsetMesh.updateMatrixWorld(true);
+          cutterGeometry.applyMatrix4(offsetMesh.matrixWorld);
+          
+          // Prepare cutter geometry
+          if (!cutterGeometry.index) {
+            const posAttr = cutterGeometry.getAttribute('position');
+            const vertexCount = posAttr.count;
+            const indices = new Uint32Array(vertexCount);
+            for (let i = 0; i < vertexCount; i++) indices[i] = i;
+            cutterGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+          }
+          if (!cutterGeometry.getAttribute('uv')) {
+            const position = cutterGeometry.getAttribute('position');
+            const uvArray = new Float32Array(position.count * 2);
+            cutterGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+          }
+          cutterGeometry.computeVertexNormals();
+          
+          cutterGeometries.push(cutterGeometry);
         }
-        if (!cutterGeometry.getAttribute('uv')) {
-          const position = cutterGeometry.getAttribute('position');
-          const uvArray = new Float32Array(position.count * 2);
-          cutterGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
-        }
-        cutterGeometry.computeVertexNormals();
+        
+        console.log(`[3DScene] Prepared ${cutterGeometries.length} cutter geometries for ${offsetMeshPreviews.size} parts`);
 
         // Prepare support geometries for batch processing
         const supportsToProcess: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
@@ -2006,36 +2112,77 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           return;
         }
 
-        console.log(`[3DScene] Starting batch CSG subtraction in worker for ${supportsToProcess.length} supports...`);
+        // For each support, we need to subtract ALL cutter geometries (all part cavities)
+        // Process supports sequentially, and for each support, subtract all cutters
+        console.log(`[3DScene] Starting batch CSG subtraction for ${supportsToProcess.length} supports against ${cutterGeometries.length} cutters...`);
         
-        // Perform batch CSG subtraction in web worker
-        const resultGeometries = await performBatchCSGSubtractionInWorker(
-          supportsToProcess,
-          cutterGeometry,
-          (current, total, supportId, stage) => {
-            console.log(`[3DScene] CSG Progress: ${current}/${total} (${supportId}) - Stage: ${stage}`);
-            // Dispatch progress event for UI updates
+        const allResultGeometries = new Map<string, THREE.BufferGeometry>();
+        const totalOperations = supportsToProcess.length * cutterGeometries.length;
+        let completedOperations = 0;
+        
+        for (const supportItem of supportsToProcess) {
+          let currentSupportGeometry = supportItem.geometry;
+          
+          // Subtract each cutter from this support sequentially
+          for (let cutterIdx = 0; cutterIdx < cutterGeometries.length; cutterIdx++) {
+            const cutterGeometry = cutterGeometries[cutterIdx];
+            
             window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
               detail: { 
-                current, 
-                total, 
-                supportId, 
-                stage: stage === 'reconstruct' 
-                  ? `Finalizing support ${current}/${total}` 
-                  : `Cutting support ${current}/${total}`
+                current: completedOperations + 1, 
+                total: totalOperations, 
+                supportId: supportItem.id, 
+                stage: `Cutting support ${supportItem.id} with part ${cutterIdx + 1}/${cutterGeometries.length}`
               }
             }));
+            
+            try {
+              // Perform CSG subtraction for this support against this cutter
+              const singleSupportArray = [{ id: supportItem.id, geometry: currentSupportGeometry }];
+              const result = await performBatchCSGSubtractionInWorker(
+                singleSupportArray,
+                cutterGeometry,
+                (current, total, supportId, stage) => {
+                  // Progress is already being reported above
+                }
+              );
+              
+              if (result.has(supportItem.id)) {
+                // Replace the support geometry with the result for the next iteration
+                if (currentSupportGeometry !== supportItem.geometry) {
+                  currentSupportGeometry.dispose(); // Dispose intermediate result
+                }
+                currentSupportGeometry = result.get(supportItem.id)!;
+              }
+            } catch (err) {
+              console.warn(`[3DScene] CSG subtraction failed for support ${supportItem.id} with cutter ${cutterIdx}:`, err);
+            }
+            
+            completedOperations++;
           }
-        );
+          
+          // Store the final result for this support
+          allResultGeometries.set(supportItem.id, currentSupportGeometry);
+          
+          // INCREMENTAL UPDATE: Show this cut support immediately as it's ready
+          // This provides visual feedback while other supports are still being processed
+          setModifiedSupportGeometries(prev => {
+            const updated = new Map(prev);
+            updated.set(supportItem.id, currentSupportGeometry);
+            return updated;
+          });
+          
+          console.log(`[3DScene] Support ${supportItem.id} cut complete (${allResultGeometries.size}/${supportsToProcess.length})`);
+        }
 
-        const successCount = resultGeometries.size;
+        const successCount = allResultGeometries.size;
         const errorCount = supportsToProcess.length - successCount;
 
         // Clean up individual support geometries - repair bad triangles from CSG operations
         console.log('[3DScene] Cleaning up individual support geometries...');
         const cleanedGeometries = new Map<string, THREE.BufferGeometry>();
         
-        for (const [supportId, geometry] of resultGeometries) {
+        for (const [supportId, geometry] of allResultGeometries) {
           try {
             const analysis = await analyzeMesh(geometry);
             if (analysis.hasDegenerateFaces || !analysis.isManifold) {
@@ -2060,15 +2207,26 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         setModifiedSupportGeometries(cleanedGeometries);
 
         if (successCount > 0) {
-          setOffsetMeshPreview(null);
+          // Clear all offset mesh previews
+          offsetMeshPreviews.forEach(mesh => {
+            mesh.geometry?.dispose();
+            if (mesh.material) {
+              if (Array.isArray(mesh.material)) {
+                mesh.material.forEach(m => m.dispose());
+              } else {
+                mesh.material.dispose();
+              }
+            }
+          });
+          setOffsetMeshPreviews(new Map());
           
           // === STEP 2: Union all cut supports with baseplate ===
-          console.log(`[3DScene] Starting CSG union of ${resultGeometries.size} supports with baseplate...`);
+          console.log(`[3DScene] Starting CSG union of ${allResultGeometries.size} supports with baseplate...`);
           
           window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
             detail: { 
               current: 0, 
-              total: resultGeometries.size + 1, 
+              total: allResultGeometries.size + 1, 
               stage: 'Merging supports with baseplate...'
             }
           }));
@@ -2098,7 +2256,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           
           // Prepare geometries for union
           const geometriesForUnion: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
-          resultGeometries.forEach((geom, supportId) => {
+          allResultGeometries.forEach((geom, supportId) => {
             // Ensure geometry has proper attributes for CSG
             if (!geom.index) {
               const posAttr = geom.getAttribute('position');
@@ -2196,6 +2354,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           }
         }
         
+        // Clean up cutter geometries
+        cutterGeometries.forEach(geom => geom.dispose());
+        
         console.log(`[3DScene] Batch CSG completed: ${successCount} success, ${errorCount} failed`);
         
         window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
@@ -2203,7 +2364,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             success: successCount > 0, 
             successCount, 
             errorCount,
-            totalSupports: supports.length
+            totalSupports: supports.length,
+            totalParts: offsetMeshPreviews.size
           }
         }));
 
@@ -2219,7 +2381,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => {
       window.removeEventListener('execute-cavity-subtraction', handleExecuteCavitySubtraction as EventListener);
     };
-  }, [offsetMeshPreview, supports, basePlate, baseTopY]);
+  }, [offsetMeshPreviews, supports, basePlate, baseTopY]);
 
   // Handle reset cavity event
   React.useEffect(() => {
@@ -2248,18 +2410,18 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // Clear the trimmed supports preview to show original supports again
       setSupportsTrimPreview([]);
       
-      // Clear offset mesh preview
-      if (offsetMeshPreview) {
-        offsetMeshPreview.geometry?.dispose();
-        if (offsetMeshPreview.material) {
-          if (Array.isArray(offsetMeshPreview.material)) {
-            offsetMeshPreview.material.forEach(m => m.dispose());
+      // Clear all offset mesh previews
+      offsetMeshPreviews.forEach(mesh => {
+        mesh.geometry?.dispose();
+        if (mesh.material) {
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach(m => m.dispose());
           } else {
-            offsetMeshPreview.material.dispose();
+            mesh.material.dispose();
           }
         }
-        setOffsetMeshPreview(null);
-      }
+      });
+      setOffsetMeshPreviews(new Map());
       
       console.log('[3DScene] Cavity reset complete - supports restored to original state');
     };
@@ -2268,7 +2430,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => {
       window.removeEventListener('reset-cavity', handleResetCavity as EventListener);
     };
-  }, [mergedFixtureMesh, offsetMeshPreview, modifiedSupportGeometries]);
+  }, [mergedFixtureMesh, offsetMeshPreviews, modifiedSupportGeometries]);
 
   // Handle base plate creation events
   React.useEffect(() => {
@@ -2841,19 +3003,19 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         return null;
       });
       
-      // Clear offset mesh preview
-      setOffsetMeshPreview((prev) => {
-        if (prev) {
-          prev.geometry?.dispose();
-          if (prev.material) {
-            if (Array.isArray(prev.material)) {
-              prev.material.forEach(m => m.dispose());
+      // Clear all offset mesh previews
+      setOffsetMeshPreviews(prev => {
+        prev.forEach(mesh => {
+          mesh.geometry?.dispose();
+          if (mesh.material) {
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(m => m.dispose());
             } else {
-              prev.material.dispose();
+              mesh.material.dispose();
             }
           }
-        }
-        return null;
+        });
+        return new Map();
       });
     };
 
@@ -3158,10 +3320,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         })()
       )}
 
-      {/* Offset mesh preview (cavity cutting brush visualization) */}
-      {offsetMeshPreview && showOffsetPreview && (
-        <primitive object={offsetMeshPreview} />
-      )}
+      {/* Offset mesh previews (cavity cutting brush visualization) - one per part */}
+      {showOffsetPreview && Array.from(offsetMeshPreviews.values()).map((mesh, index) => (
+        <primitive key={mesh.name || `offset-preview-${index}`} object={mesh} />
+      ))}
 
       {/* Merged fixture mesh (baseplate + cut supports combined) */}
       {mergedFixtureMesh && (
