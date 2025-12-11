@@ -16,7 +16,7 @@ import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
 import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
-import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth } from '@/modules/FileImport/services/meshAnalysisService';
+import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResult } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 
 /** Target triangle count for offset mesh decimation */
@@ -2030,6 +2030,12 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const { settings } = e.detail || {};
       const clearanceTolerance = settings?.offsetDistance ?? 0.5;
       
+      // Extract CSG cleanup settings from cavity settings
+      const csgMinVolume = settings?.csgMinVolume ?? 1.0;
+      const csgMinThickness = settings?.csgMinThickness ?? 0.5;
+      const csgMinTriangles = settings?.csgMinTriangles ?? 10;
+      const csgEnableLocalThickness = settings?.csgEnableLocalThickness ?? true;
+      
       if (offsetMeshPreviews.size === 0) {
         console.warn('[3DScene] No offset mesh previews available for cavity subtraction');
         window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
@@ -2153,6 +2159,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                   currentSupportGeometry.dispose(); // Dispose intermediate result
                 }
                 currentSupportGeometry = result.get(supportItem.id)!;
+                // Note: No intermediate cleanup - we'll clean up the final merged result
               }
             } catch (err) {
               console.warn(`[3DScene] CSG subtraction failed for support ${supportItem.id} with cutter ${cutterIdx}:`, err);
@@ -2286,35 +2293,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             );
             
             if (mergedGeometry) {
-              // Analyze and repair the merged geometry to fix bad triangles
-              console.log('[3DScene] Analyzing merged geometry for defects...');
-              const analysisResult = await analyzeMesh(mergedGeometry);
-              console.log('[3DScene] Mesh analysis:', {
-                triangleCount: analysisResult.triangleCount,
-                isManifold: analysisResult.isManifold,
-                hasDegenerateFaces: analysisResult.hasDegenerateFaces,
-                hasNonManifoldEdges: analysisResult.hasNonManifoldEdges,
-                boundaryEdgeCount: analysisResult.boundaryEdgeCount,
-                issues: analysisResult.issues,
-              });
-              
-              // Repair the mesh if there are degenerate faces or other issues
-              let cleanedGeometry = mergedGeometry;
-              if (analysisResult.hasDegenerateFaces || !analysisResult.isManifold) {
-                console.log('[3DScene] Repairing merged geometry to remove degenerate triangles...');
-                const repairResult = await repairMesh(mergedGeometry);
-                if (repairResult.success && repairResult.geometry) {
-                  cleanedGeometry = repairResult.geometry;
-                  console.log('[3DScene] Mesh repair result:', {
-                    success: repairResult.success,
-                    originalTriangles: analysisResult.triangleCount,
-                    finalTriangles: repairResult.triangleCount,
-                    actions: repairResult.actions,
-                  });
-                } else {
-                  console.warn('[3DScene] Mesh repair failed:', repairResult.error);
-                }
-              }
+              // STEP 1: Display the raw merged geometry IMMEDIATELY
+              // This gives instant visual feedback while cleanup runs in background
+              console.log('[3DScene] Displaying raw merged geometry...');
               
               // Create merged fixture mesh with amber color
               const amberMaterial = new THREE.MeshStandardMaterial({
@@ -2323,11 +2304,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 roughness: 0.6,
                 side: THREE.DoubleSide,
               });
-              
-              const fixtureMesh = new THREE.Mesh(cleanedGeometry, amberMaterial);
-              fixtureMesh.name = 'merged-fixture';
-              fixtureMesh.castShadow = true;
-              fixtureMesh.receiveShadow = true;
               
               // Dispose old merged fixture if exists
               if (mergedFixtureMesh) {
@@ -2341,8 +2317,123 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 }
               }
               
-              setMergedFixtureMesh(fixtureMesh);
-              console.log(`[3DScene] Merged fixture created with ${cleanedGeometry.getAttribute('position').count / 3} vertices`);
+              const rawFixtureMesh = new THREE.Mesh(mergedGeometry.clone(), amberMaterial);
+              rawFixtureMesh.name = 'merged-fixture';
+              rawFixtureMesh.castShadow = true;
+              rawFixtureMesh.receiveShadow = true;
+              
+              setMergedFixtureMesh(rawFixtureMesh);
+              console.log(`[3DScene] Raw merged fixture displayed with ${mergedGeometry.getAttribute('position').count / 3} vertices`);
+              
+              // STEP 2: Run manifold analysis, repair, and cleanup in background
+              // This happens asynchronously and updates the mesh when complete
+              window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                detail: { current: 90, total: 100, stage: 'Starting background cleanup...' }
+              }));
+              
+              // Run cleanup in a setTimeout to allow the UI to update first
+              setTimeout(async () => {
+                try {
+                  console.log('[3DScene] Starting background manifold analysis and cleanup...');
+                  
+                  // Step 2a: Analyze the mesh for manifold issues
+                  const analysisResult = await analyzeMesh(mergedGeometry);
+                  console.log('[3DScene] Mesh analysis:', {
+                    isManifold: analysisResult.isManifold,
+                    hasDegenerateFaces: analysisResult.hasDegenerateFaces,
+                    hasNonManifoldEdges: analysisResult.hasNonManifoldEdges,
+                    vertexCount: analysisResult.vertexCount,
+                    triangleCount: analysisResult.triangleCount,
+                  });
+                  
+                  let workingGeometry = mergedGeometry;
+                  
+                  // Step 2b: Repair if needed
+                  if (analysisResult.hasDegenerateFaces || !analysisResult.isManifold || analysisResult.hasNonManifoldEdges) {
+                    console.log('[3DScene] Repairing mesh...');
+                    window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                      detail: { current: 93, total: 100, stage: 'Repairing mesh...' }
+                    }));
+                    
+                    const repairResult = await repairMesh(workingGeometry);
+                    if (repairResult.success && repairResult.geometry) {
+                      workingGeometry = repairResult.geometry;
+                      console.log('[3DScene] Mesh repair completed:', repairResult.actions);
+                    }
+                  }
+                  
+                  // Step 2c: CSG Cleanup - remove small components and degenerate triangles
+                  console.log('[3DScene] Running CSG cleanup...');
+                  window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                    detail: { current: 96, total: 100, stage: 'Cleaning up artifacts...' }
+                  }));
+                  
+                  const cleanupResult = await cleanupCSGResult(workingGeometry, {
+                    minVolume: csgMinVolume,
+                    minTriangles: csgMinTriangles,
+                    minTriangleArea: 0.0001, // More aggressive: 0.0001 mm² (was 0.001)
+                    keepLargestN: 0,
+                    minThickness: csgMinThickness,
+                    vertexMergeTolerance: 0.001, // Tighter tolerance for better component detection
+                  });
+                  
+                  let finalGeometry = workingGeometry;
+                  
+                  if (cleanupResult.success && cleanupResult.geometry) {
+                    finalGeometry = cleanupResult.geometry;
+                    console.log('[3DScene] CSG cleanup result:', {
+                      originalTriangles: cleanupResult.originalTriangles,
+                      finalTriangles: cleanupResult.finalTriangles,
+                      componentsFound: cleanupResult.componentsFound,
+                      componentsRemoved: cleanupResult.componentsRemoved,
+                      degenerateTrianglesRemoved: cleanupResult.degenerateTrianglesRemoved,
+                      actions: cleanupResult.actions,
+                    });
+                  }
+                  
+                  // Step 2d: Update the displayed mesh with cleaned geometry
+                  if (finalGeometry !== mergedGeometry) {
+                    console.log('[3DScene] Updating fixture with cleaned geometry...');
+                    
+                    const cleanedMaterial = new THREE.MeshStandardMaterial({
+                      color: 0xFFBF00, // Amber
+                      metalness: 0.1,
+                      roughness: 0.6,
+                      side: THREE.DoubleSide,
+                    });
+                    
+                    const cleanedFixtureMesh = new THREE.Mesh(finalGeometry, cleanedMaterial);
+                    cleanedFixtureMesh.name = 'merged-fixture';
+                    cleanedFixtureMesh.castShadow = true;
+                    cleanedFixtureMesh.receiveShadow = true;
+                    
+                    setMergedFixtureMesh(prevMesh => {
+                      // Dispose the old raw mesh
+                      if (prevMesh) {
+                        prevMesh.geometry?.dispose();
+                        if (prevMesh.material) {
+                          if (Array.isArray(prevMesh.material)) {
+                            prevMesh.material.forEach(m => m.dispose());
+                          } else {
+                            prevMesh.material.dispose();
+                          }
+                        }
+                      }
+                      return cleanedFixtureMesh;
+                    });
+                    
+                    console.log(`[3DScene] Cleaned fixture updated with ${finalGeometry.getAttribute('position').count / 3} vertices`);
+                  }
+                  
+                  window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                    detail: { current: 100, total: 100, stage: 'Cleanup complete' }
+                  }));
+                  
+                } catch (cleanupErr) {
+                  console.error('[3DScene] Background cleanup failed:', cleanupErr);
+                  // Keep the raw geometry - it's already displayed
+                }
+              }, 100); // Small delay to let UI render first
             } else {
               console.warn('[3DScene] CSG union returned no result');
             }

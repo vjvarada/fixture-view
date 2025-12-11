@@ -380,6 +380,411 @@ export async function repairMesh(
 }
 
 // ============================================================================
+// CSG Cleanup - Remove Small Components, Slivers, and Orphans
+// ============================================================================
+
+export interface CSGCleanupResult {
+  success: boolean;
+  geometry: THREE.BufferGeometry | null;
+  originalTriangles: number;
+  finalTriangles: number;
+  componentsFound: number;
+  componentsRemoved: number;
+  degenerateTrianglesRemoved: number;
+  actions: string[];
+  error?: string;
+}
+
+export interface CSGCleanupOptions {
+  /** Minimum volume for a component to be kept (in cubic mm). Default: 5.0 */
+  minVolume?: number;
+  /** Minimum triangle count for a component to be kept. Default: 10 */
+  minTriangles?: number;
+  /** Remove triangles with area below this threshold (sq mm). Default: 0.0001 */
+  minTriangleArea?: number;
+  /** Merge vertices within this tolerance before analysis (mm). Default: 0.001 */
+  vertexMergeTolerance?: number;
+  /** Keep only the N largest components (0 = keep all that pass thresholds). Default: 0 */
+  keepLargestN?: number;
+  /** Minimum thickness (smallest bounding box dimension) for a component to be kept (mm). Default: 2.0 */
+  minThickness?: number;
+}
+
+/**
+ * Cleans up CSG operation artifacts: removes small disconnected components,
+ * degenerate triangles, and thin slivers.
+ * 
+ * This should be called after every CSG boolean operation to ensure clean geometry.
+ */
+export async function cleanupCSGResult(
+  geometry: THREE.BufferGeometry,
+  options: CSGCleanupOptions = {},
+  onProgress?: ProgressCallback
+): Promise<CSGCleanupResult> {
+  const {
+    minVolume = 5.0,
+    minTriangles = 10,
+    minTriangleArea = 0.0001,
+    vertexMergeTolerance = 0.001,
+    keepLargestN = 0,
+    minThickness = 2.0,
+  } = options;
+
+  try {
+    reportProgress(onProgress, 'repairing', 0, 'Starting CSG cleanup...');
+    
+    const actions: string[] = [];
+    let workGeometry = geometry.clone();
+    
+    // Step 1: Remove degenerate triangles first
+    reportProgress(onProgress, 'repairing', 10, 'Removing degenerate triangles...');
+    const positions = getPositionArray(workGeometry);
+    const triangleCount = positions.length / 9;
+    
+    const v0 = new THREE.Vector3();
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+    const edge1 = new THREE.Vector3();
+    const edge2 = new THREE.Vector3();
+    const cross = new THREE.Vector3();
+    
+    const validTriangleIndices: number[] = [];
+    let degenerateCount = 0;
+    
+    for (let i = 0; i < triangleCount; i++) {
+      const base = i * 9;
+      v0.fromArray(positions, base);
+      v1.fromArray(positions, base + 3);
+      v2.fromArray(positions, base + 6);
+      
+      const areaSq = triangleAreaSquared(v0, v1, v2, edge1, edge2, cross);
+      if (areaSq >= minTriangleArea * minTriangleArea) {
+        validTriangleIndices.push(i);
+      } else {
+        degenerateCount++;
+      }
+    }
+    
+    if (degenerateCount > 0) {
+      actions.push(`Removed ${degenerateCount} degenerate triangles`);
+    }
+    
+    // Rebuild geometry with only valid triangles
+    if (validTriangleIndices.length < triangleCount) {
+      const newPositions = new Float32Array(validTriangleIndices.length * 9);
+      for (let i = 0; i < validTriangleIndices.length; i++) {
+        const srcBase = validTriangleIndices[i] * 9;
+        const dstBase = i * 9;
+        for (let j = 0; j < 9; j++) {
+          newPositions[dstBase + j] = positions[srcBase + j];
+        }
+      }
+      workGeometry.dispose();
+      workGeometry = new THREE.BufferGeometry();
+      workGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+    }
+    
+    // Step 2: Find connected components using Union-Find
+    reportProgress(onProgress, 'repairing', 30, 'Finding connected components...');
+    const components = findConnectedComponents(workGeometry, vertexMergeTolerance);
+    
+    actions.push(`Found ${components.length} connected components`);
+    
+    if (components.length <= 1) {
+      // Only one component, just recompute normals and return
+      workGeometry.computeVertexNormals();
+      return {
+        success: true,
+        geometry: workGeometry,
+        originalTriangles: triangleCount,
+        finalTriangles: validTriangleIndices.length,
+        componentsFound: components.length,
+        componentsRemoved: 0,
+        degenerateTrianglesRemoved: degenerateCount,
+        actions,
+      };
+    }
+    
+    // Step 3: Calculate volume, thickness, and triangle count for each component
+    reportProgress(onProgress, 'repairing', 50, 'Analyzing component volumes and thickness...');
+    const workPositions = getPositionArray(workGeometry);
+    
+    const componentMetrics = components.map((triangleIndices, idx) => {
+      const volume = calculateComponentVolume(workGeometry, triangleIndices);
+      
+      // Calculate bounding box for this component to determine thickness
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      
+      for (const triIdx of triangleIndices) {
+        const base = triIdx * 9;
+        for (let v = 0; v < 3; v++) {
+          const vBase = base + v * 3;
+          const x = workPositions[vBase];
+          const y = workPositions[vBase + 1];
+          const z = workPositions[vBase + 2];
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+        }
+      }
+      
+      const sizeX = maxX - minX;
+      const sizeY = maxY - minY;
+      const sizeZ = maxZ - minZ;
+      const minDimension = Math.min(sizeX, sizeY, sizeZ);
+      
+      return {
+        index: idx,
+        triangleIndices,
+        triangleCount: triangleIndices.length,
+        volume: Math.abs(volume), // Volume can be negative depending on winding
+        minDimension, // Smallest bounding box dimension (thickness)
+        dimensions: { x: sizeX, y: sizeY, z: sizeZ },
+      };
+    });
+    
+    // Sort by volume (largest first)
+    componentMetrics.sort((a, b) => b.volume - a.volume);
+    
+    // Step 4: Filter components based on criteria (including thickness)
+    reportProgress(onProgress, 'repairing', 70, 'Filtering small and thin components...');
+    let keptComponents = componentMetrics.filter(
+      c => c.volume >= minVolume && c.triangleCount >= minTriangles && c.minDimension >= minThickness
+    );
+    
+    // Log thin components being removed
+    const thinComponentsRemoved = componentMetrics.filter(
+      c => c.volume >= minVolume && c.triangleCount >= minTriangles && c.minDimension < minThickness
+    );
+    if (thinComponentsRemoved.length > 0) {
+      actions.push(`Removed ${thinComponentsRemoved.length} thin slivers (thickness < ${minThickness}mm)`);
+      for (const tc of thinComponentsRemoved) {
+        console.log(`[CSG Cleanup] Removing thin sliver: thickness=${tc.minDimension.toFixed(3)}mm, dimensions=(${tc.dimensions.x.toFixed(2)}, ${tc.dimensions.y.toFixed(2)}, ${tc.dimensions.z.toFixed(2)})mm, volume=${tc.volume.toFixed(2)}mm³`);
+      }
+    }
+    
+    // If keepLargestN is set, limit to N largest
+    if (keepLargestN > 0 && keptComponents.length > keepLargestN) {
+      keptComponents = keptComponents.slice(0, keepLargestN);
+    }
+    
+    const removedCount = components.length - keptComponents.length;
+    if (removedCount > 0) {
+      const removedComponents = componentMetrics.filter(c => !keptComponents.includes(c));
+      const removedVolume = removedComponents.reduce((sum, c) => sum + c.volume, 0);
+      actions.push(`Removed ${removedCount} small components (total volume: ${removedVolume.toFixed(2)} mm³)`);
+      
+      // Log details of each removed component for debugging
+      for (const rc of removedComponents) {
+        const reason: string[] = [];
+        if (rc.volume < minVolume) reason.push(`volume=${rc.volume.toFixed(3)}mm³ < ${minVolume}`);
+        if (rc.triangleCount < minTriangles) reason.push(`triangles=${rc.triangleCount} < ${minTriangles}`);
+        if (rc.minDimension < minThickness) reason.push(`thickness=${rc.minDimension.toFixed(3)}mm < ${minThickness}`);
+        console.log(`[CSG Cleanup] Removed component: ${reason.join(', ')}, dims=(${rc.dimensions.x.toFixed(2)}, ${rc.dimensions.y.toFixed(2)}, ${rc.dimensions.z.toFixed(2)})mm`);
+      }
+    }
+    
+    // Step 5: Build geometry from kept components
+    reportProgress(onProgress, 'repairing', 75, 'Rebuilding geometry...');
+    const finalPositions = getPositionArray(workGeometry);
+    const keptTriangleIndices = new Set<number>();
+    for (const comp of keptComponents) {
+      for (const triIdx of comp.triangleIndices) {
+        keptTriangleIndices.add(triIdx);
+      }
+    }
+    
+    // Step 6: Build final cleaned geometry
+    reportProgress(onProgress, 'repairing', 90, 'Building final geometry...');
+    const finalTriangleCount = keptTriangleIndices.size;
+    const finalPositionArray = new Float32Array(finalTriangleCount * 9);
+    let writeIdx = 0;
+    
+    // Iterate in order to maintain consistent triangle ordering
+    const sortedTriangles = Array.from(keptTriangleIndices).sort((a, b) => a - b);
+    for (const triIdx of sortedTriangles) {
+      const srcBase = triIdx * 9;
+      for (let j = 0; j < 9; j++) {
+        finalPositionArray[writeIdx++] = finalPositions[srcBase + j];
+      }
+    }
+    
+    const cleanedGeometry = new THREE.BufferGeometry();
+    cleanedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(finalPositionArray, 3));
+    cleanedGeometry.computeVertexNormals();
+    
+    // Dispose intermediate geometry
+    workGeometry.dispose();
+    
+    reportProgress(onProgress, 'repairing', 100, 'CSG cleanup complete');
+    
+    return {
+      success: true,
+      geometry: cleanedGeometry,
+      originalTriangles: triangleCount,
+      finalTriangles: finalTriangleCount,
+      componentsFound: components.length,
+      componentsRemoved: removedCount,
+      degenerateTrianglesRemoved: degenerateCount,
+      actions,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown cleanup error';
+    return {
+      success: false,
+      geometry: null,
+      originalTriangles: 0,
+      finalTriangles: 0,
+      componentsFound: 0,
+      componentsRemoved: 0,
+      degenerateTrianglesRemoved: 0,
+      actions: [],
+      error: errorMessage,
+    };
+  }
+}
+
+/**
+ * Find connected components in a mesh using Union-Find algorithm.
+ * Returns an array of triangle index arrays, one per component.
+ */
+function findConnectedComponents(
+  geometry: THREE.BufferGeometry,
+  vertexMergeTolerance: number
+): number[][] {
+  const positions = getPositionArray(geometry);
+  const triangleCount = positions.length / 9;
+  
+  if (triangleCount === 0) return [];
+  
+  // Build vertex-to-triangle adjacency using spatial hashing for vertex merging
+  const vertexHash = new Map<string, number>(); // hash -> canonical vertex index
+  const triangleVertices: number[][] = []; // For each triangle, its 3 canonical vertex indices
+  let nextVertexId = 0;
+  
+  const hashVertex = (x: number, y: number, z: number): string => {
+    const scale = 1 / vertexMergeTolerance;
+    const hx = Math.round(x * scale);
+    const hy = Math.round(y * scale);
+    const hz = Math.round(z * scale);
+    return `${hx},${hy},${hz}`;
+  };
+  
+  // Assign canonical vertex IDs to each triangle vertex
+  for (let t = 0; t < triangleCount; t++) {
+    const base = t * 9;
+    const triVerts: number[] = [];
+    
+    for (let v = 0; v < 3; v++) {
+      const vBase = base + v * 3;
+      const hash = hashVertex(positions[vBase], positions[vBase + 1], positions[vBase + 2]);
+      
+      let vertexId = vertexHash.get(hash);
+      if (vertexId === undefined) {
+        vertexId = nextVertexId++;
+        vertexHash.set(hash, vertexId);
+      }
+      triVerts.push(vertexId);
+    }
+    triangleVertices.push(triVerts);
+  }
+  
+  // Build vertex-to-triangles map
+  const vertexToTriangles = new Map<number, number[]>();
+  for (let t = 0; t < triangleCount; t++) {
+    for (const v of triangleVertices[t]) {
+      if (!vertexToTriangles.has(v)) {
+        vertexToTriangles.set(v, []);
+      }
+      vertexToTriangles.get(v)!.push(t);
+    }
+  }
+  
+  // Union-Find to group connected triangles
+  const parent = new Int32Array(triangleCount);
+  const rank = new Int32Array(triangleCount);
+  for (let i = 0; i < triangleCount; i++) {
+    parent[i] = i;
+    rank[i] = 0;
+  }
+  
+  const find = (x: number): number => {
+    if (parent[x] !== x) {
+      parent[x] = find(parent[x]); // Path compression
+    }
+    return parent[x];
+  };
+  
+  const union = (x: number, y: number): void => {
+    const px = find(x);
+    const py = find(y);
+    if (px === py) return;
+    
+    // Union by rank
+    if (rank[px] < rank[py]) {
+      parent[px] = py;
+    } else if (rank[px] > rank[py]) {
+      parent[py] = px;
+    } else {
+      parent[py] = px;
+      rank[px]++;
+    }
+  };
+  
+  // Connect triangles that share vertices
+  for (const triangles of vertexToTriangles.values()) {
+    if (triangles.length > 1) {
+      const first = triangles[0];
+      for (let i = 1; i < triangles.length; i++) {
+        union(first, triangles[i]);
+      }
+    }
+  }
+  
+  // Group triangles by their root
+  const componentMap = new Map<number, number[]>();
+  for (let t = 0; t < triangleCount; t++) {
+    const root = find(t);
+    if (!componentMap.has(root)) {
+      componentMap.set(root, []);
+    }
+    componentMap.get(root)!.push(t);
+  }
+  
+  return Array.from(componentMap.values());
+}
+
+/**
+ * Calculate the signed volume of a mesh component using the divergence theorem.
+ * For a closed mesh, this gives the actual volume. For open meshes, it's an approximation.
+ */
+function calculateComponentVolume(
+  geometry: THREE.BufferGeometry,
+  triangleIndices: number[]
+): number {
+  const positions = getPositionArray(geometry);
+  let volume = 0;
+  
+  const v0 = new THREE.Vector3();
+  const v1 = new THREE.Vector3();
+  const v2 = new THREE.Vector3();
+  
+  for (const triIdx of triangleIndices) {
+    const base = triIdx * 9;
+    v0.fromArray(positions, base);
+    v1.fromArray(positions, base + 3);
+    v2.fromArray(positions, base + 6);
+    
+    // Signed volume contribution from this triangle
+    // Using the formula: V = (1/6) * sum of (v0 · (v1 × v2)) for each triangle
+    volume += v0.dot(v1.clone().cross(v2));
+  }
+  
+  return volume / 6;
+}
+
+// ============================================================================
 // MeshOptimizer Simplification
 // ============================================================================
 
