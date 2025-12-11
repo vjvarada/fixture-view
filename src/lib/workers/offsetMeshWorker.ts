@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { createWatertightMeshFromHeightmap } from '../offset/meshGenerator';
 import { fillMeshHoles, analyzeMeshHoles } from '../offset/meshHoleFiller';
+import { mergeCoplanarTriangles } from '../offset/meshOptimizer';
 
 // Message types
 export interface OffsetMeshWorkerInput {
@@ -113,7 +114,7 @@ function processMeshGeneration(input: OffsetMeshWorkerInput['data']): OffsetMesh
   const centerVec = new THREE.Vector3(center.x, center.y, center.z);
   
   // Create watertight mesh from heightmap
-  const geometry = createWatertightMeshFromHeightmap(
+  let geometry = createWatertightMeshFromHeightmap(
     heightMap,
     resolution,
     scale,
@@ -122,6 +123,9 @@ function processMeshGeneration(input: OffsetMeshWorkerInput['data']): OffsetMesh
     clipYMax,
     meshSettings
   );
+  
+  // Optimize by merging coplanar triangles
+  geometry = mergeCoplanarTriangles(geometry);
   
   // Apply inverse rotation to restore original orientation
   if (needsRotation) {

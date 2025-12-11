@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { createOffsetHeightMap, loadHeightMapFromTiles, cleanupOffscreenResources } from './offsetHeightmap.js';
 import { createWatertightMeshFromHeightmap, calculateOptimalMeshSettings } from './meshGenerator.js';
 import { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller.js';
+import { mergeCoplanarTriangles } from './meshOptimizer.js';
 import type { OffsetMeshOptions, OffsetMeshResult, HeightmapResult } from './types';
 
 // ============================================
@@ -196,7 +197,7 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         const clipYMin = originalBox.min.y - offsetDistance;  // Bottom of mesh (ground level)
         const clipYMax = originalBox.max.y + offsetDistance;  // Top of mesh
         
-        const geometry = createWatertightMeshFromHeightmap(
+        let geometry = createWatertightMeshFromHeightmap(
             heightMap,
             clampedResolution,
             heightmapResult.scale,
@@ -207,6 +208,13 @@ export async function createOffsetMesh(vertices: Float32Array, options: any): Pr
         );
         
         // Yield to browser after mesh generation
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        // Optimize by merging coplanar triangles (reduces triangle count for flat surfaces)
+        if (progressCallback) progressCallback(88, 100, 'Optimizing mesh');
+        geometry = mergeCoplanarTriangles(geometry);
+        
+        // Yield to browser after optimization
         await new Promise(resolve => setTimeout(resolve, 0));
         
         result.geometry = geometry;

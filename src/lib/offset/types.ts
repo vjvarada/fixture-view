@@ -96,7 +96,7 @@ export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   fillHoles: true,
   showPreview: true,
   previewOpacity: 0.3,
-  enableDecimation: true,
+  enableDecimation: true, // Uses Fast Quadric with Manifold3D fallback
   enableSmoothing: true,
   smoothingIterations: 5,
   smoothingMethod: 'combined',

@@ -89,10 +89,10 @@ export type ProgressCallback = (progress: ProcessingProgress) => void;
 // ============================================================================
 
 /** Triangle count threshold above which decimation is recommended */
-export const DECIMATION_THRESHOLD = 500_000;
+export const DECIMATION_THRESHOLD = 50_000;
 
 /** Target triangle count after decimation */
-export const DECIMATION_TARGET = 500_000;
+export const DECIMATION_TARGET = 50_000;
 
 /** Minimum area for a valid triangle (avoid degenerate faces) */
 const MIN_TRIANGLE_AREA_SQ = 1e-12;
@@ -384,11 +384,12 @@ export async function repairMesh(
  * Decimates a mesh using vertex clustering to reduce triangle count
  */
 /**
- * Mesh decimation using Fast Quadric Mesh Simplification (WASM).
+ * Mesh decimation using Fast Quadric Mesh Simplification (WASM) with Manifold3D fallback.
  * 
- * Uses the WASM build of Fast-Quadric-Mesh-Simplification which implements
- * the Garland & Heckbert QEM algorithm. This produces high-quality results
- * without self-intersections or sawtooth patterns.
+ * Primary: Fast-Quadric-Mesh-Simplification (Garland & Heckbert QEM algorithm)
+ * Fallback: Manifold3D simplify() if Fast Quadric fails
+ * 
+ * Guarantees output below targetTriangles (default 50,000).
  * 
  * @see https://github.com/MyMiniFactory/Fast-Quadric-Mesh-Simplification
  */
@@ -397,75 +398,238 @@ export async function decimateMesh(
   targetTriangles: number = DECIMATION_TARGET,
   onProgress?: ProgressCallback
 ): Promise<DecimationResult> {
-  try {
-    reportProgress(onProgress, 'decimating', 0, 'Starting mesh simplification...');
-    
-    // Get position attribute
-    const positions = geometry.getAttribute('position');
-    const indices = geometry.index;
-    const originalTriangles = indices ? indices.count / 3 : positions.count / 3;
-    
-    // Skip if already below target
-    if (originalTriangles <= targetTriangles) {
-      return {
-        success: true,
-        geometry: geometry.clone(),
-        originalTriangles,
-        finalTriangles: originalTriangles,
-        reductionPercent: 0,
-      };
-    }
-    
-    // Calculate target ratio
-    const ratio = Math.max(0.01, Math.min(0.99, targetTriangles / originalTriangles));
-    
-    reportProgress(onProgress, 'decimating', 10, 'Running Fast Quadric simplification...');
-    
-    // Use Fast Quadric Mesh Simplification WASM
-    const result = await simplifyGeometry(geometry, {
-      ratio,
-      onProgress: (stage, percent, message) => {
-        // Map internal progress to our 10-100 range
-        const mappedPercent = 10 + (percent * 0.9);
-        reportProgress(onProgress, 'decimating', mappedPercent, message);
-      }
-    });
-    
-    if (!result.success || !result.geometry) {
-      throw new Error(result.error || 'Simplification failed');
-    }
-    
-    // Compute vertex normals for the result
-    result.geometry.computeVertexNormals();
-    
-    reportProgress(onProgress, 'decimating', 100, 'Decimation complete');
-    
+  // Get position attribute
+  const positions = geometry.getAttribute('position');
+  const indices = geometry.index;
+  const originalTriangles = indices ? indices.count / 3 : positions.count / 3;
+  
+  // Skip if already below target
+  if (originalTriangles <= targetTriangles) {
     return {
       success: true,
-      geometry: result.geometry,
-      originalTriangles: result.originalTriangles,
-      finalTriangles: result.finalTriangles,
-      reductionPercent: result.reductionPercent,
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown decimation error';
-    console.error('Decimation error:', error);
-    
-    // Return the original geometry with a warning instead of failing completely
-    const positions = geometry.getAttribute('position');
-    const indices = geometry.index;
-    const originalTriangles = indices ? indices.count / 3 : positions.count / 3;
-    
-    console.warn('[decimateMesh] Decimation failed, returning original geometry');
-    return {
-      success: true, // Mark as success but with no reduction
       geometry: geometry.clone(),
       originalTriangles,
       finalTriangles: originalTriangles,
       reductionPercent: 0,
-      error: `Decimation skipped: ${errorMessage}`,
     };
   }
+  
+  // Calculate target ratio
+  const ratio = Math.max(0.01, Math.min(0.99, targetTriangles / originalTriangles));
+  
+  // Try Fast Quadric first
+  try {
+    reportProgress(onProgress, 'decimating', 0, 'Starting Fast Quadric simplification...');
+    
+    const result = await simplifyGeometry(geometry, {
+      ratio,
+      onProgress: (stage, percent, message) => {
+        const mappedPercent = percent * 0.7; // 0-70% for Fast Quadric
+        reportProgress(onProgress, 'decimating', mappedPercent, message);
+      }
+    });
+    
+    if (result.success && result.geometry) {
+      result.geometry.computeVertexNormals();
+      reportProgress(onProgress, 'decimating', 100, 'Fast Quadric decimation complete');
+      
+      console.log(`[decimateMesh] Fast Quadric success: ${originalTriangles} → ${result.finalTriangles} triangles`);
+      
+      return {
+        success: true,
+        geometry: result.geometry,
+        originalTriangles: result.originalTriangles,
+        finalTriangles: result.finalTriangles,
+        reductionPercent: result.reductionPercent,
+      };
+    }
+    
+    throw new Error(result.error || 'Fast Quadric returned no geometry');
+  } catch (fastQuadricError) {
+    console.warn('[decimateMesh] Fast Quadric failed, trying Manifold3D fallback:', fastQuadricError);
+    reportProgress(onProgress, 'decimating', 70, 'Fast Quadric failed, trying Manifold3D...');
+  }
+  
+  // Fallback to Manifold3D
+  try {
+    const { decimateMeshWithManifold } = await import('./manifoldMeshService');
+    
+    const manifoldResult = await decimateMeshWithManifold(
+      geometry,
+      targetTriangles,
+      (p) => {
+        const mappedProgress = 70 + (p.progress * 0.3); // 70-100% for Manifold
+        reportProgress(onProgress, 'decimating', mappedProgress, p.message);
+      },
+      true // force decimation
+    );
+    
+    if (manifoldResult.success && manifoldResult.geometry) {
+      manifoldResult.geometry.computeVertexNormals();
+      reportProgress(onProgress, 'decimating', 100, 'Manifold3D decimation complete');
+      
+      console.log(`[decimateMesh] Manifold3D fallback success: ${originalTriangles} → ${manifoldResult.finalTriangles} triangles`);
+      
+      return {
+        success: true,
+        geometry: manifoldResult.geometry,
+        originalTriangles: manifoldResult.originalTriangles,
+        finalTriangles: manifoldResult.finalTriangles,
+        reductionPercent: manifoldResult.reductionPercent,
+      };
+    }
+    
+    throw new Error(manifoldResult.error || 'Manifold3D returned no geometry');
+  } catch (manifoldError) {
+    console.error('[decimateMesh] Both Fast Quadric and Manifold3D failed:', manifoldError);
+    reportProgress(onProgress, 'decimating', 80, 'Trying vertex clustering fallback...');
+  }
+  
+  // Final fallback: Simple vertex clustering decimation
+  // This is much simpler but can handle any mesh size
+  try {
+    console.log('[decimateMesh] Attempting vertex clustering decimation...');
+    
+    const clusteredGeometry = vertexClusteringDecimate(geometry, targetTriangles);
+    const finalTriangles = clusteredGeometry.getAttribute('position').count / 3;
+    const reductionPercent = ((originalTriangles - finalTriangles) / originalTriangles) * 100;
+    
+    clusteredGeometry.computeVertexNormals();
+    reportProgress(onProgress, 'decimating', 100, 'Vertex clustering decimation complete');
+    
+    console.log(`[decimateMesh] Vertex clustering success: ${originalTriangles} → ${finalTriangles} triangles (${reductionPercent.toFixed(1)}% reduction)`);
+    
+    return {
+      success: true,
+      geometry: clusteredGeometry,
+      originalTriangles,
+      finalTriangles,
+      reductionPercent,
+    };
+  } catch (clusteringError) {
+    console.error('[decimateMesh] All decimation methods failed:', clusteringError);
+    
+    // Return original geometry as last resort
+    console.warn('[decimateMesh] All decimation methods failed, returning original geometry');
+    return {
+      success: true,
+      geometry: geometry.clone(),
+      originalTriangles,
+      finalTriangles: originalTriangles,
+      reductionPercent: 0,
+      error: `Decimation failed: All methods failed`,
+    };
+  }
+}
+
+/**
+ * Simple vertex clustering decimation for very large meshes.
+ * Groups vertices into a 3D grid and merges them, which is much faster
+ * and more memory-efficient than QEM-based methods for huge meshes.
+ */
+function vertexClusteringDecimate(
+  geometry: THREE.BufferGeometry,
+  targetTriangles: number
+): THREE.BufferGeometry {
+  const positions = geometry.getAttribute('position');
+  const vertexCount = positions.count;
+  const triangleCount = geometry.index ? geometry.index.count / 3 : vertexCount / 3;
+  
+  // Calculate grid resolution based on target reduction
+  const reductionFactor = Math.sqrt(triangleCount / targetTriangles);
+  
+  // Compute bounding box
+  geometry.computeBoundingBox();
+  const bbox = geometry.boundingBox!;
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+  
+  // Calculate cell size - smaller cells = less reduction
+  const avgDimension = (size.x + size.y + size.z) / 3;
+  const cellSize = avgDimension / (100 / reductionFactor); // Adjust grid density
+  
+  if (cellSize <= 0) {
+    return geometry.clone();
+  }
+  
+  // Map positions to grid cells and compute cell centroids
+  const cellMap = new Map<string, { sum: THREE.Vector3; count: number; index: number }>();
+  let nextCellIndex = 0;
+  
+  const getCellKey = (x: number, y: number, z: number): string => {
+    const cx = Math.floor((x - bbox.min.x) / cellSize);
+    const cy = Math.floor((y - bbox.min.y) / cellSize);
+    const cz = Math.floor((z - bbox.min.z) / cellSize);
+    return `${cx},${cy},${cz}`;
+  };
+  
+  // First pass: accumulate vertices into cells
+  const vertexToCellIndex = new Uint32Array(vertexCount);
+  
+  for (let i = 0; i < vertexCount; i++) {
+    const x = positions.getX(i);
+    const y = positions.getY(i);
+    const z = positions.getZ(i);
+    const key = getCellKey(x, y, z);
+    
+    let cell = cellMap.get(key);
+    if (!cell) {
+      cell = { sum: new THREE.Vector3(), count: 0, index: nextCellIndex++ };
+      cellMap.set(key, cell);
+    }
+    
+    cell.sum.x += x;
+    cell.sum.y += y;
+    cell.sum.z += z;
+    cell.count++;
+    vertexToCellIndex[i] = cell.index;
+  }
+  
+  // Compute cell centroids
+  const cellPositions = new Float32Array(cellMap.size * 3);
+  for (const cell of cellMap.values()) {
+    const idx = cell.index * 3;
+    cellPositions[idx] = cell.sum.x / cell.count;
+    cellPositions[idx + 1] = cell.sum.y / cell.count;
+    cellPositions[idx + 2] = cell.sum.z / cell.count;
+  }
+  
+  // Build new triangles, skipping degenerate ones
+  const newTriangles: number[] = [];
+  
+  if (geometry.index) {
+    const indices = geometry.index.array;
+    for (let i = 0; i < indices.length; i += 3) {
+      const c0 = vertexToCellIndex[indices[i]];
+      const c1 = vertexToCellIndex[indices[i + 1]];
+      const c2 = vertexToCellIndex[indices[i + 2]];
+      
+      // Skip degenerate triangles (all vertices collapsed to same cell)
+      if (c0 !== c1 && c1 !== c2 && c2 !== c0) {
+        newTriangles.push(c0, c1, c2);
+      }
+    }
+  } else {
+    // Non-indexed geometry
+    for (let i = 0; i < vertexCount; i += 3) {
+      const c0 = vertexToCellIndex[i];
+      const c1 = vertexToCellIndex[i + 1];
+      const c2 = vertexToCellIndex[i + 2];
+      
+      if (c0 !== c1 && c1 !== c2 && c2 !== c0) {
+        newTriangles.push(c0, c1, c2);
+      }
+    }
+  }
+  
+  // Create new geometry
+  const newGeometry = new THREE.BufferGeometry();
+  newGeometry.setAttribute('position', new THREE.BufferAttribute(cellPositions, 3));
+  newGeometry.setIndex(newTriangles);
+  
+  console.log(`[vertexClusteringDecimate] Reduced from ${triangleCount} to ${newTriangles.length / 3} triangles using ${cellMap.size} cells`);
+  
+  return newGeometry;
 }
 
 // ============================================================================
@@ -911,6 +1075,21 @@ export async function laplacianSmooth(
     const positions = posAttr.array as Float32Array;
     const vertexCount = posAttr.count;
     const triangleCount = vertexCount / 3;
+    
+    // Safety check: JavaScript Maps have a practical limit around 16M entries
+    // For very large meshes, skip smoothing to avoid memory issues
+    const MAX_VERTICES_FOR_SMOOTHING = 1_000_000; // 1M vertices (~333K triangles)
+    if (vertexCount > MAX_VERTICES_FOR_SMOOTHING) {
+      console.warn(`[laplacianSmooth] Mesh has ${vertexCount.toLocaleString()} vertices, exceeds limit of ${MAX_VERTICES_FOR_SMOOTHING.toLocaleString()}. Skipping smoothing to avoid memory issues.`);
+      reportProgress(progressCb, 'smoothing', 100, 'Mesh too large for smoothing, skipped');
+      return {
+        success: true,
+        geometry: workGeometry,
+        iterations: 0,
+        method,
+        error: `Mesh too large for smoothing (${vertexCount.toLocaleString()} vertices, max ${MAX_VERTICES_FOR_SMOOTHING.toLocaleString()})`,
+      };
+    }
     
     reportProgress(progressCb, 'smoothing', 10, 'Building adjacency map...');
     

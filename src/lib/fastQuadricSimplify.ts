@@ -2,6 +2,8 @@
  * Fast Quadric Mesh Simplification - WASM Wrapper
  * 
  * Wraps the WASM build of Fast-Quadric-Mesh-Simplification for use with THREE.js geometries.
+ * Based on the demo at: https://myminifactory.github.io/Fast-Quadric-Mesh-Simplification/
+ * 
  * @see https://github.com/MyMiniFactory/Fast-Quadric-Mesh-Simplification
  */
 
@@ -13,36 +15,40 @@ interface SimplifyModule {
   FS_createDataFile: (parent: string, name: string, data: Uint8Array, canRead: boolean, canWrite: boolean) => void;
   FS_readFile: (path: string) => Uint8Array;
   FS_unlink: (path: string) => void;
-  print?: (text: string) => void;
-  printErr?: (text: string) => void;
 }
 
 let moduleInstance: SimplifyModule | null = null;
 let moduleLoading: Promise<SimplifyModule> | null = null;
-let moduleAborted = false;
+let lastInputFile: string | undefined = undefined;
 
 /**
- * Reset the module if it has aborted
+ * Safely unlink a file from the virtual filesystem
  */
-function resetModule() {
-  moduleInstance = null;
-  moduleLoading = null;
-  moduleAborted = false;
-  // Clean up global Module
-  if ((window as any).Module) {
-    delete (window as any).Module;
+function safeUnlink(module: SimplifyModule, filename: string): void {
+  try {
+    module.FS_unlink(filename);
+  } catch {
+    // File may not exist, ignore
   }
 }
 
 /**
- * Load the WASM module (singleton)
+ * Clean up all files from the virtual filesystem
+ */
+function cleanupFiles(module: SimplifyModule): void {
+  if (lastInputFile) {
+    safeUnlink(module, lastInputFile);
+    lastInputFile = undefined;
+  }
+  // Clean up any common filenames that might be leftover
+  safeUnlink(module, 'input.stl');
+  safeUnlink(module, 'output.stl');
+}
+
+/**
+ * Load the WASM module (singleton pattern)
  */
 async function loadModule(): Promise<SimplifyModule> {
-  // If module previously aborted, reset it
-  if (moduleAborted) {
-    resetModule();
-  }
-  
   if (moduleInstance) return moduleInstance;
   if (moduleLoading) return moduleLoading;
 
@@ -50,18 +56,7 @@ async function loadModule(): Promise<SimplifyModule> {
     // Create Module object that Emscripten will use
     const Module: any = {
       print: (text: string) => console.log('[Simplify]', text),
-      printErr: (text: string) => {
-        console.warn('[Simplify]', text);
-        // Check for abort
-        if (text.includes('Aborted') || text.includes('abort')) {
-          moduleAborted = true;
-        }
-      },
-      onAbort: (what: any) => {
-        console.error('[Simplify] WASM Aborted:', what);
-        moduleAborted = true;
-        moduleInstance = null;
-      },
+      printErr: (text: string) => console.warn('[Simplify]', text),
       locateFile: (path: string) => {
         if (path.endsWith('.wasm')) {
           return '/fast-simplify.wasm';
@@ -69,18 +64,35 @@ async function loadModule(): Promise<SimplifyModule> {
         return path;
       },
       onRuntimeInitialized: () => {
+        console.log('[Simplify] WASM module initialized');
         moduleInstance = Module as SimplifyModule;
         resolve(moduleInstance);
+      },
+      onAbort: (what: any) => {
+        console.error('[Simplify] WASM Aborted:', what);
+        moduleInstance = null;
+        moduleLoading = null;
+        reject(new Error(`WASM Aborted: ${what}`));
       }
     };
 
     // Expose Module globally for the script
     (window as any).Module = Module;
 
+    // Check if script already loaded
+    const existingScript = document.querySelector('script[src="/fast-simplify.js"]');
+    if (existingScript) {
+      // Script already loaded, module should initialize
+      return;
+    }
+
     // Load the JS glue code
     const script = document.createElement('script');
     script.src = '/fast-simplify.js';
-    script.onerror = () => reject(new Error('Failed to load fast-simplify.js'));
+    script.onerror = () => {
+      moduleLoading = null;
+      reject(new Error('Failed to load fast-simplify.js'));
+    };
     document.head.appendChild(script);
   });
 
@@ -89,36 +101,19 @@ async function loadModule(): Promise<SimplifyModule> {
 
 /**
  * Convert THREE.BufferGeometry to binary STL format
+ * Optimized to avoid creating many temporary Vector3 objects
  */
 function geometryToSTL(geometry: THREE.BufferGeometry): Uint8Array {
-  const positions = geometry.getAttribute('position');
-  const indices = geometry.index;
+  const positionAttr = geometry.getAttribute('position');
+  const indexAttr = geometry.index;
   
-  let triangleCount: number;
-  let getTriangle: (i: number) => [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  // Calculate triangle count
+  const triangleCount = indexAttr 
+    ? indexAttr.count / 3 
+    : positionAttr.count / 3;
   
-  if (indices) {
-    triangleCount = indices.count / 3;
-    getTriangle = (i: number) => {
-      const i0 = indices.getX(i * 3);
-      const i1 = indices.getX(i * 3 + 1);
-      const i2 = indices.getX(i * 3 + 2);
-      return [
-        new THREE.Vector3(positions.getX(i0), positions.getY(i0), positions.getZ(i0)),
-        new THREE.Vector3(positions.getX(i1), positions.getY(i1), positions.getZ(i1)),
-        new THREE.Vector3(positions.getX(i2), positions.getY(i2), positions.getZ(i2))
-      ];
-    };
-  } else {
-    triangleCount = positions.count / 3;
-    getTriangle = (i: number) => {
-      const idx = i * 3;
-      return [
-        new THREE.Vector3(positions.getX(idx), positions.getY(idx), positions.getZ(idx)),
-        new THREE.Vector3(positions.getX(idx + 1), positions.getY(idx + 1), positions.getZ(idx + 1)),
-        new THREE.Vector3(positions.getX(idx + 2), positions.getY(idx + 2), positions.getZ(idx + 2))
-      ];
-    };
+  if (triangleCount === 0) {
+    throw new Error('Geometry has no triangles');
   }
   
   // Binary STL format:
@@ -132,48 +127,95 @@ function geometryToSTL(geometry: THREE.BufferGeometry): Uint8Array {
   const buffer = new ArrayBuffer(bufferSize);
   const dataView = new DataView(buffer);
   
-  // Header (80 bytes)
-  const header = 'Binary STL generated for Fast-Quadric-Mesh-Simplification';
-  for (let i = 0; i < 80; i++) {
-    dataView.setUint8(i, i < header.length ? header.charCodeAt(i) : 0);
-  }
+  // Header (80 bytes) - ArrayBuffer is initialized to zeros
   
   // Triangle count
   dataView.setUint32(80, triangleCount, true);
   
-  // Triangles
+  // Get position array for direct access (faster than getAttribute calls)
+  const positions = positionAttr.array as Float32Array;
+  
   let offset = 84;
-  const edge1 = new THREE.Vector3();
-  const edge2 = new THREE.Vector3();
-  const normal = new THREE.Vector3();
+  
+  // Temporary variables for normal calculation
+  let v0x: number, v0y: number, v0z: number;
+  let v1x: number, v1y: number, v1z: number;
+  let v2x: number, v2y: number, v2z: number;
+  let e1x: number, e1y: number, e1z: number;
+  let e2x: number, e2y: number, e2z: number;
+  let nx: number, ny: number, nz: number;
+  let len: number;
   
   for (let i = 0; i < triangleCount; i++) {
-    const [v0, v1, v2] = getTriangle(i);
+    // Get vertex indices
+    let i0: number, i1: number, i2: number;
     
-    // Compute normal
-    edge1.subVectors(v1, v0);
-    edge2.subVectors(v2, v0);
-    normal.crossVectors(edge1, edge2).normalize();
+    if (indexAttr) {
+      const baseIdx = i * 3;
+      i0 = indexAttr.getX(baseIdx);
+      i1 = indexAttr.getX(baseIdx + 1);
+      i2 = indexAttr.getX(baseIdx + 2);
+    } else {
+      i0 = i * 3;
+      i1 = i * 3 + 1;
+      i2 = i * 3 + 2;
+    }
+    
+    // Get vertex positions directly from array
+    v0x = positions[i0 * 3];
+    v0y = positions[i0 * 3 + 1];
+    v0z = positions[i0 * 3 + 2];
+    
+    v1x = positions[i1 * 3];
+    v1y = positions[i1 * 3 + 1];
+    v1z = positions[i1 * 3 + 2];
+    
+    v2x = positions[i2 * 3];
+    v2y = positions[i2 * 3 + 1];
+    v2z = positions[i2 * 3 + 2];
+    
+    // Compute normal: cross(v1-v0, v2-v0)
+    e1x = v1x - v0x;
+    e1y = v1y - v0y;
+    e1z = v1z - v0z;
+    
+    e2x = v2x - v0x;
+    e2y = v2y - v0y;
+    e2z = v2z - v0z;
+    
+    nx = e1y * e2z - e1z * e2y;
+    ny = e1z * e2x - e1x * e2z;
+    nz = e1x * e2y - e1y * e2x;
+    
+    // Normalize
+    len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 0) {
+      nx /= len;
+      ny /= len;
+      nz /= len;
+    }
     
     // Write normal
-    dataView.setFloat32(offset, normal.x, true); offset += 4;
-    dataView.setFloat32(offset, normal.y, true); offset += 4;
-    dataView.setFloat32(offset, normal.z, true); offset += 4;
+    dataView.setFloat32(offset, nx, true); offset += 4;
+    dataView.setFloat32(offset, ny, true); offset += 4;
+    dataView.setFloat32(offset, nz, true); offset += 4;
     
-    // Write vertices
-    dataView.setFloat32(offset, v0.x, true); offset += 4;
-    dataView.setFloat32(offset, v0.y, true); offset += 4;
-    dataView.setFloat32(offset, v0.z, true); offset += 4;
+    // Write vertex 0
+    dataView.setFloat32(offset, v0x, true); offset += 4;
+    dataView.setFloat32(offset, v0y, true); offset += 4;
+    dataView.setFloat32(offset, v0z, true); offset += 4;
     
-    dataView.setFloat32(offset, v1.x, true); offset += 4;
-    dataView.setFloat32(offset, v1.y, true); offset += 4;
-    dataView.setFloat32(offset, v1.z, true); offset += 4;
+    // Write vertex 1
+    dataView.setFloat32(offset, v1x, true); offset += 4;
+    dataView.setFloat32(offset, v1y, true); offset += 4;
+    dataView.setFloat32(offset, v1z, true); offset += 4;
     
-    dataView.setFloat32(offset, v2.x, true); offset += 4;
-    dataView.setFloat32(offset, v2.y, true); offset += 4;
-    dataView.setFloat32(offset, v2.z, true); offset += 4;
+    // Write vertex 2
+    dataView.setFloat32(offset, v2x, true); offset += 4;
+    dataView.setFloat32(offset, v2y, true); offset += 4;
+    dataView.setFloat32(offset, v2z, true); offset += 4;
     
-    // Attribute byte count
+    // Attribute byte count (0)
     dataView.setUint16(offset, 0, true); offset += 2;
   }
   
@@ -184,38 +226,48 @@ function geometryToSTL(geometry: THREE.BufferGeometry): Uint8Array {
  * Parse binary STL to THREE.BufferGeometry
  */
 function stlToGeometry(stlData: Uint8Array): THREE.BufferGeometry {
-  const dataView = new DataView(stlData.buffer, stlData.byteOffset, stlData.byteLength);
+  // Create a copy of the data to avoid issues with the WASM memory being freed
+  const dataCopy = new Uint8Array(stlData.length);
+  dataCopy.set(stlData);
   
-  // Read triangle count
+  const dataView = new DataView(dataCopy.buffer);
+  
+  // Read triangle count from offset 80
   const triangleCount = dataView.getUint32(80, true);
   
-  // Pre-allocate arrays
-  const positions = new Float32Array(triangleCount * 9);
-  const normals = new Float32Array(triangleCount * 9);
+  if (triangleCount === 0) {
+    throw new Error('STL has no triangles');
+  }
   
-  let offset = 84;
-  let posIdx = 0;
-  let normIdx = 0;
+  // Pre-allocate arrays
+  const vertexCount = triangleCount * 3;
+  const positions = new Float32Array(vertexCount * 3);
+  const normals = new Float32Array(vertexCount * 3);
+  
+  let readOffset = 84;
+  let writeIdx = 0;
   
   for (let i = 0; i < triangleCount; i++) {
     // Read normal
-    const nx = dataView.getFloat32(offset, true); offset += 4;
-    const ny = dataView.getFloat32(offset, true); offset += 4;
-    const nz = dataView.getFloat32(offset, true); offset += 4;
+    const nx = dataView.getFloat32(readOffset, true); readOffset += 4;
+    const ny = dataView.getFloat32(readOffset, true); readOffset += 4;
+    const nz = dataView.getFloat32(readOffset, true); readOffset += 4;
     
-    // Read vertices
+    // Read and write 3 vertices
     for (let v = 0; v < 3; v++) {
-      positions[posIdx++] = dataView.getFloat32(offset, true); offset += 4;
-      positions[posIdx++] = dataView.getFloat32(offset, true); offset += 4;
-      positions[posIdx++] = dataView.getFloat32(offset, true); offset += 4;
+      positions[writeIdx] = dataView.getFloat32(readOffset, true); readOffset += 4;
+      positions[writeIdx + 1] = dataView.getFloat32(readOffset, true); readOffset += 4;
+      positions[writeIdx + 2] = dataView.getFloat32(readOffset, true); readOffset += 4;
       
-      normals[normIdx++] = nx;
-      normals[normIdx++] = ny;
-      normals[normIdx++] = nz;
+      normals[writeIdx] = nx;
+      normals[writeIdx + 1] = ny;
+      normals[writeIdx + 2] = nz;
+      
+      writeIdx += 3;
     }
     
     // Skip attribute byte count
-    offset += 2;
+    readOffset += 2;
   }
   
   const geometry = new THREE.BufferGeometry();
@@ -243,6 +295,9 @@ export interface SimplifyResult {
 
 /**
  * Simplify a THREE.BufferGeometry using Fast Quadric Mesh Simplification (WASM)
+ * 
+ * This follows the same approach as the official demo:
+ * https://myminifactory.github.io/Fast-Quadric-Mesh-Simplification/
  */
 export async function simplifyGeometry(
   geometry: THREE.BufferGeometry,
@@ -250,87 +305,78 @@ export async function simplifyGeometry(
 ): Promise<SimplifyResult> {
   const { ratio, onProgress } = options;
   
-  const positions = geometry.getAttribute('position');
-  const indices = geometry.index;
-  const originalTriangles = indices ? indices.count / 3 : positions.count / 3;
+  const positionAttr = geometry.getAttribute('position');
+  const indexAttr = geometry.index;
+  const originalTriangles = indexAttr ? indexAttr.count / 3 : positionAttr.count / 3;
+  
+  // Generate unique filenames to avoid conflicts
+  const timestamp = Date.now();
+  const inputFile = `input_${timestamp}.stl`;
+  const outputFile = `output_${timestamp}.stl`;
+  
+  let module: SimplifyModule | null = null;
   
   try {
     onProgress?.('loading', 0, 'Loading WASM module...');
-    const module = await loadModule();
+    module = await loadModule();
     
-    onProgress?.('converting', 20, 'Converting geometry to STL...');
+    // Clean up any leftover files from previous runs
+    cleanupFiles(module);
+    
+    onProgress?.('converting', 10, 'Converting geometry to STL...');
+    
+    // Convert geometry to STL binary format
     const stlData = geometryToSTL(geometry);
     
-    onProgress?.('writing', 30, 'Writing to virtual filesystem...');
-    const inputFile = 'input.stl';
-    const outputFile = 'output.stl';
+    console.log(`[Simplify] Input: ${originalTriangles.toLocaleString()} triangles, ${(stlData.byteLength / 1024 / 1024).toFixed(2)} MB`);
     
-    // Clean up any existing files
-    try { module.FS_unlink(inputFile); } catch {}
-    try { module.FS_unlink(outputFile); } catch {}
+    onProgress?.('writing', 20, 'Writing to virtual filesystem...');
     
-    // Write input file to virtual FS
+    // Write input file to WASM virtual filesystem
+    // The demo does: Module.FS_createDataFile(".", filename, data, true, true);
     module.FS_createDataFile('.', inputFile, stlData, true, true);
+    lastInputFile = inputFile;
     
-    onProgress?.('simplifying', 40, 'Running simplification...');
+    onProgress?.('simplifying', 30, `Simplifying to ${Math.round(ratio * 100)}%...`);
     
-    // Check if module was aborted
-    if (moduleAborted) {
-      throw new Error('WASM module was previously aborted, resetting...');
+    console.log(`[Simplify] Calling WASM simplify(${inputFile}, ${ratio}, ${outputFile})`);
+    
+    // Call the simplify function exactly like the demo does:
+    // Module.ccall("simplify", undefined, ["string", "number", "string"], [filename, percentage, simplify_name]);
+    // Note: The demo passes undefined for return type, not 'number'
+    module.ccall(
+      'simplify',
+      null, // Return type is void (null in ccall)
+      ['string', 'number', 'string'],
+      [inputFile, ratio, outputFile]
+    );
+    
+    onProgress?.('reading', 70, 'Reading simplified mesh...');
+    
+    // Read the output file from virtual filesystem
+    // The demo does: let out_bin = Module.FS_readFile(simplify_name);
+    const outputData = module.FS_readFile(outputFile);
+    
+    if (!outputData || outputData.length === 0) {
+      throw new Error('Simplification produced empty output');
     }
     
-    // Call the simplify function: simplify(input_path, ratio, output_path)
-    let result: number;
-    try {
-      result = module.ccall(
-        'simplify',
-        'number',
-        ['string', 'number', 'string'],
-        [inputFile, ratio, outputFile]
-      );
-    } catch (ccallError) {
-      // Module may have aborted during ccall
-      moduleAborted = true;
-      resetModule();
-      throw new Error(`WASM execution failed: ${ccallError instanceof Error ? ccallError.message : 'Unknown error'}`);
-    }
+    console.log(`[Simplify] Output: ${(outputData.byteLength / 1024 / 1024).toFixed(2)} MB`);
     
-    // Check again after ccall in case it aborted
-    if (moduleAborted) {
-      resetModule();
-      throw new Error('WASM module aborted during simplification');
-    }
+    onProgress?.('parsing', 85, 'Parsing simplified mesh...');
     
-    if (result !== 0) {
-      throw new Error(`Simplification failed with code ${result}`);
-    }
-    
-    onProgress?.('reading', 80, 'Reading result...');
-    
-    // Read the output file
-    let outputData: Uint8Array;
-    try {
-      outputData = module.FS_readFile(outputFile);
-    } catch (readError) {
-      // Module may have aborted, or file doesn't exist
-      if (moduleAborted) {
-        resetModule();
-        throw new Error('WASM module aborted, cannot read output');
-      }
-      throw new Error(`Failed to read output file: ${readError instanceof Error ? readError.message : 'Unknown error'}`);
-    }
-    
-    onProgress?.('parsing', 90, 'Parsing simplified mesh...');
-    
-    // Convert back to geometry
+    // Parse STL back to geometry
     const simplifiedGeometry = stlToGeometry(outputData);
     
-    // Clean up virtual filesystem
-    try { module.FS_unlink(inputFile); } catch {}
-    try { module.FS_unlink(outputFile); } catch {}
+    // Clean up virtual filesystem immediately after reading
+    safeUnlink(module, inputFile);
+    safeUnlink(module, outputFile);
+    lastInputFile = undefined;
     
     const finalTriangles = simplifiedGeometry.getAttribute('position').count / 3;
     const reductionPercent = ((originalTriangles - finalTriangles) / originalTriangles) * 100;
+    
+    console.log(`[Simplify] Result: ${finalTriangles.toLocaleString()} triangles (${reductionPercent.toFixed(1)}% reduction)`);
     
     onProgress?.('complete', 100, 'Simplification complete');
     
@@ -341,13 +387,16 @@ export async function simplifyGeometry(
       finalTriangles,
       reductionPercent
     };
+    
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Fast Quadric Simplification error:', error);
+    console.error('[Simplify] Error:', error);
     
-    // Reset module if it aborted
-    if (moduleAborted || errorMessage.includes('Aborted') || errorMessage.includes('abort')) {
-      resetModule();
+    // Clean up on error
+    if (module) {
+      safeUnlink(module, inputFile);
+      safeUnlink(module, outputFile);
+      lastInputFile = undefined;
     }
     
     return {
@@ -358,5 +407,24 @@ export async function simplifyGeometry(
       reductionPercent: 0,
       error: errorMessage
     };
+  }
+}
+
+/**
+ * Check if the WASM module is loaded and ready
+ */
+export function isModuleReady(): boolean {
+  return moduleInstance !== null;
+}
+
+/**
+ * Preload the WASM module (optional, for faster first simplification)
+ */
+export async function preloadModule(): Promise<boolean> {
+  try {
+    await loadModule();
+    return true;
+  } catch {
+    return false;
   }
 }
