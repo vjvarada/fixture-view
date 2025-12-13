@@ -91,10 +91,6 @@ export interface CavitySettings {
   combinedLaplacianIterations: number;
   /** Combined method: Taubin pass iterations */
   combinedTaubinIterations: number;
-  /** Enable boundary smoothing (Chaikin corner cutting for wall edges) */
-  enableBoundarySmoothing: boolean;
-  /** Number of Chaikin corner cutting iterations (2-5 recommended) */
-  boundaryIterations: number;
   /** CSG Cleanup: Minimum volume for component to be kept (mm³) */
   csgMinVolume: number;
   /** CSG Cleanup: Minimum thickness for component to be kept (mm) */
@@ -154,8 +150,6 @@ export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   combinedGaussianIterations: 2, // Reduced for gentler smoothing
   combinedLaplacianIterations: 2,
   combinedTaubinIterations: 2,
-  enableBoundarySmoothing: true,  // Chaikin corner cutting for wall edges
-  boundaryIterations: 3,          // 3 iterations gives good results
   csgMinVolume: 5.0,      // Remove components smaller than 5 mm³
   csgMinThickness: 2.0,   // Remove thin slivers less than 2mm (component bounding box check only)
   csgMinTriangles: 10,    // Remove components with fewer than 10 triangles

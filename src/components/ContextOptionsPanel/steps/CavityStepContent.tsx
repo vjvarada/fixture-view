@@ -369,50 +369,7 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
               </div>
             )}
 
-            {/* Boundary Smoothing Toggle */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label className="text-[10px] font-tech text-muted-foreground">
-                  Boundary Smoothing
-                </Label>
-                <Switch
-                  checked={settings.enableBoundarySmoothing ?? true}
-                  onCheckedChange={(checked) => handleSettingChange('enableBoundarySmoothing', checked)}
-                  disabled={isProcessing}
-                />
-              </div>
-              <p className="text-[8px] text-muted-foreground italic">
-                Smooth wall edges (Chaikin corner cutting)
-              </p>
-            </div>
 
-            {/* Boundary Smoothing Options */}
-            {(settings.enableBoundarySmoothing ?? true) && (
-              <div className="space-y-3 pl-2 border-l-2 border-border/30">
-                {/* Boundary Iterations */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-[10px] font-tech text-muted-foreground">
-                      Iterations
-                    </Label>
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      {settings.boundaryIterations ?? 3}
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.boundaryIterations ?? 3]}
-                    onValueChange={([value]) => handleSettingChange('boundaryIterations', value)}
-                    min={1}
-                    max={5}
-                    step={1}
-                    disabled={isProcessing}
-                  />
-                  <p className="text-[8px] text-muted-foreground italic">
-                    Corner cutting passes (2-4 recommended)
-                  </p>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Reset Button */}

@@ -16,7 +16,7 @@ import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
 import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
-import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResult, boundarySmooth } from '@/modules/FileImport/services/meshAnalysisService';
+import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResult } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 
 /** Target triangle count for offset mesh decimation */
@@ -1431,39 +1431,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                   currentGeometry = smoothingResult.geometry;
                   // Update triangle count after smoothing (smoothing outputs non-indexed)
                   finalTriangleCount = Math.round(currentGeometry.getAttribute('position').count / 3);
-                }
-              }
-              
-              // === Step 3: Boundary Smoothing (Chaikin corner cutting for wall edges) ===
-              const shouldBoundarySmooth = settings.enableBoundarySmoothing !== false;
-              if (shouldBoundarySmooth) {
-                const boundaryIterations = settings.boundaryIterations ?? 3;
-                
-                window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
-                  detail: { 
-                    current: Math.round((processedParts + 0.92) / totalParts * 100), 
-                    total: 100, 
-                    stage: `Part ${processedParts + 1}/${totalParts}: Boundary smoothing (${boundaryIterations} iterations)...` 
-                  }
-                }));
-                
-                // Yield to browser before boundary smoothing
-                await new Promise(resolve => setTimeout(resolve, 0));
-                
-                const boundaryResult = await boundarySmooth(
-                  currentGeometry,
-                  { iterations: boundaryIterations }
-                );
-                
-                if (boundaryResult.success && boundaryResult.geometry) {
-                  currentGeometry.dispose();
-                  currentGeometry = boundaryResult.geometry;
-                  // Update triangle count after boundary smoothing
-                  finalTriangleCount = Math.round(currentGeometry.getAttribute('position').count / 3);
-                  
-                  if (boundaryResult.boundaryVerticesSmoothed > 0) {
-                    console.log(`[3DScene] Boundary smoothing: ${boundaryResult.boundaryVerticesSmoothed} vertices smoothed`);
-                  }
                 }
               }
               
