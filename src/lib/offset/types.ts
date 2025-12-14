@@ -1,8 +1,12 @@
-// ============================================
-// Offset Mesh Processor Types
-// ============================================
+/**
+ * Offset Mesh Processor Types
+ */
 
-import * as THREE from 'three';
+import type * as THREE from 'three';
+
+// ============================================
+// Core Processing Types
+// ============================================
 
 export interface OffsetMeshOptions {
   /** Offset distance in world units */
@@ -13,7 +17,7 @@ export interface OffsetMeshOptions {
   tileSize?: number;
   /** Rotation around Y axis in degrees (XZ plane) */
   rotationXZ?: number;
-  /** Rotation around X axis in degrees (YZ plane, inverted: 180-input) */
+  /** Rotation around X axis in degrees (YZ plane) */
   rotationYZ?: number;
   /** Fill holes in input mesh before heightmap generation */
   fillHoles?: boolean;
@@ -54,6 +58,12 @@ export interface OffsetMeshResult {
   metadata: OffsetMeshMetadata;
 }
 
+// ============================================
+// Cavity Settings
+// ============================================
+
+export type SmoothingMethod = 'taubin' | 'hc' | 'combined' | 'gaussian';
+
 export interface CavitySettings {
   /** Enable cavity creation */
   enabled: boolean;
@@ -61,9 +71,9 @@ export interface CavitySettings {
   offsetDistance: number;
   /** Resolution - pixels per unit for heightmap generation */
   pixelsPerUnit: number;
-  /** Rotation around Y axis in degrees (XZ plane) - derived from part */
+  /** Rotation around Y axis in degrees (XZ plane) */
   rotationXZ: number;
-  /** Rotation around X axis in degrees (YZ plane) - derived from part */
+  /** Rotation around X axis in degrees (YZ plane) */
   rotationYZ: number;
   /** Fill holes in input mesh before heightmap generation */
   fillHoles: boolean;
@@ -75,15 +85,15 @@ export interface CavitySettings {
   enableDecimation: boolean;
   /** Enable Taubin smoothing to remove jagged edges */
   enableSmoothing: boolean;
-  /** Number of smoothing iterations (for non-combined methods) */
+  /** Number of smoothing iterations */
   smoothingIterations: number;
-  /** Gaussian sigma - controls smoothing weight falloff (lower = gentler) */
+  /** Gaussian sigma - controls smoothing weight falloff */
   smoothingSigma: number;
-  /** Smoothing method: 'taubin', 'hc', 'combined', or 'gaussian' */
-  smoothingMethod: 'taubin' | 'hc' | 'combined' | 'gaussian';
-  /** HC smoothing alpha parameter (0-1, higher = more original shape preservation) */
+  /** Smoothing method */
+  smoothingMethod: SmoothingMethod;
+  /** HC smoothing alpha parameter (0-1) */
   smoothingAlpha: number;
-  /** HC smoothing beta parameter (0-1, higher = more smoothing) */
+  /** HC smoothing beta parameter (0-1) */
   smoothingBeta: number;
   /** Combined method: Gaussian pass iterations */
   combinedGaussianIterations: number;
@@ -99,58 +109,56 @@ export interface CavitySettings {
   csgMinTriangles: number;
 }
 
+// ============================================
+// Utility Functions
+// ============================================
+
 /**
  * Calculate adaptive pixels per unit based on part diagonal size.
  * Larger parts (600mm+) use 2 px/mm for performance.
  * Smaller parts (100mm-) use 6 px/mm for detail.
- * Parts in between use discrete integers 2-6.
- * 
+ *
  * @param diagonal - Part diagonal in mm
  * @returns pixelsPerUnit value (2-6)
  */
 export function getAdaptivePixelsPerUnit(diagonal: number): number {
-  // Define the range: 100mm -> 6px/mm, 600mm -> 2px/mm
-  const minDiagonal = 100;
-  const maxDiagonal = 600;
-  const maxPPU = 6;
-  const minPPU = 2;
-  
-  if (diagonal <= minDiagonal) {
-    return maxPPU; // 6 px/mm for small parts
-  }
-  
-  if (diagonal >= maxDiagonal) {
-    return minPPU; // 2 px/mm for large parts
-  }
-  
-  // Linear interpolation between the ranges, then round to integer
-  const t = (diagonal - minDiagonal) / (maxDiagonal - minDiagonal);
-  const ppu = maxPPU - t * (maxPPU - minPPU);
-  
-  // Round to nearest integer (2, 3, 4, 5, or 6)
-  return Math.round(ppu);
+  const MIN_DIAGONAL = 100;
+  const MAX_DIAGONAL = 600;
+  const MAX_PPU = 6;
+  const MIN_PPU = 2;
+
+  if (diagonal <= MIN_DIAGONAL) return MAX_PPU;
+  if (diagonal >= MAX_DIAGONAL) return MIN_PPU;
+
+  // Linear interpolation
+  const t = (diagonal - MIN_DIAGONAL) / (MAX_DIAGONAL - MIN_DIAGONAL);
+  return Math.round(MAX_PPU - t * (MAX_PPU - MIN_PPU));
 }
+
+// ============================================
+// Default Settings
+// ============================================
 
 export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   enabled: true,
   offsetDistance: 0.5,
-  pixelsPerUnit: 6, // Default, will be overridden by adaptive calculation
+  pixelsPerUnit: 6,
   rotationXZ: 0,
   rotationYZ: 0,
   fillHoles: true,
   showPreview: true,
   previewOpacity: 0.3,
-  enableDecimation: true, // Uses Fast Quadric with Manifold3D fallback
+  enableDecimation: true,
   enableSmoothing: true,
-  smoothingIterations: 2, // Reduced for gentler smoothing
-  smoothingSigma: 0.2, // Lower sigma = gentler smoothing
+  smoothingIterations: 2,
+  smoothingSigma: 0.2,
   smoothingMethod: 'combined',
   smoothingAlpha: 0.5,
   smoothingBeta: 0.5,
-  combinedGaussianIterations: 2, // Reduced for gentler smoothing
+  combinedGaussianIterations: 2,
   combinedLaplacianIterations: 2,
   combinedTaubinIterations: 2,
-  csgMinVolume: 5.0,      // Remove components smaller than 5 mm³
-  csgMinThickness: 2.0,   // Remove thin slivers less than 2mm (component bounding box check only)
-  csgMinTriangles: 10,    // Remove components with fewer than 10 triangles
+  csgMinVolume: 5.0,
+  csgMinThickness: 2.0,
+  csgMinTriangles: 10,
 };

@@ -1,393 +1,501 @@
-// ============================================
-// Mesh Optimization and Cleanup Module
-// ============================================
+/**
+ * Mesh Optimization and Cleanup Module
+ * Functions for mesh repair, hole filling, and manifold verification
+ */
 
 import * as THREE from 'three';
 
 // ============================================
-// Mesh Cleanup Functions
+// Types
 // ============================================
 
-export function removeDegenerateTriangles(geometry) {
-    const positions = geometry.attributes.position.array;
-    const indices = geometry.index.array;
-    const newIndices = [];
-    
-    let removedTriangles = 0;
-    const epsilon = 1e-10;
-    
-    // Process all triangles in one pass - no artificial delays
-    for (let i = 0; i < indices.length; i += 3) {
-        const i0 = indices[i] * 3;
-        const i1 = indices[i + 1] * 3;
-        const i2 = indices[i + 2] * 3;
-        
-        const v0x = positions[i0], v0y = positions[i0 + 1], v0z = positions[i0 + 2];
-        const v1x = positions[i1], v1y = positions[i1 + 1], v1z = positions[i1 + 2];
-        const v2x = positions[i2], v2y = positions[i2 + 1], v2z = positions[i2 + 2];
-        
-        const e1x = v1x - v0x, e1y = v1y - v0y, e1z = v1z - v0z;
-        const e2x = v2x - v0x, e2y = v2y - v0y, e2z = v2z - v0z;
-        
-        const cx = e1y * e2z - e1z * e2y;
-        const cy = e1z * e2x - e1x * e2z;
-        const cz = e1x * e2y - e1y * e2x;
-        const areaSq = cx * cx + cy * cy + cz * cz;
-        
-        if (areaSq > epsilon) {
-            newIndices.push(indices[i], indices[i + 1], indices[i + 2]);
-        } else {
-            removedTriangles++;
-        }
+interface WatertightResult {
+  isWatertight: boolean;
+  totalEdges: number;
+  manifoldEdges: number;
+  boundaryEdges: number;
+  overSharedEdges: number;
+  nonManifoldEdges: number;
+}
+
+// ============================================
+// Degenerate Triangle Removal
+// ============================================
+
+/**
+ * Remove triangles with zero or near-zero area
+ */
+export function removeDegenerateTriangles(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const positions = geometry.attributes.position.array as Float32Array;
+  const indices = geometry.index?.array;
+
+  if (!indices) return geometry;
+
+  const newIndices: number[] = [];
+  const epsilon = 1e-10;
+  let removedCount = 0;
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const i0 = indices[i] * 3;
+    const i1 = indices[i + 1] * 3;
+    const i2 = indices[i + 2] * 3;
+
+    const areaSq = calculateTriangleAreaSquared(positions, i0, i1, i2);
+
+    if (areaSq > epsilon) {
+      newIndices.push(indices[i], indices[i + 1], indices[i + 2]);
+    } else {
+      removedCount++;
     }
-    
-    if (removedTriangles > 0) {
-        const cleanedGeometry = new THREE.BufferGeometry();
-        cleanedGeometry.setAttribute('position', geometry.attributes.position.clone());
-        cleanedGeometry.setIndex(newIndices);
-        cleanedGeometry.computeVertexNormals();
-        
-        return cleanedGeometry;
-    }
-    
+  }
+
+  if (removedCount === 0) {
     return geometry;
+  }
+
+  return createCleanedGeometry(geometry, newIndices);
+}
+
+function calculateTriangleAreaSquared(
+  positions: Float32Array,
+  i0: number,
+  i1: number,
+  i2: number
+): number {
+  const e1x = positions[i1] - positions[i0];
+  const e1y = positions[i1 + 1] - positions[i0 + 1];
+  const e1z = positions[i1 + 2] - positions[i0 + 2];
+
+  const e2x = positions[i2] - positions[i0];
+  const e2y = positions[i2 + 1] - positions[i0 + 1];
+  const e2z = positions[i2 + 2] - positions[i0 + 2];
+
+  const cx = e1y * e2z - e1z * e2y;
+  const cy = e1z * e2x - e1x * e2z;
+  const cz = e1x * e2y - e1y * e2x;
+
+  return cx * cx + cy * cy + cz * cz;
+}
+
+function createCleanedGeometry(original: THREE.BufferGeometry, indices: number[]): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', original.attributes.position.clone());
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
 // ============================================
-// Manifold Verification
-// ============================================
-
-export function verifyWatertightness(geometry) {
-    const edges = new Map();
-    const indices = geometry.index.array;
-    const positions = geometry.attributes.position.array;
-    
-    const edgeTriangles = new Map();
-    
-    for (let i = 0; i < indices.length; i += 3) {
-        const triIdx = i / 3;
-        const v0 = indices[i];
-        const v1 = indices[i + 1];
-        const v2 = indices[i + 2];
-        
-        const edges_in_tri = [
-            [v0, v1],
-            [v1, v2],
-            [v2, v0]
-        ];
-        
-        for (const [va, vb] of edges_in_tri) {
-            const key = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
-            edges.set(key, (edges.get(key) || 0) + 1);
-            
-            if (!edgeTriangles.has(key)) {
-                edgeTriangles.set(key, []);
-            }
-            edgeTriangles.get(key).push(triIdx);
-        }
-    }
-    
-    let nonManifoldEdges = 0;
-    const edgesByCount = { '0': 0, '1': 0, '2': 0, '3+': 0 };
-    
-    for (const [edge, count] of edges) {
-        if (count === 2) {
-            edgesByCount['2']++;
-        } else {
-            nonManifoldEdges++;
-            if (count === 1) edgesByCount['1']++;
-            else if (count === 0) edgesByCount['0']++;
-            else edgesByCount['3+']++;
-        }
-    }
-    
-    return {
-        isWatertight: nonManifoldEdges === 0,
-        totalEdges: edges.size,
-        manifoldEdges: edgesByCount['2'],
-        boundaryEdges: edgesByCount['1'],
-        overSharedEdges: edgesByCount['3+'],
-        nonManifoldEdges,
-        edgeTriangles // return for repair function
-    };
-}
-
-// ============================================
-// Mesh Repair Functions
+// Watertightness Verification
 // ============================================
 
 /**
- * Repair non-manifold mesh by removing triangles that share over-shared edges
- * Strategy: Iteratively keep the 2 best quality triangles for each over-shared edge
+ * Verify mesh is watertight (all edges shared by exactly 2 faces)
  */
-export function repairNonManifoldMesh(geometry, maxIterations = 5) {
-    let currentGeometry = geometry;
-    let iteration = 0;
-    
-    while (iteration < maxIterations) {
-        const indices = Array.from(currentGeometry.index.array);
-        const positions = currentGeometry.attributes.position.array;
-        
-        // Build edge-to-triangle map
-        const edgeTriangles = new Map();
-        
-        for (let i = 0; i < indices.length; i += 3) {
-            const triIdx = i / 3;
-            const v0 = indices[i];
-            const v1 = indices[i + 1];
-            const v2 = indices[i + 2];
-            
-            const edges_in_tri = [
-                [v0, v1],
-                [v1, v2],
-                [v2, v0]
-            ];
-            
-            for (const [va, vb] of edges_in_tri) {
-                const key = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
-                
-                if (!edgeTriangles.has(key)) {
-                    edgeTriangles.set(key, []);
-                }
-                edgeTriangles.get(key).push(triIdx);
-            }
-        }
-        
-        // Find all non-manifold edges (not exactly 2 triangles)
-        const overSharedEdges = [];
-        const boundaryEdges = [];
-        
-        for (const [edge, tris] of edgeTriangles) {
-            if (tris.length > 2) {
-                overSharedEdges.push({ edge, triangles: tris });
-            } else if (tris.length === 1) {
-                boundaryEdges.push({ edge, triangles: tris });
-            }
-        }
-        
-        if (overSharedEdges.length === 0 && boundaryEdges.length === 0) {
-            return currentGeometry;
-        }
-        
-        // If only boundary edges remain and we've done at least one iteration, stop
-        // (removing triangles to fix boundaries often creates more problems)
-        if (overSharedEdges.length === 0 && iteration > 0) {
-            return currentGeometry;
-        }
-        
-        // Helper: Calculate triangle area
-        const getTriangleArea = (triIdx) => {
-            const i = triIdx * 3;
-            const i0 = Number(indices[i]) * 3;
-            const i1 = Number(indices[i + 1]) * 3;
-            const i2 = Number(indices[i + 2]) * 3;
-            
-            const v0x = positions[i0], v0y = positions[i0 + 1], v0z = positions[i0 + 2];
-            const v1x = positions[i1], v1y = positions[i1 + 1], v1z = positions[i1 + 2];
-            const v2x = positions[i2], v2y = positions[i2 + 1], v2z = positions[i2 + 2];
-            
-            const e1x = v1x - v0x, e1y = v1y - v0y, e1z = v1z - v0z;
-            const e2x = v2x - v0x, e2y = v2y - v0y, e2z = v2z - v0z;
-            
-            const cx = e1y * e2z - e1z * e2y;
-            const cy = e1z * e2x - e1x * e2z;
-            const cz = e1x * e2y - e1y * e2x;
-            
-            return Math.sqrt(cx * cx + cy * cy + cz * cz) * 0.5;
-        };
-        
-        // Mark triangles to remove (only process over-shared edges, not boundaries)
-        const trianglesToRemove = new Set();
-        
-        for (const { edge, triangles } of overSharedEdges) {
-            // Sort triangles by area (descending) - keep larger triangles
-            const sortedTris = triangles.slice().sort((a, b) => {
-                return getTriangleArea(b) - getTriangleArea(a);
-            });
-            
-            // Keep best 2 triangles, remove the rest
-            for (let i = 2; i < sortedTris.length; i++) {
-                trianglesToRemove.add(sortedTris[i]);
-            }
-        }
-        
-        if (trianglesToRemove.size === 0) {
-            return currentGeometry;
-        }
-        
-        // Build new index array without removed triangles
-        const newIndices = [];
-        for (let i = 0; i < indices.length; i += 3) {
-            const triIdx = i / 3;
-            if (!trianglesToRemove.has(triIdx)) {
-                newIndices.push(indices[i], indices[i + 1], indices[i + 2]);
-            }
-        }
-        
-        // Create repaired geometry for next iteration
-        const repairedGeometry = new THREE.BufferGeometry();
-        repairedGeometry.setAttribute('position', currentGeometry.attributes.position.clone());
-        repairedGeometry.setIndex(newIndices);
-        repairedGeometry.computeVertexNormals();
-        
-        currentGeometry = repairedGeometry;
-        iteration++;
+export function verifyWatertightness(geometry: THREE.BufferGeometry): WatertightResult {
+  const indices = geometry.index?.array;
+  if (!indices) {
+    return createEmptyWatertightResult();
+  }
+
+  const edgeCounts = countEdges(indices);
+
+  let nonManifoldEdges = 0;
+  const edgesByCount = { manifold: 0, boundary: 0, overShared: 0 };
+
+  for (const count of edgeCounts.values()) {
+    if (count === 2) {
+      edgesByCount.manifold++;
+    } else {
+      nonManifoldEdges++;
+      if (count === 1) edgesByCount.boundary++;
+      else edgesByCount.overShared++;
     }
-    
-    return currentGeometry;
+  }
+
+  return {
+    isWatertight: nonManifoldEdges === 0,
+    totalEdges: edgeCounts.size,
+    manifoldEdges: edgesByCount.manifold,
+    boundaryEdges: edgesByCount.boundary,
+    overSharedEdges: edgesByCount.overShared,
+    nonManifoldEdges,
+  };
+}
+
+function createEmptyWatertightResult(): WatertightResult {
+  return {
+    isWatertight: false,
+    totalEdges: 0,
+    manifoldEdges: 0,
+    boundaryEdges: 0,
+    overSharedEdges: 0,
+    nonManifoldEdges: 0,
+  };
+}
+
+function countEdges(indices: ArrayLike<number>): Map<string, number> {
+  const edgeCounts = new Map<string, number>();
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const v0 = indices[i];
+    const v1 = indices[i + 1];
+    const v2 = indices[i + 2];
+
+    incrementEdgeCount(edgeCounts, v0, v1);
+    incrementEdgeCount(edgeCounts, v1, v2);
+    incrementEdgeCount(edgeCounts, v2, v0);
+  }
+
+  return edgeCounts;
+}
+
+function incrementEdgeCount(edgeCounts: Map<string, number>, va: number, vb: number): void {
+  const key = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
+  edgeCounts.set(key, (edgeCounts.get(key) ?? 0) + 1);
 }
 
 // ============================================
-// Hole Filling
+// Non-Manifold Mesh Repair
 // ============================================
 
 /**
- * Fill small holes in mesh by detecting boundary loops and triangulating them
- * @param geometry - Input geometry with holes
- * @param maxHoleEdges - Maximum number of edges in a hole to fill (default: 100)
- * @returns Geometry with filled holes
+ * Repair non-manifold mesh by removing triangles on over-shared edges
+ * Keeps the 2 best quality triangles for each over-shared edge
  */
-export function fillSmallHoles(geometry: any, maxHoleEdges: number = 100): any {
-    const positions = Array.from(geometry.attributes.position.array) as number[];
-    const indices = Array.from(geometry.index.array) as number[];
-    
-    // Build edge map to find boundary edges
-    const edgeMap = new Map<string, number>();
-    
-    for (let i = 0; i < indices.length; i += 3) {
-        const v0 = indices[i];
-        const v1 = indices[i + 1];
-        const v2 = indices[i + 2];
-        
-        // Check each edge of the triangle
-        [[v0, v1], [v1, v2], [v2, v0]].forEach(([a, b]) => {
-            const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-            edgeMap.set(key, (edgeMap.get(key) || 0) + 1);
-        });
+export function repairNonManifoldMesh(
+  geometry: THREE.BufferGeometry,
+  maxIterations = 5
+): THREE.BufferGeometry {
+  let currentGeometry = geometry;
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const indices = Array.from(currentGeometry.index?.array ?? []);
+    const positions = currentGeometry.attributes.position.array as Float32Array;
+
+    const edgeTriangles = buildEdgeTriangleMap(indices);
+    const overSharedEdges = findOverSharedEdges(edgeTriangles);
+    const boundaryEdges = findBoundaryEdges(edgeTriangles);
+
+    // Stop if no over-shared edges
+    if (overSharedEdges.length === 0) {
+      return currentGeometry;
     }
-    
-    // Find boundary edges (edges that appear only once)
-    const boundaryEdges = new Map<number, number[]>();
-    
-    for (const [key, count] of edgeMap.entries()) {
-        if (count === 1) {
-            const [v0, v1] = key.split('_').map(Number);
-            
-            if (!boundaryEdges.has(v0)) boundaryEdges.set(v0, []);
-            if (!boundaryEdges.has(v1)) boundaryEdges.set(v1, []);
-            
-            boundaryEdges.get(v0)!.push(v1);
-            boundaryEdges.get(v1)!.push(v0);
-        }
+
+    // Stop if only boundary edges remain after first iteration
+    if (overSharedEdges.length === 0 && iteration > 0) {
+      return currentGeometry;
     }
-    
-    if (boundaryEdges.size === 0) {
-        return geometry;
+
+    const trianglesToRemove = selectTrianglesToRemove(overSharedEdges, indices, positions);
+
+    if (trianglesToRemove.size === 0) {
+      return currentGeometry;
     }
-    
-    // Find boundary loops
-    const boundaryLoops: number[][] = [];
-    const visited = new Set<number>();
-    
-    for (const startVertex of boundaryEdges.keys()) {
-        if (visited.has(startVertex)) continue;
-        
-        const loop: number[] = [];
-        let current = startVertex;
-        
-        while (true) {
-            visited.add(current);
-            loop.push(current);
-            
-            const neighbors = boundaryEdges.get(current) || [];
-            const next = neighbors.find(n => !visited.has(n));
-            
-            if (!next) {
-                // Check if we can close the loop
-                const firstNeighbors = boundaryEdges.get(startVertex) || [];
-                if (firstNeighbors.includes(current) && loop.length > 2) {
-                    boundaryLoops.push(loop);
-                }
-                break;
-            }
-            
-            current = next;
-            
-            // Prevent infinite loops
-            if (loop.length > maxHoleEdges * 2) break;
-        }
+
+    currentGeometry = removeTriangles(currentGeometry, indices, trianglesToRemove);
+  }
+
+  return currentGeometry;
+}
+
+interface EdgeTriangleInfo {
+  edge: string;
+  triangles: number[];
+}
+
+function buildEdgeTriangleMap(indices: number[]): Map<string, number[]> {
+  const edgeTriangles = new Map<string, number[]>();
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const triIdx = i / 3;
+    const v0 = indices[i];
+    const v1 = indices[i + 1];
+    const v2 = indices[i + 2];
+
+    addTriangleToEdge(edgeTriangles, v0, v1, triIdx);
+    addTriangleToEdge(edgeTriangles, v1, v2, triIdx);
+    addTriangleToEdge(edgeTriangles, v2, v0, triIdx);
+  }
+
+  return edgeTriangles;
+}
+
+function addTriangleToEdge(
+  edgeTriangles: Map<string, number[]>,
+  va: number,
+  vb: number,
+  triIdx: number
+): void {
+  const key = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
+  if (!edgeTriangles.has(key)) {
+    edgeTriangles.set(key, []);
+  }
+  edgeTriangles.get(key)!.push(triIdx);
+}
+
+function findOverSharedEdges(edgeTriangles: Map<string, number[]>): EdgeTriangleInfo[] {
+  return Array.from(edgeTriangles.entries())
+    .filter(([, tris]) => tris.length > 2)
+    .map(([edge, triangles]) => ({ edge, triangles }));
+}
+
+function findBoundaryEdges(edgeTriangles: Map<string, number[]>): EdgeTriangleInfo[] {
+  return Array.from(edgeTriangles.entries())
+    .filter(([, tris]) => tris.length === 1)
+    .map(([edge, triangles]) => ({ edge, triangles }));
+}
+
+function selectTrianglesToRemove(
+  overSharedEdges: EdgeTriangleInfo[],
+  indices: number[],
+  positions: Float32Array
+): Set<number> {
+  const trianglesToRemove = new Set<number>();
+
+  for (const { triangles } of overSharedEdges) {
+    // Sort by area (descending) - keep larger triangles
+    const sortedTris = triangles.slice().sort((a, b) => {
+      return getTriangleArea(indices, positions, b) - getTriangleArea(indices, positions, a);
+    });
+
+    // Keep best 2 triangles, remove the rest
+    for (let i = 2; i < sortedTris.length; i++) {
+      trianglesToRemove.add(sortedTris[i]);
     }
-    
-    let filledHoles = 0;
-    const newIndices = [...indices];
-    
-    // Fill each hole
-    for (const loop of boundaryLoops) {
-        if (loop.length < 3 || loop.length > maxHoleEdges) {
-            continue;
-        }
-        
-        // Simple fan triangulation from first vertex
-        const center = loop[0];
-        
-        for (let i = 1; i < loop.length - 1; i++) {
-            const v1 = loop[i];
-            const v2 = loop[i + 1];
-            
-            // Calculate triangle normal to ensure correct orientation
-            const p0x = positions[center * 3], p0y = positions[center * 3 + 1], p0z = positions[center * 3 + 2];
-            const p1x = positions[v1 * 3], p1y = positions[v1 * 3 + 1], p1z = positions[v1 * 3 + 2];
-            const p2x = positions[v2 * 3], p2y = positions[v2 * 3 + 1], p2z = positions[v2 * 3 + 2];
-            
-            const e1x = p1x - p0x, e1y = p1y - p0y, e1z = p1z - p0z;
-            const e2x = p2x - p0x, e2y = p2y - p0y, e2z = p2z - p0z;
-            
-            // Cross product for normal
-            const nx = e1y * e2z - e1z * e2y;
-            const ny = e1z * e2x - e1x * e2z;
-            const nz = e1x * e2y - e1y * e2x;
-            
-            // Calculate average normal of adjacent triangles for comparison
-            let avgNormalZ = 0;
-            let normalCount = 0;
-            
-            for (let j = 0; j < indices.length; j += 3) {
-                if (indices[j] === center || indices[j + 1] === center || indices[j + 2] === center) {
-                    const i0 = indices[j] * 3, i1 = indices[j + 1] * 3, i2 = indices[j + 2] * 3;
-                    const v0x = positions[i0], v0y = positions[i0 + 1], v0z = positions[i0 + 2];
-                    const v1x = positions[i1], v1y = positions[i1 + 1], v1z = positions[i1 + 2];
-                    const v2x = positions[i2], v2y = positions[i2 + 1], v2z = positions[i2 + 2];
-                    
-                    const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
-                    const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
-                    
-                    avgNormalZ += edge1x * edge2y - edge1y * edge2x;
-                    normalCount++;
-                }
-            }
-            
-            if (normalCount > 0) avgNormalZ /= normalCount;
-            
-            // Add triangle with correct winding order
-            if ((nz > 0 && avgNormalZ > 0) || (nz < 0 && avgNormalZ < 0)) {
-                newIndices.push(center, v1, v2);
-            } else {
-                newIndices.push(center, v2, v1);
-            }
-        }
-        
-        filledHoles++;
+  }
+
+  return trianglesToRemove;
+}
+
+function getTriangleArea(indices: number[], positions: Float32Array, triIdx: number): number {
+  const i = triIdx * 3;
+  const i0 = indices[i] * 3;
+  const i1 = indices[i + 1] * 3;
+  const i2 = indices[i + 2] * 3;
+
+  const areaSq = calculateTriangleAreaSquared(
+    positions,
+    i0,
+    i1,
+    i2
+  );
+
+  return Math.sqrt(areaSq) * 0.5;
+}
+
+function removeTriangles(
+  geometry: THREE.BufferGeometry,
+  indices: number[],
+  trianglesToRemove: Set<number>
+): THREE.BufferGeometry {
+  const newIndices: number[] = [];
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const triIdx = i / 3;
+    if (!trianglesToRemove.has(triIdx)) {
+      newIndices.push(indices[i], indices[i + 1], indices[i + 2]);
     }
-    
-    if (filledHoles === 0) {
-        return geometry;
+  }
+
+  const repaired = new THREE.BufferGeometry();
+  repaired.setAttribute('position', geometry.attributes.position.clone());
+  repaired.setIndex(newIndices);
+  repaired.computeVertexNormals();
+
+  return repaired;
+}
+
+// ============================================
+// Small Hole Filling
+// ============================================
+
+/**
+ * Fill small holes in mesh by detecting boundary loops and triangulating
+ */
+export function fillSmallHoles(geometry: THREE.BufferGeometry, maxHoleEdges = 100): THREE.BufferGeometry {
+  const positions = Array.from(geometry.attributes.position.array);
+  const indices = Array.from(geometry.index?.array ?? []);
+
+  const boundaryEdges = findMeshBoundaryEdges(indices);
+
+  if (boundaryEdges.size === 0) {
+    return geometry;
+  }
+
+  const loops = findBoundaryLoops(boundaryEdges, maxHoleEdges);
+
+  if (loops.length === 0) {
+    return geometry;
+  }
+
+  const newIndices = fillLoops(loops, positions, indices);
+
+  if (newIndices.length === indices.length) {
+    return geometry;
+  }
+
+  return createFilledGeometry(positions, newIndices);
+}
+
+function findMeshBoundaryEdges(indices: number[]): Map<number, number[]> {
+  const edgeMap = new Map<string, number>();
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const v0 = indices[i];
+    const v1 = indices[i + 1];
+    const v2 = indices[i + 2];
+
+    countEdge(edgeMap, v0, v1);
+    countEdge(edgeMap, v1, v2);
+    countEdge(edgeMap, v2, v0);
+  }
+
+  const boundaryEdges = new Map<number, number[]>();
+
+  for (const [key, count] of edgeMap) {
+    if (count === 1) {
+      const [v0, v1] = key.split('_').map(Number);
+      addBoundaryEdge(boundaryEdges, v0, v1);
+      addBoundaryEdge(boundaryEdges, v1, v0);
     }
-    
-    // Create new geometry with filled holes
-    const filledGeometry = new THREE.BufferGeometry();
-    filledGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    filledGeometry.setIndex(newIndices);
-    filledGeometry.computeVertexNormals();
-    
-    return filledGeometry;
+  }
+
+  return boundaryEdges;
+}
+
+function countEdge(edgeMap: Map<string, number>, a: number, b: number): void {
+  const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+  edgeMap.set(key, (edgeMap.get(key) ?? 0) + 1);
+}
+
+function addBoundaryEdge(boundaryEdges: Map<number, number[]>, from: number, to: number): void {
+  if (!boundaryEdges.has(from)) {
+    boundaryEdges.set(from, []);
+  }
+  boundaryEdges.get(from)!.push(to);
+}
+
+function findBoundaryLoops(boundaryEdges: Map<number, number[]>, maxHoleEdges: number): number[][] {
+  const loops: number[][] = [];
+  const visited = new Set<number>();
+
+  for (const startVertex of boundaryEdges.keys()) {
+    if (visited.has(startVertex)) continue;
+
+    const loop = traceLoopPath(startVertex, boundaryEdges, visited, maxHoleEdges);
+    if (loop.length > 2) {
+      loops.push(loop);
+    }
+  }
+
+  return loops;
+}
+
+function traceLoopPath(
+  start: number,
+  boundaryEdges: Map<number, number[]>,
+  visited: Set<number>,
+  maxLength: number
+): number[] {
+  const loop: number[] = [];
+  let current = start;
+
+  while (loop.length < maxLength * 2) {
+    visited.add(current);
+    loop.push(current);
+
+    const neighbors = boundaryEdges.get(current) ?? [];
+    const next = neighbors.find((n) => !visited.has(n));
+
+    if (!next) {
+      // Check if we can close the loop
+      const firstNeighbors = boundaryEdges.get(start) ?? [];
+      if (firstNeighbors.includes(current) && loop.length > 2) {
+        return loop;
+      }
+      break;
+    }
+
+    current = next;
+  }
+
+  return [];
+}
+
+function fillLoops(loops: number[][], positions: number[], indices: number[]): number[] {
+  const newIndices = [...indices];
+
+  for (const loop of loops) {
+    if (loop.length < 3 || loop.length > 100) continue;
+
+    const center = loop[0];
+    for (let i = 1; i < loop.length - 1; i++) {
+      const v1 = loop[i];
+      const v2 = loop[i + 1];
+
+      // Determine correct winding order
+      const shouldReverse = shouldReverseWinding(center, v1, v2, positions, indices);
+
+      if (shouldReverse) {
+        newIndices.push(center, v2, v1);
+      } else {
+        newIndices.push(center, v1, v2);
+      }
+    }
+  }
+
+  return newIndices;
+}
+
+function shouldReverseWinding(
+  center: number,
+  v1: number,
+  v2: number,
+  positions: number[],
+  indices: number[]
+): boolean {
+  // Calculate normal of new triangle
+  const p0 = getVertex(positions, center);
+  const p1 = getVertex(positions, v1);
+  const p2 = getVertex(positions, v2);
+
+  const e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+  const e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+
+  const nz = e1[0] * e2[1] - e1[1] * e2[0];
+
+  // Sample adjacent triangles to get average normal direction
+  let avgNormalZ = 0;
+  let count = 0;
+
+  for (let j = 0; j < indices.length; j += 3) {
+    if (indices[j] === center || indices[j + 1] === center || indices[j + 2] === center) {
+      const v0 = getVertex(positions, indices[j]);
+      const vv1 = getVertex(positions, indices[j + 1]);
+      const vv2 = getVertex(positions, indices[j + 2]);
+
+      const edge1 = [vv1[0] - v0[0], vv1[1] - v0[1]];
+      const edge2 = [vv2[0] - v0[0], vv2[1] - v0[1]];
+
+      avgNormalZ += edge1[0] * edge2[1] - edge1[1] * edge2[0];
+      count++;
+    }
+  }
+
+  if (count > 0) avgNormalZ /= count;
+
+  return (nz > 0 && avgNormalZ > 0) || (nz < 0 && avgNormalZ < 0);
+}
+
+function getVertex(positions: number[], idx: number): number[] {
+  return [positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]];
+}
+
+function createFilledGeometry(positions: number[], indices: number[]): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }

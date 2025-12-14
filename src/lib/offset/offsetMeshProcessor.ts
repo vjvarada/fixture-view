@@ -1,251 +1,472 @@
-// ============================================
-// Offset Mesh Processor - Main API
-// High-level API for creating offset meshes from STL geometry
-// ============================================
+/**
+ * Offset Mesh Processor - Main API
+ * High-level API for creating offset meshes from STL geometry
+ */
 
 import * as THREE from 'three';
-import { createOffsetHeightMap, loadHeightMapFromTiles, cleanupOffscreenResources, fillInternalHoles } from './offsetHeightmap.js';
-import { createWatertightMeshFromHeightmap, calculateOptimalMeshSettings } from './meshGenerator.js';
-import { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller.js';
+import {
+  createOffsetHeightMap,
+  loadHeightMapFromTiles,
+  cleanupOffscreenResources,
+  fillInternalHoles,
+} from './offsetHeightmap';
+import { createWatertightMeshFromHeightmap } from './meshGenerator';
+import { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller';
 import type { OffsetMeshOptions, OffsetMeshResult, HeightmapResult } from './types';
 
 // ============================================
-// Main Processing Pipeline
+// Constants
+// ============================================
+
+const DEGREES_TO_RADIANS = Math.PI / 180;
+const BASELINE_YZ_ROTATION = 180;
+const MIN_RESOLUTION = 64;
+const MAX_RESOLUTION = 16384;
+
+// ============================================
+// Progress Stages (percentages)
+// ============================================
+
+const PROGRESS = {
+  ROTATION: 0,
+  HOLE_ANALYSIS: 2,
+  HOLE_FILLING: 3,
+  RESOLUTION_CALC: 5,
+  HEIGHTMAP_START: 10,
+  HEIGHTMAP_END: 50,
+  LOAD_TILES_START: 50,
+  LOAD_TILES_END: 70,
+  FILL_INTERNAL: 65,
+  MESH_SETTINGS: 70,
+  MESH_CREATION: 75,
+  RESTORE_ORIENTATION: 92,
+  COMPLETE: 100,
+} as const;
+
+// ============================================
+// Types
+// ============================================
+
+type ProgressCallback = (current: number, total: number, stage: string) => void;
+
+interface ProcessingOptions {
+  offsetDistance: number;
+  pixelsPerUnit: number;
+  tileSize: number;
+  rotationXZ: number;
+  rotationYZ: number;
+  fillHoles: boolean;
+  progressCallback: ProgressCallback | null;
+}
+
+// ============================================
+// Helper Functions
+// ============================================
+
+/** Yield to browser for UI responsiveness */
+const yieldToBrowser = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Report progress if callback is available */
+const reportProgress = (
+  callback: ProgressCallback | null,
+  percent: number,
+  stage: string
+): void => {
+  callback?.(percent, 100, stage);
+};
+
+/** Calculate clamped resolution from model dimensions */
+const calculateResolutionFromDimensions = (
+  maxDimension: number,
+  offsetDistance: number,
+  pixelsPerUnit: number
+): number => {
+  const effectiveDim = maxDimension + offsetDistance * 10;
+  const resolution = Math.ceil(effectiveDim * pixelsPerUnit);
+  return Math.max(MIN_RESOLUTION, Math.min(MAX_RESOLUTION, resolution));
+};
+
+// ============================================
+// Rotation Functions
+// ============================================
+
+/**
+ * Create rotation matrix for tilt adjustments
+ * Order: Z axis first (left/right), then X axis (front/back)
+ */
+const createRotationMatrix = (xzAngleDeg: number, yzAngleDeg: number): THREE.Matrix4 => {
+  const matrix = new THREE.Matrix4();
+
+  if (xzAngleDeg === 0 && yzAngleDeg === 0) {
+    return matrix;
+  }
+
+  if (xzAngleDeg !== 0) {
+    const rotZ = new THREE.Matrix4().makeRotationZ(xzAngleDeg * DEGREES_TO_RADIANS);
+    matrix.multiply(rotZ);
+  }
+
+  if (yzAngleDeg !== 0) {
+    const rotX = new THREE.Matrix4().makeRotationX(yzAngleDeg * DEGREES_TO_RADIANS);
+    matrix.multiply(rotX);
+  }
+
+  return matrix;
+};
+
+/**
+ * Create inverse rotation matrix (reverse order, negative angles)
+ */
+const createInverseRotationMatrix = (xzAngleDeg: number, yzAngleDeg: number): THREE.Matrix4 => {
+  const matrix = new THREE.Matrix4();
+
+  if (xzAngleDeg === 0 && yzAngleDeg === 0) {
+    return matrix;
+  }
+
+  if (yzAngleDeg !== 0) {
+    const rotX = new THREE.Matrix4().makeRotationX(-yzAngleDeg * DEGREES_TO_RADIANS);
+    matrix.multiply(rotX);
+  }
+
+  if (xzAngleDeg !== 0) {
+    const rotZ = new THREE.Matrix4().makeRotationZ(-xzAngleDeg * DEGREES_TO_RADIANS);
+    matrix.multiply(rotZ);
+  }
+
+  return matrix;
+};
+
+/**
+ * Apply transformation matrix to vertices (optimized manual multiplication)
+ */
+const applyMatrixToVertices = (
+  vertices: Float32Array,
+  matrix: THREE.Matrix4
+): Float32Array => {
+  const result = new Float32Array(vertices.length);
+  const e = matrix.elements;
+
+  // Extract matrix elements for direct access
+  const m11 = e[0], m12 = e[4], m13 = e[8], m14 = e[12];
+  const m21 = e[1], m22 = e[5], m23 = e[9], m24 = e[13];
+  const m31 = e[2], m32 = e[6], m33 = e[10], m34 = e[14];
+  const m41 = e[3], m42 = e[7], m43 = e[11], m44 = e[15];
+
+  for (let i = 0; i < vertices.length; i += 3) {
+    const x = vertices[i];
+    const y = vertices[i + 1];
+    const z = vertices[i + 2];
+
+    const w = m41 * x + m42 * y + m43 * z + m44 || 1;
+
+    result[i] = (m11 * x + m12 * y + m13 * z + m14) / w;
+    result[i + 1] = (m21 * x + m22 * y + m23 * z + m24) / w;
+    result[i + 2] = (m31 * x + m32 * y + m33 * z + m34) / w;
+  }
+
+  return result;
+};
+
+// ============================================
+// Processing Pipeline
+// ============================================
+
+/**
+ * Apply rotation to vertices if needed
+ */
+const applyRotation = (
+  vertices: Float32Array,
+  rotationXZ: number,
+  actualYZ: number,
+  progressCallback: ProgressCallback | null
+): { vertices: Float32Array; needsRestore: boolean } => {
+  const needsRotation = rotationXZ !== 0 || actualYZ !== 0;
+
+  if (!needsRotation) {
+    return { vertices, needsRestore: false };
+  }
+
+  reportProgress(progressCallback, PROGRESS.ROTATION, 'Applying rotation');
+  const rotationMatrix = createRotationMatrix(rotationXZ, actualYZ);
+  const rotatedVertices = applyMatrixToVertices(vertices, rotationMatrix);
+
+  return { vertices: rotatedVertices, needsRestore: true };
+};
+
+/**
+ * Fill holes in mesh if enabled
+ */
+const processHoleFilling = async (
+  vertices: Float32Array,
+  fillHoles: boolean,
+  progressCallback: ProgressCallback | null
+): Promise<{ vertices: Float32Array; holesFilled: number; capTriangles: number }> => {
+  if (!fillHoles) {
+    return { vertices, holesFilled: 0, capTriangles: 0 };
+  }
+
+  reportProgress(progressCallback, PROGRESS.HOLE_ANALYSIS, 'Analyzing mesh for holes');
+  const holeAnalysis = analyzeMeshHoles(vertices);
+
+  if (!holeAnalysis.hasHoles) {
+    return { vertices, holesFilled: 0, capTriangles: 0 };
+  }
+
+  reportProgress(progressCallback, PROGRESS.HOLE_FILLING, 'Filling mesh holes');
+  const originalLength = vertices.length;
+  const filledVertices = fillMeshHoles(vertices);
+  const addedVertices = filledVertices.length - originalLength;
+
+  return {
+    vertices: filledVertices,
+    holesFilled: holeAnalysis.estimatedHoles,
+    capTriangles: addedVertices / 9,
+  };
+};
+
+/**
+ * Generate heightmap from vertices
+ */
+const generateHeightmap = async (
+  vertices: Float32Array,
+  offsetDistance: number,
+  resolution: number,
+  tileSize: number,
+  progressCallback: ProgressCallback | null
+): Promise<HeightmapResult> => {
+  reportProgress(progressCallback, PROGRESS.HEIGHTMAP_START, 'Generating heightmap');
+  await yieldToBrowser();
+
+  const tileProgressCallback =
+    resolution > tileSize
+      ? (current: number, total: number) => {
+          const percent =
+            PROGRESS.HEIGHTMAP_START +
+            (current / total) * (PROGRESS.HEIGHTMAP_END - PROGRESS.HEIGHTMAP_START);
+          reportProgress(progressCallback, percent, `Rendering tile ${current}/${total}`);
+        }
+      : null;
+
+  return createOffsetHeightMap(vertices, offsetDistance, resolution, tileSize, tileProgressCallback);
+};
+
+/**
+ * Load heightmap data from tiles if needed
+ */
+const loadHeightmapData = async (
+  heightmapResult: HeightmapResult,
+  progressCallback: ProgressCallback | null
+): Promise<Float32Array> => {
+  reportProgress(progressCallback, PROGRESS.LOAD_TILES_START, 'Loading heightmap data');
+  await yieldToBrowser();
+
+  if (!heightmapResult.usesIndexedDB) {
+    return heightmapResult.heightMap;
+  }
+
+  const loadProgressCallback = (current: number, total: number) => {
+    const percent =
+      PROGRESS.LOAD_TILES_START +
+      (current / total) * (PROGRESS.LOAD_TILES_END - PROGRESS.LOAD_TILES_START);
+    reportProgress(progressCallback, percent, `Loading tile ${current}/${total}`);
+  };
+
+  return loadHeightMapFromTiles(heightmapResult, loadProgressCallback);
+};
+
+/**
+ * Fill internal holes in heightmap
+ */
+const processInternalHoles = (
+  heightMap: Float32Array,
+  resolution: number,
+  fillHoles: boolean,
+  progressCallback: ProgressCallback | null
+): { filledHoles: number; filledPixels: number } => {
+  if (!fillHoles) {
+    return { filledHoles: 0, filledPixels: 0 };
+  }
+
+  reportProgress(progressCallback, PROGRESS.FILL_INTERNAL, 'Filling internal holes in heightmap');
+  return fillInternalHoles(heightMap, resolution);
+};
+
+// ============================================
+// Main API
 // ============================================
 
 /**
  * Process STL geometry and create offset mesh
- * @param {Float32Array} vertices - Triangle soup vertices (xyz per vertex)
- * @param {Object} options - Processing options
- * @param {number} options.offsetDistance - Offset distance in world units
- * @param {number} options.pixelsPerUnit - Resolution (pixels per unit)
- * @param {number} [options.tileSize=2048] - Tile size for large heightmaps
- * @param {number} [options.rotationXZ=0] - Rotation around Y axis in degrees (XZ plane)
- * @param {number} [options.rotationYZ=0] - Rotation around X axis in degrees (YZ plane, inverted: 180-input)
- * @param {boolean} [options.fillHoles=true] - Fill holes in input mesh before heightmap generation
- * @param {Function} [options.progressCallback] - Progress callback (current, total, stage)
- * @returns {Promise<Object>} Result with geometry and metadata
+ *
+ * @param vertices - Triangle soup vertices (xyz per vertex)
+ * @param options - Processing options
+ * @returns Result with geometry and metadata
  */
-export async function createOffsetMesh(vertices: Float32Array, options: any): Promise<OffsetMeshResult> {
-    const {
-        offsetDistance,
-        pixelsPerUnit,
-        tileSize = 2048,
-        rotationXZ = 0,
-        rotationYZ = 0,
-        fillHoles = true,
-        progressCallback = null
-    } = options;
-    
-    // Validate inputs
-    if (!vertices || vertices.length === 0) {
-        throw new Error('No vertices provided');
+export async function createOffsetMesh(
+  vertices: Float32Array,
+  options: OffsetMeshOptions
+): Promise<OffsetMeshResult> {
+  // Validate inputs
+  if (!vertices || vertices.length === 0) {
+    throw new Error('No vertices provided');
+  }
+  if (options.offsetDistance <= 0) {
+    throw new Error('Offset distance must be positive');
+  }
+  if (options.pixelsPerUnit <= 0) {
+    throw new Error('Pixels per unit must be positive');
+  }
+
+  const config: ProcessingOptions = {
+    offsetDistance: options.offsetDistance,
+    pixelsPerUnit: options.pixelsPerUnit,
+    tileSize: options.tileSize ?? 2048,
+    rotationXZ: options.rotationXZ ?? 0,
+    rotationYZ: options.rotationYZ ?? 0,
+    fillHoles: options.fillHoles ?? true,
+    progressCallback: options.progressCallback ?? null,
+  };
+
+  const startTime = performance.now();
+  const actualYZ = BASELINE_YZ_ROTATION + config.rotationYZ;
+
+  // Initialize result
+  const result: OffsetMeshResult = {
+    heightmapResult: null,
+    geometry: null,
+    metadata: {
+      offsetDistance: config.offsetDistance,
+      pixelsPerUnit: config.pixelsPerUnit,
+      resolution: 0,
+      vertexCount: 0,
+      triangleCount: 0,
+      processingTime: 0,
+      originalTriangleCount: 0,
+      geometryCreationTime: 0,
+      holesFilled: 0,
+      holesCapTriangles: 0,
+    },
+  };
+
+  try {
+    // Step 1: Apply rotation
+    const rotationResult = applyRotation(
+      vertices,
+      config.rotationXZ,
+      actualYZ,
+      config.progressCallback
+    );
+    let workingVertices = rotationResult.vertices;
+
+    // Step 2: Fill mesh holes
+    const holeResult = await processHoleFilling(
+      workingVertices,
+      config.fillHoles,
+      config.progressCallback
+    );
+    workingVertices = holeResult.vertices;
+    result.metadata.holesFilled = holeResult.holesFilled;
+    result.metadata.holesCapTriangles = holeResult.capTriangles;
+
+    // Step 3: Calculate resolution
+    reportProgress(config.progressCallback, PROGRESS.RESOLUTION_CALC, 'Calculating resolution');
+    await yieldToBrowser();
+
+    const box = new THREE.Box3().setFromArray(workingVertices);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+
+    const resolution = calculateResolutionFromDimensions(
+      maxDim,
+      config.offsetDistance,
+      config.pixelsPerUnit
+    );
+    result.metadata.resolution = resolution;
+
+    // Step 4: Generate heightmap
+    const heightmapResult = await generateHeightmap(
+      workingVertices,
+      config.offsetDistance,
+      resolution,
+      config.tileSize,
+      config.progressCallback
+    );
+    result.heightmapResult = heightmapResult as HeightmapResult;
+
+    // Step 5: Load heightmap data
+    const heightMap = await loadHeightmapData(heightmapResult as HeightmapResult, config.progressCallback);
+
+    // Step 6: Fill internal holes in heightmap
+    const internalHoles = processInternalHoles(
+      heightMap,
+      resolution,
+      config.fillHoles,
+      config.progressCallback
+    );
+    if (internalHoles.filledHoles > 0) {
+      result.metadata.internalHolesFilled = internalHoles.filledHoles;
+      result.metadata.internalHolesPixels = internalHoles.filledPixels;
     }
-    if (offsetDistance <= 0) {
-        throw new Error('Offset distance must be positive');
-    }
-    if (pixelsPerUnit <= 0) {
-        throw new Error('Pixels per unit must be positive');
-    }
-    
-    const result: OffsetMeshResult = {
-        heightmapResult: null,
-        geometry: null,
-        metadata: {
-            offsetDistance,
-            pixelsPerUnit,
-            resolution: 0,
-            vertexCount: 0,
-            triangleCount: 0,
-            processingTime: 0,
-            originalTriangleCount: 0,
-            geometryCreationTime: 0,
-            holesFilled: 0,
-            holesCapTriangles: 0
-        }
+
+    // Step 7: Create mesh
+    reportProgress(config.progressCallback, PROGRESS.MESH_CREATION, 'Creating watertight mesh');
+    await yieldToBrowser();
+
+    const clipYMin = box.min.y - config.offsetDistance;
+    const clipYMax = box.max.y + config.offsetDistance;
+
+    const meshSettings = {
+      downsampleFactor: 1,
+      effectiveResolution: resolution,
     };
-    
-    const startTime = performance.now();
-    
-    // Pre-calculate rotation parameters
-    // Baseline: 180° around X-axis is needed for correct coordinate system alignment
-    // User rotationXZ/rotationYZ are deltas from this baseline (-90 to +90)
-    const baselineYZ = 180;
-    const actualYZ = baselineYZ + rotationYZ;
-    // Only apply rotation if there's any rotation to apply (baseline or user-specified)
-    const needsRotation = rotationXZ !== 0 || actualYZ !== 0;
-    
-    try {
-        // Step 0: Apply rotation if needed
-        let workingVertices = vertices;
-        
-        if (needsRotation) {
-            if (progressCallback) progressCallback(0, 100, 'Applying rotation');
-            
-            // Create rotation matrix
-            const rotationMatrix = createRotationMatrix(rotationXZ, actualYZ);
-            
-            // Rotate vertices
-            workingVertices = applyMatrixToVertices(vertices, rotationMatrix);
-        }
-        
-        // Step 0.5: Fill holes in input mesh to prevent gaps in heightmap
-        if (fillHoles) {
-            if (progressCallback) progressCallback(2, 100, 'Analyzing mesh for holes');
-            
-            const holeAnalysis = analyzeMeshHoles(workingVertices);
-            
-            if (holeAnalysis.hasHoles) {
-                if (progressCallback) progressCallback(3, 100, 'Filling mesh holes');
-                
-                const originalVertexCount = workingVertices.length;
-                workingVertices = fillMeshHoles(workingVertices);
-                
-                const addedVertices = workingVertices.length - originalVertexCount;
-                const addedTriangles = addedVertices / 9;
-                
-                result.metadata.holesFilled = holeAnalysis.estimatedHoles;
-                result.metadata.holesCapTriangles = addedTriangles;
-            }
-        }
-        
-        // Step 1: Calculate resolution
-        if (progressCallback) progressCallback(5, 100, 'Calculating resolution');
-        
-        // Yield to browser to keep UI responsive
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        const box = new THREE.Box3();
-        box.setFromArray(workingVertices);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const maxDim = Math.max(size.x, size.y, size.z);
-        
-        const effectiveDim = maxDim + (offsetDistance * 10);
-        const resolution = Math.ceil(effectiveDim * pixelsPerUnit);
-        const clampedResolution = Math.max(64, Math.min(16384, resolution));
-        
-        result.metadata.resolution = clampedResolution;
-        
-        // Step 2: Generate heightmap
-        if (progressCallback) progressCallback(10, 100, 'Generating heightmap');
-        
-        // Yield to browser before GPU work
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        const heightmapProgressCallback = clampedResolution > tileSize ? (current, total) => {
-            const percent = 10 + (current / total) * 40;
-            if (progressCallback) progressCallback(percent, 100, `Rendering tile ${current}/${total}`);
-        } : null;
-        
-        const heightmapResult = await createOffsetHeightMap(
-            workingVertices, 
-            offsetDistance, 
-            clampedResolution, 
-            tileSize, 
-            heightmapProgressCallback
-        );
-        
-        result.heightmapResult = heightmapResult as HeightmapResult;
-        
-        // Step 3: Load heightmap data
-        if (progressCallback) progressCallback(50, 100, 'Loading heightmap data');
-        
-        // Yield to browser after GPU work
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        let heightMap;
-        if ('usesIndexedDB' in heightmapResult && heightmapResult.usesIndexedDB) {
-            const loadProgressCallback = (current, total) => {
-                const percent = 50 + (current / total) * 20;
-                if (progressCallback) progressCallback(percent, 100, `Loading tile ${current}/${total}`);
-            };
-            heightMap = await loadHeightMapFromTiles(heightmapResult, loadProgressCallback);
-        } else {
-            heightMap = heightmapResult.heightMap;
-        }
-        
-        // Step 3.5: Fill internal holes in heightmap (through-holes, drill holes, etc.)
-        // This ensures the offset mesh has solid surfaces where the original model had holes
-        if (fillHoles) {
-            if (progressCallback) progressCallback(65, 100, 'Filling internal holes in heightmap');
-            
-            const fillResult = fillInternalHoles(heightMap, clampedResolution);
-            
-            if (fillResult.filledHoles > 0) {
-                result.metadata.internalHolesFilled = fillResult.filledHoles;
-                result.metadata.internalHolesPixels = fillResult.filledPixels;
-            }
-        }
-        
-        // Step 4: Calculate mesh settings
-        if (progressCallback) progressCallback(70, 100, 'Calculating mesh settings');
-        
-        const meshSettings = {
-            downsampleFactor: 1,
-            effectiveResolution: clampedResolution
-        };
-        
-        // Step 5: Create watertight mesh
-        if (progressCallback) progressCallback(75, 100, 'Creating watertight mesh');
-        
-        // Yield to browser before mesh generation
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        // For Y-up coordinate system, clip values are based on Y (height) bounds
-        const originalBox = box;
-        const clipYMin = originalBox.min.y - offsetDistance;  // Bottom of mesh (ground level)
-        const clipYMax = originalBox.max.y + offsetDistance;  // Top of mesh
-        
-        const geometry = createWatertightMeshFromHeightmap(
-            heightMap,
-            clampedResolution,
-            heightmapResult.scale,
-            heightmapResult.center,
-            clipYMin,  // Was clipZMin - now represents Y min
-            clipYMax,  // Was clipZMax - now represents Y max
-            meshSettings
-        );
-        
-        // Yield to browser after mesh generation
-        await new Promise(resolve => setTimeout(resolve, 0));
-        
-        result.geometry = geometry;
-        result.metadata.originalTriangleCount = geometry.index.count / 3;
-        
-        // Apply inverse rotation to restore original orientation
-        if (needsRotation) {
-            if (progressCallback) progressCallback(92, 100, 'Restoring orientation');
-            
-            const inverseMatrix = createInverseRotationMatrix(rotationXZ, actualYZ);
-            result.geometry.applyMatrix4(inverseMatrix);
-            result.geometry.computeVertexNormals();
-        }
-        
-        result.metadata.vertexCount = result.geometry.getAttribute('position').count;
-        result.metadata.triangleCount = result.geometry.index.count / 3;
-        
-        const endTime = performance.now();
-        result.metadata.processingTime = endTime - startTime;
-        result.metadata.geometryCreationTime = result.metadata.processingTime;
-        
-        if (progressCallback) progressCallback(100, 100, 'Complete');
-        
-        console.log(`[OffsetMesh] Complete: ${result.metadata.triangleCount.toLocaleString()} triangles [${result.metadata.processingTime.toFixed(0)}ms]`);
-        
-        return result;
-        
-    } catch (error) {
-        console.error('Error in createOffsetMesh:', error);
-        throw error;
+
+    const geometry = createWatertightMeshFromHeightmap(
+      heightMap,
+      resolution,
+      heightmapResult.scale,
+      heightmapResult.center,
+      clipYMin,
+      clipYMax,
+      meshSettings
+    );
+
+    await yieldToBrowser();
+    result.geometry = geometry;
+    result.metadata.originalTriangleCount = geometry.index!.count / 3;
+
+    // Step 8: Restore orientation
+    if (rotationResult.needsRestore) {
+      reportProgress(config.progressCallback, PROGRESS.RESTORE_ORIENTATION, 'Restoring orientation');
+      const inverseMatrix = createInverseRotationMatrix(config.rotationXZ, actualYZ);
+      result.geometry.applyMatrix4(inverseMatrix);
+      result.geometry.computeVertexNormals();
     }
+
+    // Update final metadata
+    result.metadata.vertexCount = result.geometry.getAttribute('position').count;
+    result.metadata.triangleCount = result.geometry.index!.count / 3;
+
+    const endTime = performance.now();
+    result.metadata.processingTime = endTime - startTime;
+    result.metadata.geometryCreationTime = result.metadata.processingTime;
+
+    reportProgress(config.progressCallback, PROGRESS.COMPLETE, 'Complete');
+
+    return result;
+  } catch (error) {
+    console.error('[OffsetMesh] Processing error:', error);
+    throw error;
+  }
 }
 
 /**
- * Cleanup resources (call when done)
+ * Cleanup GPU resources (call when done)
  */
-export function cleanup() {
-    cleanupOffscreenResources();
+export function cleanup(): void {
+  cleanupOffscreenResources();
 }
 
 // ============================================
@@ -254,122 +475,22 @@ export function cleanup() {
 
 /**
  * Extract vertices from Three.js BufferGeometry
- * @param {THREE.BufferGeometry} geometry
- * @returns {Float32Array} Triangle soup vertices
  */
-export function extractVertices(geometry) {
-    return geometry.attributes.position.array;
+export function extractVertices(geometry: THREE.BufferGeometry): Float32Array {
+  const position = geometry.attributes.position;
+  return position.array as Float32Array;
 }
 
 /**
  * Calculate adaptive resolution based on model size
- * @param {THREE.Box3} boundingBox - Model bounding box
- * @param {number} pixelsPerUnit - Pixels per unit
- * @param {number} offsetDistance - Offset distance
- * @returns {number} Calculated resolution (clamped 64-16384)
  */
-export function calculateResolution(boundingBox, pixelsPerUnit, offsetDistance) {
-    const size = new THREE.Vector3();
-    boundingBox.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const effectiveDim = maxDim + (offsetDistance * 10);
-    const resolution = Math.ceil(effectiveDim * pixelsPerUnit);
-    return Math.max(64, Math.min(16384, resolution));
-}
-
-// ============================================
-// Rotation Helper Functions
-// ============================================
-
-/**
- * Create a rotation matrix for tilt adjustments
- * @param {number} xzAngleDeg - Rotation around Z axis (degrees) - tilts left/right
- * @param {number} actualYZ - Actual rotation around X axis (degrees) - tilts front/back
- * @returns {THREE.Matrix4} Rotation matrix
- */
-function createRotationMatrix(xzAngleDeg, actualYZ) {
-    const matrix = new THREE.Matrix4();
-    
-    // Early return if no rotation needed
-    if (xzAngleDeg === 0 && actualYZ === 0) {
-        return matrix; // Identity matrix
-    }
-    
-    // Rotation order: Z axis first (left/right tilt), then X axis (front/back tilt)
-    if (xzAngleDeg !== 0) {
-        const rotZ = new THREE.Matrix4();
-        rotZ.makeRotationZ(xzAngleDeg * Math.PI / 180);
-        matrix.multiply(rotZ);
-    }
-    
-    if (actualYZ !== 0) {
-        const rotX = new THREE.Matrix4();
-        rotX.makeRotationX(actualYZ * Math.PI / 180);
-        matrix.multiply(rotX);
-    }
-    
-    return matrix;
-}
-
-/**
- * Create an inverse rotation matrix
- * @param {number} xzAngleDeg - Rotation around Z axis (degrees) - tilts left/right
- * @param {number} actualYZ - Actual rotation around X axis (degrees) - tilts front/back
- * @returns {THREE.Matrix4} Inverse rotation matrix
- */
-function createInverseRotationMatrix(xzAngleDeg, actualYZ) {
-    const matrix = new THREE.Matrix4();
-    
-    // Early return if no rotation needed
-    if (xzAngleDeg === 0 && actualYZ === 0) {
-        return matrix; // Identity matrix
-    }
-    
-    // Inverse rotation: apply in reverse order with negative angles
-    if (actualYZ !== 0) {
-        const rotX = new THREE.Matrix4();
-        rotX.makeRotationX(-actualYZ * Math.PI / 180);
-        matrix.multiply(rotX);
-    }
-    
-    if (xzAngleDeg !== 0) {
-        const rotZ = new THREE.Matrix4();
-        rotZ.makeRotationZ(-xzAngleDeg * Math.PI / 180);
-        matrix.multiply(rotZ);
-    }
-    
-    return matrix;
-}
-
-/**
- * Apply a transformation matrix to vertices
- * @param {Float32Array} vertices - Input vertices
- * @param {THREE.Matrix4} matrix - Transformation matrix
- * @returns {Float32Array} Transformed vertices
- */
-function applyMatrixToVertices(vertices, matrix) {
-    const result = new Float32Array(vertices.length);
-    const vec = new THREE.Vector3();
-    const elements = matrix.elements;
-    
-    // Extract matrix elements for faster access
-    const m11 = elements[0], m12 = elements[4], m13 = elements[8], m14 = elements[12];
-    const m21 = elements[1], m22 = elements[5], m23 = elements[9], m24 = elements[13];
-    const m31 = elements[2], m32 = elements[6], m33 = elements[10], m34 = elements[14];
-    const m41 = elements[3], m42 = elements[7], m43 = elements[11], m44 = elements[15];
-    
-    for (let i = 0; i < vertices.length; i += 3) {
-        const x = vertices[i];
-        const y = vertices[i + 1];
-        const z = vertices[i + 2];
-        
-        // Manual matrix multiplication for better performance
-        const w = m41 * x + m42 * y + m43 * z + m44 || 1;
-        
-        result[i] = (m11 * x + m12 * y + m13 * z + m14) / w;
-        result[i + 1] = (m21 * x + m22 * y + m23 * z + m24) / w;
-        result[i + 2] = (m31 * x + m32 * y + m33 * z + m34) / w;
-    }
-    
-    return result;
+export function calculateResolution(
+  boundingBox: THREE.Box3,
+  pixelsPerUnit: number,
+  offsetDistance: number
+): number {
+  const size = new THREE.Vector3();
+  boundingBox.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  return calculateResolutionFromDimensions(maxDim, offsetDistance, pixelsPerUnit);
 }

@@ -1,23 +1,24 @@
-// ============================================
-// Offset Mesh Processor - Module Exports
-// ============================================
+/**
+ * Offset Mesh Processor - Module Exports
+ */
 
 export { createOffsetMesh, cleanup, extractVertices, calculateResolution } from './offsetMeshProcessor';
-export { 
-  initManifold, 
-  isManifoldReady, 
+export {
+  initManifold,
+  isManifoldReady,
   processWithManifold,
   csgSubtract,
   csgUnion,
-  csgIntersect 
+  csgIntersect,
 } from './manifoldProcessor';
 export { createWatertightMeshFromHeightmap, calculateOptimalMeshSettings } from './meshGenerator';
 export { fillMeshHoles, analyzeMeshHoles } from './meshHoleFiller';
-export type { 
-  OffsetMeshOptions, 
-  OffsetMeshResult, 
-  OffsetMeshMetadata, 
+export type {
+  OffsetMeshOptions,
+  OffsetMeshResult,
+  OffsetMeshMetadata,
   HeightmapResult,
-  CavitySettings 
+  CavitySettings,
+  SmoothingMethod,
 } from './types';
-export { DEFAULT_CAVITY_SETTINGS } from './types';
+export { DEFAULT_CAVITY_SETTINGS, getAdaptivePixelsPerUnit } from './types';
