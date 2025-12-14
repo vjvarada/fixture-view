@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -7,19 +7,23 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { 
-  AlertCircle, 
-  Minus, 
-  Layers, 
-  Eye, 
-  EyeOff, 
-  RefreshCw, 
+import {
+  AlertCircle,
+  Minus,
+  Layers,
+  Eye,
+  EyeOff,
+  RefreshCw,
   Settings2,
   ChevronDown,
   ChevronUp,
-  SquaresSubtract
+  SquaresSubtract,
 } from 'lucide-react';
 import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@/lib/offset/types';
+
+// ============================================
+// Types
+// ============================================
 
 interface CavityStepContentProps {
   hasWorkpiece?: boolean;
@@ -38,9 +42,193 @@ interface CavityStepContentProps {
   isCavityApplied?: boolean;
 }
 
+interface CavityProgress {
+  current: number;
+  total: number;
+  stage: string;
+}
+
+interface SliderSettingProps {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  unit?: string;
+  formatValue?: (v: number) => string;
+  hint?: string;
+}
+
+interface ToggleSettingProps {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  hint?: string;
+}
+
+// ============================================
+// Sub-Components
+// ============================================
+
+/** Alert shown when workpiece is missing */
+const MissingWorkpieceAlert = memo(() => (
+  <div className="p-4">
+    <Alert className="font-tech">
+      <AlertCircle className="h-4 w-4" />
+      <AlertDescription className="text-xs">
+        Import a workpiece first to create cavities.
+      </AlertDescription>
+    </Alert>
+  </div>
+));
+MissingWorkpieceAlert.displayName = 'MissingWorkpieceAlert';
+
+/** Alert shown when no target (baseplate/supports) exists */
+const MissingTargetAlert = memo(() => (
+  <div className="p-4">
+    <Alert className="font-tech">
+      <AlertCircle className="h-4 w-4" />
+      <AlertDescription className="text-xs">
+        Create a baseplate or add supports first. The cavity will be cut from those elements.
+      </AlertDescription>
+    </Alert>
+  </div>
+));
+MissingTargetAlert.displayName = 'MissingTargetAlert';
+
+/** Reusable slider setting component */
+const SliderSetting = memo<SliderSettingProps>(({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  disabled = false,
+  unit = '',
+  formatValue,
+  hint,
+}) => {
+  const displayValue = formatValue ? formatValue(value) : `${value}${unit}`;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <Label className="text-[10px] font-tech text-muted-foreground">{label}</Label>
+        <span className="text-[10px] font-mono text-muted-foreground">{displayValue}</span>
+      </div>
+      <Slider
+        value={[value]}
+        onValueChange={([v]) => onChange(v)}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+      />
+      {hint && <p className="text-[8px] text-muted-foreground italic">{hint}</p>}
+    </div>
+  );
+});
+SliderSetting.displayName = 'SliderSetting';
+
+/** Reusable toggle setting component */
+const ToggleSetting = memo<ToggleSettingProps>(({
+  label,
+  checked,
+  onCheckedChange,
+  disabled = false,
+  hint,
+}) => (
+  <div className="space-y-1">
+    <div className="flex items-center justify-between">
+      <Label className="text-[10px] font-tech text-muted-foreground">{label}</Label>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
+    </div>
+    {hint && <p className="text-[8px] text-muted-foreground italic">{hint}</p>}
+  </div>
+));
+ToggleSetting.displayName = 'ToggleSetting';
+
+/** Operation description header card */
+const OperationHeader = memo(() => (
+  <Card className="tech-glass p-3">
+    <div className="flex items-start gap-3">
+      <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center flex-shrink-0">
+        <Minus className="w-4 h-4 text-primary" />
+      </div>
+      <div>
+        <p className="text-sm font-tech font-medium">Create Cavity</p>
+        <p className="text-xs text-muted-foreground font-tech">
+          Generate an offset mesh around the workpiece to cut cavities in supports
+        </p>
+      </div>
+    </div>
+  </Card>
+));
+OperationHeader.displayName = 'OperationHeader';
+
+/** Target components display (supports badge) */
+const TargetComponents = memo<{ hasSupports: boolean; supportsCount: number }>(
+  ({ hasSupports, supportsCount }) => {
+    if (!hasSupports) return null;
+
+    return (
+      <div className="space-y-2">
+        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
+          Cavity will be cut from
+        </Label>
+        <Card className="tech-glass p-2">
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-orange-500" />
+            <span className="text-xs font-tech flex-1">Supports</span>
+            <Badge variant="default" className="text-[8px]">{supportsCount}</Badge>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+);
+TargetComponents.displayName = 'TargetComponents';
+
+// ============================================
+// Custom Hooks
+// ============================================
+
+/** Hook to track cavity subtraction progress via window events */
+function useCavityProgress(): CavityProgress {
+  const [progress, setProgress] = useState<CavityProgress>({ current: 0, total: 0, stage: '' });
+
+  useEffect(() => {
+    const handleProgress = (e: CustomEvent<{ current: number; total: number; stage?: string }>) => {
+      const { current, total, stage } = e.detail;
+      setProgress({ current, total, stage: stage || `Processing support ${current}/${total}` });
+    };
+
+    const handleComplete = () => {
+      setProgress({ current: 0, total: 0, stage: '' });
+    };
+
+    window.addEventListener('cavity-subtraction-progress', handleProgress as EventListener);
+    window.addEventListener('cavity-subtraction-complete', handleComplete as EventListener);
+
+    return () => {
+      window.removeEventListener('cavity-subtraction-progress', handleProgress as EventListener);
+      window.removeEventListener('cavity-subtraction-complete', handleComplete as EventListener);
+    };
+  }, []);
+
+  return progress;
+}
+
+// ============================================
+// Main Component
+// ============================================
+
 const CavityStepContent: React.FC<CavityStepContentProps> = ({
   hasWorkpiece = false,
-  hasBaseplate = false,
   hasSupports = false,
   supportsCount = 0,
   settings,
@@ -55,109 +243,39 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
   isCavityApplied = false,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  
-  // Real progress tracking for cavity subtraction
-  const [cavityProgress, setCavityProgress] = useState({ current: 0, total: 0, stage: '' });
-  
-  // Listen for progress events from the worker
-  useEffect(() => {
-    const handleProgress = (e: CustomEvent<{ current: number; total: number; supportId: string; stage?: string }>) => {
-      const { current, total, stage } = e.detail;
-      setCavityProgress({ current, total, stage: stage || `Processing support ${current}/${total}` });
-    };
-    
-    const handleComplete = () => {
-      // Reset progress when complete
-      setCavityProgress({ current: 0, total: 0, stage: '' });
-    };
-    
-    window.addEventListener('cavity-subtraction-progress', handleProgress as EventListener);
-    window.addEventListener('cavity-subtraction-complete', handleComplete as EventListener);
-    
-    return () => {
-      window.removeEventListener('cavity-subtraction-progress', handleProgress as EventListener);
-      window.removeEventListener('cavity-subtraction-complete', handleComplete as EventListener);
-    };
-  }, []);
-  
-  const canProceed = hasWorkpiece && (hasBaseplate || hasSupports);
+  const cavityProgress = useCavityProgress();
 
-  // Handle setting changes
-  const handleSettingChange = <K extends keyof CavitySettings>(
-    key: K,
-    value: CavitySettings[K]
-  ) => {
-    const newSettings = { ...settings, [key]: value };
-    onSettingsChange(newSettings);
-  };
+  // Memoized setting change handler
+  const handleSettingChange = useCallback(
+    <K extends keyof CavitySettings>(key: K, value: CavitySettings[K]) => {
+      onSettingsChange({ ...settings, [key]: value });
+    },
+    [settings, onSettingsChange]
+  );
 
   // Reset to defaults
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     onSettingsChange(DEFAULT_CAVITY_SETTINGS);
     onClearPreview();
-  };
+  }, [onSettingsChange, onClearPreview]);
 
-  if (!hasWorkpiece) {
-    return (
-      <div className="p-4">
-        <Alert className="font-tech">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-xs">
-            Import a workpiece first to create cavities.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
+  // Toggle preview visibility
+  const handlePreviewToggle = useCallback(
+    (checked: boolean) => {
+      handleSettingChange('showPreview', checked);
+      window.dispatchEvent(new CustomEvent('toggle-offset-preview', { detail: { visible: checked } }));
+    },
+    [handleSettingChange]
+  );
 
-  if (!hasBaseplate && !hasSupports) {
-    return (
-      <div className="p-4">
-        <Alert className="font-tech">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-xs">
-            Create a baseplate or add supports first. The cavity will be cut from those elements.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
+  // Early returns for missing requirements
+  if (!hasWorkpiece) return <MissingWorkpieceAlert />;
+  if (!hasSupports) return <MissingTargetAlert />;
 
   return (
     <div className="p-4 space-y-4">
-      {/* Operation Description */}
-      <Card className="tech-glass p-3">
-        <div className="flex items-start gap-3">
-          <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center flex-shrink-0">
-            <Minus className="w-4 h-4 text-primary" />
-          </div>
-          <div>
-            <p className="text-sm font-tech font-medium">Create Cavity</p>
-            <p className="text-xs text-muted-foreground font-tech">
-              Generate an offset mesh around the workpiece to cut cavities in supports
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Target Components */}
-      <div className="space-y-2">
-        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
-          Cavity will be cut from
-        </Label>
-        
-        <div className="space-y-2">
-          {hasSupports && (
-            <Card className="tech-glass p-2">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-orange-500" />
-                <span className="text-xs font-tech flex-1">Supports</span>
-                <Badge variant="default" className="text-[8px]">{supportsCount}</Badge>
-              </div>
-            </Card>
-          )}
-        </div>
-      </div>
+      <OperationHeader />
+      <TargetComponents hasSupports={hasSupports} supportsCount={supportsCount} />
 
       {/* Clearance / Offset Distance */}
       <div className="space-y-3">
@@ -197,85 +315,49 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
       {/* Advanced Settings */}
       {showAdvanced && (
         <div className="space-y-4 p-3 bg-muted/30 rounded-lg">
-          {/* Resolution */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Resolution (quality)
-              </Label>
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {settings.pixelsPerUnit} px/mm
-              </span>
-            </div>
-            <Slider
-              value={[settings.pixelsPerUnit]}
-              onValueChange={([value]) => handleSettingChange('pixelsPerUnit', value)}
-              min={2}
-              max={10}
-              step={1}
-              disabled={isProcessing}
-            />
-            <p className="text-[8px] text-muted-foreground italic">
-              Higher = more detail, slower processing
-            </p>
-          </div>
+          <SliderSetting
+            label="Resolution (quality)"
+            value={settings.pixelsPerUnit}
+            onChange={(v) => handleSettingChange('pixelsPerUnit', v)}
+            min={2}
+            max={10}
+            step={1}
+            disabled={isProcessing}
+            unit=" px/mm"
+            hint="Higher = more detail, slower processing"
+          />
 
-          {/* Rotation XZ */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Tilt Left/Right
-              </Label>
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {settings.rotationXZ > 0 ? '+' : ''}{settings.rotationXZ}°
-              </span>
-            </div>
-            <Slider
-              value={[settings.rotationXZ]}
-              onValueChange={([value]) => handleSettingChange('rotationXZ', value)}
-              min={-90}
-              max={90}
-              step={5}
-              disabled={isProcessing}
-            />
-          </div>
+          <SliderSetting
+            label="Tilt Left/Right"
+            value={settings.rotationXZ}
+            onChange={(v) => handleSettingChange('rotationXZ', v)}
+            min={-90}
+            max={90}
+            step={5}
+            disabled={isProcessing}
+            formatValue={(v) => `${v > 0 ? '+' : ''}${v}°`}
+          />
 
-          {/* Rotation YZ */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Tilt Front/Back
-              </Label>
-              <span className="text-[10px] font-mono text-muted-foreground">
-                {settings.rotationYZ > 0 ? '+' : ''}{settings.rotationYZ}°
-              </span>
-            </div>
-            <Slider
-              value={[settings.rotationYZ]}
-              onValueChange={([value]) => handleSettingChange('rotationYZ', value)}
-              min={-90}
-              max={90}
-              step={5}
-              disabled={isProcessing}
-            />
-          </div>
+          <SliderSetting
+            label="Tilt Front/Back"
+            value={settings.rotationYZ}
+            onChange={(v) => handleSettingChange('rotationYZ', v)}
+            min={-90}
+            max={90}
+            step={5}
+            disabled={isProcessing}
+            formatValue={(v) => `${v > 0 ? '+' : ''}${v}°`}
+          />
 
           {/* Toggle Options */}
           <div className="space-y-2 pt-2 border-t border-border/30">
-            {/* Fill Holes */}
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] font-tech text-muted-foreground">
-                Fill Holes
-              </Label>
-              <Switch
-                checked={settings.fillHoles}
-                onCheckedChange={(checked) => handleSettingChange('fillHoles', checked)}
-                disabled={isProcessing}
-              />
-            </div>
-            <p className="text-[8px] text-muted-foreground italic">
-              Repair holes in mesh before processing
-            </p>
+            <ToggleSetting
+              label="Fill Holes"
+              checked={settings.fillHoles}
+              onCheckedChange={(checked) => handleSettingChange('fillHoles', checked)}
+              disabled={isProcessing}
+              hint="Repair holes in mesh before processing"
+            />
           </div>
 
           {/* Mesh Processing Options */}
@@ -283,93 +365,50 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             <Label className="text-[10px] font-tech text-muted-foreground uppercase tracking-wider">
               Mesh Processing
             </Label>
-            
-            {/* Decimation Toggle */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label className="text-[10px] font-tech text-muted-foreground">
-                  Decimation
-                </Label>
-                <Switch
-                  checked={settings.enableDecimation}
-                  onCheckedChange={(checked) => handleSettingChange('enableDecimation', checked)}
-                  disabled={isProcessing}
-                />
-              </div>
-              <p className="text-[8px] text-muted-foreground italic">
-                Reduce triangle count for faster CSG
-              </p>
-            </div>
 
-            {/* Smoothing Toggle */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label className="text-[10px] font-tech text-muted-foreground">
-                  Smoothing
-                </Label>
-                <Switch
-                  checked={settings.enableSmoothing}
-                  onCheckedChange={(checked) => handleSettingChange('enableSmoothing', checked)}
-                  disabled={isProcessing}
-                />
-              </div>
-              <p className="text-[8px] text-muted-foreground italic">
-                Remove jagged edges (volume-preserving)
-              </p>
-            </div>
+            <ToggleSetting
+              label="Decimation"
+              checked={settings.enableDecimation}
+              onCheckedChange={(checked) => handleSettingChange('enableDecimation', checked)}
+              disabled={isProcessing}
+              hint="Reduce triangle count for faster CSG"
+            />
 
-            {/* Smoothing Options */}
+            <ToggleSetting
+              label="Smoothing"
+              checked={settings.enableSmoothing}
+              onCheckedChange={(checked) => handleSettingChange('enableSmoothing', checked)}
+              disabled={isProcessing}
+              hint="Remove jagged edges (volume-preserving)"
+            />
+
+            {/* Smoothing Options - shown only when smoothing enabled */}
             {settings.enableSmoothing && (
               <div className="space-y-3 pl-2 border-l-2 border-border/30">
-                {/* Smoothing Iterations */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-[10px] font-tech text-muted-foreground">
-                      Iterations
-                    </Label>
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      {settings.smoothingIterations ?? 2}
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.smoothingIterations ?? 2]}
-                    onValueChange={([value]) => handleSettingChange('smoothingIterations', value)}
-                    min={1}
-                    max={10}
-                    step={1}
-                    disabled={isProcessing}
-                  />
-                  <p className="text-[8px] text-muted-foreground italic">
-                    Number of smoothing passes (1-10)
-                  </p>
-                </div>
+                <SliderSetting
+                  label="Iterations"
+                  value={settings.smoothingIterations ?? 2}
+                  onChange={(v) => handleSettingChange('smoothingIterations', v)}
+                  min={1}
+                  max={10}
+                  step={1}
+                  disabled={isProcessing}
+                  hint="Number of smoothing passes (1-10)"
+                />
 
-                {/* Smoothing Sigma (Strength) */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-[10px] font-tech text-muted-foreground">
-                      Strength (σ)
-                    </Label>
-                    <span className="text-[10px] font-mono text-muted-foreground">
-                      {(settings.smoothingSigma ?? 0.2).toFixed(2)}
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.smoothingSigma ?? 0.2]}
-                    onValueChange={([value]) => handleSettingChange('smoothingSigma', value)}
-                    min={0.1}
-                    max={2.0}
-                    step={0.1}
-                    disabled={isProcessing}
-                  />
-                  <p className="text-[8px] text-muted-foreground italic">
-                    Higher = stronger smoothing effect
-                  </p>
-                </div>
+                <SliderSetting
+                  label="Strength (σ)"
+                  value={settings.smoothingSigma ?? 0.2}
+                  onChange={(v) => handleSettingChange('smoothingSigma', v)}
+                  min={0.1}
+                  max={2.0}
+                  step={0.1}
+                  disabled={isProcessing}
+                  formatValue={(v) => v.toFixed(2)}
+                  hint="Higher = stronger smoothing effect"
+                />
               </div>
             )}
-
-
           </div>
 
           {/* Reset Button */}
@@ -395,96 +434,149 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
           </Label>
           <Switch
             checked={settings.showPreview}
-            onCheckedChange={(checked) => {
-              handleSettingChange('showPreview', checked);
-              // Dispatch event to toggle offset mesh visibility in 3DScene
-              window.dispatchEvent(new CustomEvent('toggle-offset-preview', { 
-                detail: { visible: checked } 
-              }));
-            }}
+            onCheckedChange={handlePreviewToggle}
             disabled={isProcessing}
           />
         </div>
       </div>
 
       {/* Action Buttons */}
-      <div className="space-y-2 pt-2">
-        {isProcessing ? (
-          <Card className="tech-glass p-4 bg-primary/5 border-primary/30">
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <div className="relative w-8 h-8">
-                  <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
-                  <div className="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs font-tech font-medium text-primary">
-                    {isApplying ? 'Applying Cavity' : 'Generating Preview'}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {isApplying 
-                      ? (cavityProgress.total > 0 
-                          ? `Processing support ${cavityProgress.current}/${cavityProgress.total}` 
-                          : 'Preparing CSG operations...')
-                      : 'Processing offset mesh...'}
-                  </p>
-                </div>
-              </div>
-              {isApplying && cavityProgress.total > 0 ? (
-                <div className="space-y-1">
-                  <Progress 
-                    value={(cavityProgress.current / cavityProgress.total) * 100} 
-                    className="h-1.5" 
-                  />
-                  <p className="text-[8px] text-muted-foreground text-right font-mono">
-                    {cavityProgress.current}/{cavityProgress.total} supports
-                  </p>
-                </div>
-              ) : (
-                <div className="h-1.5 bg-primary/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-primary/60 rounded-full animate-pulse" style={{ width: '60%' }} />
-                </div>
-              )}
-            </div>
-          </Card>
-        ) : isCavityApplied ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full font-tech"
-            onClick={onResetCavity}
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Reset Cavity
-          </Button>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full font-tech"
-            onClick={onGeneratePreview}
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            {hasPreview ? 'Regenerate Preview' : 'Generate Preview'}
-          </Button>
-        )}
-        
-        {hasPreview && !isCavityApplied && (
-          <Button
-            variant="default"
-            size="sm"
-            className="w-full font-tech"
-            onClick={onExecuteCavity}
-            disabled={isProcessing}
-          >
-            <SquaresSubtract className="w-4 h-4 mr-2" />
-            Apply Cavity to Supports
-          </Button>
-        )}
-      </div>
+      <ActionButtons
+        isProcessing={isProcessing}
+        isApplying={isApplying}
+        isCavityApplied={isCavityApplied}
+        hasPreview={hasPreview}
+        cavityProgress={cavityProgress}
+        onGeneratePreview={onGeneratePreview}
+        onExecuteCavity={onExecuteCavity}
+        onResetCavity={onResetCavity}
+      />
 
       {/* Status */}
+      <StatusIndicator isCavityApplied={isCavityApplied} hasPreview={hasPreview} />
+
+      {/* Info Card */}
+      <InfoCard />
+    </div>
+  );
+};
+
+// ============================================
+// Action & Status Sub-Components
+// ============================================
+
+interface ActionButtonsProps {
+  isProcessing: boolean;
+  isApplying: boolean;
+  isCavityApplied: boolean;
+  hasPreview: boolean;
+  cavityProgress: CavityProgress;
+  onGeneratePreview: () => void;
+  onExecuteCavity: () => void;
+  onResetCavity: () => void;
+}
+
+const ActionButtons = memo<ActionButtonsProps>(({
+  isProcessing,
+  isApplying,
+  isCavityApplied,
+  hasPreview,
+  cavityProgress,
+  onGeneratePreview,
+  onExecuteCavity,
+  onResetCavity,
+}) => {
+  if (isProcessing) {
+    return (
+      <div className="space-y-2 pt-2">
+        <ProcessingCard isApplying={isApplying} cavityProgress={cavityProgress} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 pt-2">
       {isCavityApplied ? (
+        <Button variant="outline" size="sm" className="w-full font-tech" onClick={onResetCavity}>
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Reset Cavity
+        </Button>
+      ) : (
+        <Button variant="outline" size="sm" className="w-full font-tech" onClick={onGeneratePreview}>
+          <RefreshCw className="w-4 h-4 mr-2" />
+          {hasPreview ? 'Regenerate Preview' : 'Generate Preview'}
+        </Button>
+      )}
+
+      {hasPreview && !isCavityApplied && (
+        <Button
+          variant="default"
+          size="sm"
+          className="w-full font-tech"
+          onClick={onExecuteCavity}
+          disabled={isProcessing}
+        >
+          <SquaresSubtract className="w-4 h-4 mr-2" />
+          Apply Cavity to Supports
+        </Button>
+      )}
+    </div>
+  );
+});
+ActionButtons.displayName = 'ActionButtons';
+
+/** Processing indicator with progress */
+const ProcessingCard = memo<{ isApplying: boolean; cavityProgress: CavityProgress }>(
+  ({ isApplying, cavityProgress }) => {
+    const hasProgress = cavityProgress.total > 0;
+    const progressPercent = hasProgress ? (cavityProgress.current / cavityProgress.total) * 100 : 0;
+
+    return (
+      <Card className="tech-glass p-4 bg-primary/5 border-primary/30">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="relative w-8 h-8">
+              <div className="absolute inset-0 rounded-full border-2 border-primary/20" />
+              <div className="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-tech font-medium text-primary">
+                {isApplying ? 'Applying Cavity' : 'Generating Preview'}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                {isApplying
+                  ? hasProgress
+                    ? `Processing support ${cavityProgress.current}/${cavityProgress.total}`
+                    : 'Preparing CSG operations...'
+                  : 'Processing offset mesh...'}
+              </p>
+            </div>
+          </div>
+
+          {isApplying && hasProgress ? (
+            <div className="space-y-1">
+              <Progress value={progressPercent} className="h-1.5" />
+              <p className="text-[8px] text-muted-foreground text-right font-mono">
+                {cavityProgress.current}/{cavityProgress.total} supports
+              </p>
+            </div>
+          ) : (
+            <div className="h-1.5 bg-primary/10 rounded-full overflow-hidden">
+              <div className="h-full bg-primary/60 rounded-full animate-pulse" style={{ width: '60%' }} />
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
+);
+ProcessingCard.displayName = 'ProcessingCard';
+
+/** Status indicator card */
+const StatusIndicator = memo<{ isCavityApplied: boolean; hasPreview: boolean }>(
+  ({ isCavityApplied, hasPreview }) => {
+    if (isCavityApplied) {
+      return (
         <Card className="tech-glass p-3 bg-amber-500/5 border-amber-500/30">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-amber-500" />
@@ -493,7 +585,11 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             </p>
           </div>
         </Card>
-      ) : hasPreview && (
+      );
+    }
+
+    if (hasPreview) {
+      return (
         <Card className="tech-glass p-3 bg-green-500/5 border-green-500/30">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
@@ -502,23 +598,29 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             </p>
           </div>
         </Card>
-      )}
+      );
+    }
 
-      {/* Info */}
-      <Card className="tech-glass">
-        <div className="p-3 text-xs text-muted-foreground font-tech space-y-2">
-          <p>
-            The cavity mesh is an offset shell around your workpiece that will be 
-            subtracted from the supports to create holding cavities.
-          </p>
-          <p className="text-[10px]">
-            <strong>Tip:</strong> Use the preview to verify the offset mesh aligns 
-            correctly with your part before applying.
-          </p>
-        </div>
-      </Card>
+    return null;
+  }
+);
+StatusIndicator.displayName = 'StatusIndicator';
+
+/** Info card with usage tips */
+const InfoCard = memo(() => (
+  <Card className="tech-glass">
+    <div className="p-3 text-xs text-muted-foreground font-tech space-y-2">
+      <p>
+        The cavity mesh is an offset shell around your workpiece that will be subtracted from the
+        supports to create holding cavities.
+      </p>
+      <p className="text-[10px]">
+        <strong>Tip:</strong> Use the preview to verify the offset mesh aligns correctly with your
+        part before applying.
+      </p>
     </div>
-  );
-};
+  </Card>
+));
+InfoCard.displayName = 'InfoCard';
 
 export default CavityStepContent;
