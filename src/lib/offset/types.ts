@@ -62,8 +62,6 @@ export interface OffsetMeshResult {
 // Cavity Settings
 // ============================================
 
-export type SmoothingMethod = 'taubin' | 'hc' | 'combined' | 'gaussian';
-
 export interface CavitySettings {
   /** Enable cavity creation */
   enabled: boolean;
@@ -83,24 +81,28 @@ export interface CavitySettings {
   previewOpacity: number;
   /** Enable mesh decimation to reduce triangle count */
   enableDecimation: boolean;
-  /** Enable Taubin smoothing to remove jagged edges */
+  /** Enable mesh smoothing to remove jagged edges */
   enableSmoothing: boolean;
-  /** Number of smoothing iterations */
+  /**
+   * Smoothing strength (0-1).
+   * Controls the blend between Taubin and Laplacian smoothing:
+   * - 0 = Pure Taubin smoothing (weak effect, volume-preserving)
+   * - 1 = Pure Laplacian smoothing (strong effect, may cause shrinkage)
+   * Reference: trCAD smoothing modifier
+   */
+  smoothingStrength: number;
+  /**
+   * Number of smoothing iterations.
+   * More iterations = smoother result but slower processing.
+   * Typical values: 1-100
+   */
   smoothingIterations: number;
-  /** Gaussian sigma - controls smoothing weight falloff */
-  smoothingSigma: number;
-  /** Smoothing method */
-  smoothingMethod: SmoothingMethod;
-  /** HC smoothing alpha parameter (0-1) */
-  smoothingAlpha: number;
-  /** HC smoothing beta parameter (0-1) */
-  smoothingBeta: number;
-  /** Combined method: Gaussian pass iterations */
-  combinedGaussianIterations: number;
-  /** Combined method: Laplacian pass iterations */
-  combinedLaplacianIterations: number;
-  /** Combined method: Taubin pass iterations */
-  combinedTaubinIterations: number;
+  /**
+   * Quality mode toggle.
+   * - true: Enhanced mesh surface quality (slower)
+   * - false: Faster processing (may develop uneven regions)
+   */
+  smoothingQuality: boolean;
   /** CSG Cleanup: Minimum volume for component to be kept (mm³) */
   csgMinVolume: number;
   /** CSG Cleanup: Minimum thickness for component to be kept (mm) */
@@ -150,14 +152,9 @@ export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   previewOpacity: 0.3,
   enableDecimation: true,
   enableSmoothing: true,
-  smoothingIterations: 2,
-  smoothingSigma: 0.2,
-  smoothingMethod: 'combined',
-  smoothingAlpha: 0.5,
-  smoothingBeta: 0.5,
-  combinedGaussianIterations: 2,
-  combinedLaplacianIterations: 2,
-  combinedTaubinIterations: 2,
+  smoothingStrength: 0.0, // Pure Taubin (volume-preserving)
+  smoothingIterations: 10, // Default iterations
+  smoothingQuality: true, // Quality mode on by default
   csgMinVolume: 5.0,
   csgMinThickness: 2.0,
   csgMinTriangles: 10,

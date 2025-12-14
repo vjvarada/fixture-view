@@ -19,6 +19,5 @@ export type {
   OffsetMeshMetadata,
   HeightmapResult,
   CavitySettings,
-  SmoothingMethod,
 } from './types';
 export { DEFAULT_CAVITY_SETTINGS, getAdaptivePixelsPerUnit } from './types';

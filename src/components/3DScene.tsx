@@ -1402,27 +1402,30 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               
               // === Step 2: Smoothing (if enabled) ===
               if (shouldSmooth) {
-                const iterations = settings.smoothingIterations ?? 2;
-                const sigma = settings.smoothingSigma ?? 0.2;
+                const iterations = settings.smoothingIterations ?? 10;
+                const strength = settings.smoothingStrength ?? 0;
+                const quality = settings.smoothingQuality ?? true;
+                
+                const strengthLabel = strength === 0 ? 'Taubin' : strength === 1 ? 'Laplacian' : `${(strength * 100).toFixed(0)}%`;
                 
                 window.dispatchEvent(new CustomEvent('offset-mesh-preview-progress', {
                   detail: { 
                     current: Math.round((processedParts + 0.85) / totalParts * 100), 
                     total: 100, 
-                    stage: `Part ${processedParts + 1}/${totalParts}: Smoothing mesh (${iterations} iterations, σ=${sigma})...` 
+                    stage: `Part ${processedParts + 1}/${totalParts}: Smoothing mesh (${iterations} iter, ${strengthLabel})...` 
                   }
                 }));
                 
                 // Yield to browser before smoothing
                 await new Promise(resolve => setTimeout(resolve, 0));
                 
-                // Use Gaussian smoothing with configurable parameters
+                // Use blended Taubin/Laplacian smoothing based on trCAD approach
                 const smoothingResult = await laplacianSmooth(
                   currentGeometry,
                   {
                     iterations,
-                    method: 'gaussian',
-                    sigma,
+                    strength,
+                    quality,
                   }
                 );
                 

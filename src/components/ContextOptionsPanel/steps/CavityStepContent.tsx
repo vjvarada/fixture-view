@@ -379,33 +379,45 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
               checked={settings.enableSmoothing}
               onCheckedChange={(checked) => handleSettingChange('enableSmoothing', checked)}
               disabled={isProcessing}
-              hint="Remove jagged edges (volume-preserving)"
+              hint="Smooth horizontal contours (preserves height)"
             />
 
             {/* Smoothing Options - shown only when smoothing enabled */}
             {settings.enableSmoothing && (
               <div className="space-y-3 pl-2 border-l-2 border-border/30">
                 <SliderSetting
-                  label="Iterations"
-                  value={settings.smoothingIterations ?? 2}
-                  onChange={(v) => handleSettingChange('smoothingIterations', v)}
-                  min={1}
-                  max={10}
-                  step={1}
+                  label="Strength"
+                  value={settings.smoothingStrength ?? 0}
+                  onChange={(v) => handleSettingChange('smoothingStrength', v)}
+                  min={0}
+                  max={1}
+                  step={0.1}
                   disabled={isProcessing}
-                  hint="Number of smoothing passes (1-10)"
+                  formatValue={(v) => {
+                    if (v === 0) return 'Taubin (0%)';
+                    if (v === 1) return 'Laplacian (100%)';
+                    return `${(v * 100).toFixed(0)}%`;
+                  }}
+                  hint="0 = volume-preserving, 1 = stronger (may shrink)"
                 />
 
                 <SliderSetting
-                  label="Strength (σ)"
-                  value={settings.smoothingSigma ?? 0.2}
-                  onChange={(v) => handleSettingChange('smoothingSigma', v)}
-                  min={0.1}
-                  max={2.0}
-                  step={0.1}
+                  label="Iterations"
+                  value={settings.smoothingIterations ?? 10}
+                  onChange={(v) => handleSettingChange('smoothingIterations', v)}
+                  min={1}
+                  max={100}
+                  step={1}
                   disabled={isProcessing}
-                  formatValue={(v) => v.toFixed(2)}
-                  hint="Higher = stronger smoothing effect"
+                  hint="More iterations = smoother result"
+                />
+
+                <ToggleSetting
+                  label="Quality Mode"
+                  checked={settings.smoothingQuality ?? true}
+                  onCheckedChange={(checked) => handleSettingChange('smoothingQuality', checked)}
+                  disabled={isProcessing}
+                  hint="Better quality (slower) vs faster processing"
                 />
               </div>
             )}

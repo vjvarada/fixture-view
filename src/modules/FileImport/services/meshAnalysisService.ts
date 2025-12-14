@@ -49,7 +49,7 @@ export interface SmoothingResult {
   success: boolean;
   geometry: THREE.BufferGeometry | null;
   iterations: number;
-  method?: 'taubin' | 'hc' | 'combined' | 'gaussian' | 'boundary';
+  method?: 'taubin' | 'hc' | 'combined' | 'gaussian' | 'boundary' | 'blended';
   error?: string;
 }
 
@@ -69,25 +69,41 @@ export interface BoundarySmoothingResult {
 }
 
 export interface SmoothingOptions {
-  /** Number of iterations (used for non-combined methods) */
+  /** Number of smoothing iterations (1-100+) */
   iterations: number;
-  /** Smoothing method */
-  method: 'taubin' | 'hc' | 'combined' | 'gaussian';
-  /** Taubin lambda (shrink factor, 0-1) */
+  /**
+   * Smoothing strength (0-1).
+   * Controls the blend between Taubin and Laplacian smoothing:
+   * - 0 = Pure Taubin smoothing (weak effect, volume-preserving)
+   * - 1 = Pure Laplacian smoothing (strong effect, may cause shrinkage)
+   * Reference: trCAD smoothing modifier (Taubin95)
+   */
+  strength?: number;
+  /**
+   * Quality mode toggle.
+   * - true: Enhanced mesh surface quality (slower, uses cotangent weights)
+   * - false: Faster processing (uniform weights, may develop uneven regions)
+   */
+  quality?: boolean;
+  
+  // Legacy parameters for backward compatibility
+  /** @deprecated Use strength instead. Smoothing method */
+  method?: 'taubin' | 'hc' | 'combined' | 'gaussian' | 'blended';
+  /** @deprecated Use strength=0 for pure Taubin. Taubin lambda (shrink factor, 0-1) */
   lambda?: number;
-  /** Taubin mu (inflate factor, negative) */
+  /** @deprecated Use strength=0 for pure Taubin. Taubin mu (inflate factor, negative) */
   mu?: number;
-  /** HC alpha (original position weight, 0-1) */
+  /** @deprecated HC alpha (original position weight, 0-1) */
   alpha?: number;
-  /** HC beta (difference damping, 0-1) */
+  /** @deprecated HC beta (difference damping, 0-1) */
   beta?: number;
-  /** Gaussian sigma (standard deviation for weight falloff) */
+  /** @deprecated Use strength instead. Gaussian sigma */
   sigma?: number;
-  /** Combined method: Gaussian pass iterations */
+  /** @deprecated Use iterations instead */
   gaussianIterations?: number;
-  /** Combined method: Laplacian pass iterations */
+  /** @deprecated Use iterations instead */
   laplacianIterations?: number;
-  /** Combined method: Taubin pass iterations */
+  /** @deprecated Use iterations instead */
   taubinIterations?: number;
 }
 
@@ -1626,14 +1642,13 @@ function gaussianSmoothing(
 }
 
 /**
- * Performs mesh smoothing using Taubin, HC, Combined, or Gaussian methods.
- * All methods now smooth in all 3 directions (X, Y, Z).
+ * Performs mesh smoothing using a blend of Taubin and Laplacian methods.
+ * Based on trCAD smoothing modifier (Taubin95 reference).
+ * https://docs.trcad.trinckle.com/trcad_manual/modifier_ref_mod_smoothing.php
  * 
- * Methods:
- * - taubin: Alternates shrinking (λ) and inflating (μ) passes. Good basic smoothing.
- * - hc: HC Laplacian uses original positions as constraint. Better at preserving volume.
- * - combined: Uses only Gaussian smoothing (simplest and most effective).
- * - gaussian: Distance-weighted smoothing. Good for noise reduction.
+ * The smoothing algorithm blends between:
+ * - Taubin smoothing (strength=0): Volume-preserving, weak effect
+ * - Laplacian smoothing (strength=1): Strong effect, may cause shrinkage
  * 
  * @param geometry - The input BufferGeometry
  * @param options - Smoothing options or number of iterations (for backward compat)
@@ -1654,8 +1669,7 @@ export async function laplacianSmooth(
   if (typeof options === 'number') {
     opts = {
       iterations: options,
-      method: 'combined',
-      lambda: typeof lambdaOrProgress === 'number' ? lambdaOrProgress : 0.5,
+      strength: 0, // Default to pure Taubin for backward compat
     };
     progressCb = typeof lambdaOrProgress === 'function' ? lambdaOrProgress : onProgress;
   } else {
@@ -1663,18 +1677,16 @@ export async function laplacianSmooth(
     progressCb = typeof lambdaOrProgress === 'function' ? lambdaOrProgress : onProgress;
   }
   
+  // Extract parameters (trCAD-style interface)
   const {
-    iterations = 2, // Reduced from 5 for gentler smoothing
-    method = 'combined',
-    lambda = 0.5,
-    mu = -0.53, // Slightly larger than -lambda to prevent shrinkage
-    alpha = 0.5,
-    beta = 0.5,
-    sigma = 0.2, // Reduced from 1.0 for gentler Gaussian smoothing
+    iterations = 1,       // Default: 1 iteration
+    strength = 0,         // Default: pure Taubin (volume-preserving)
+    quality = false,      // Default: faster processing
   } = opts;
   
   try {
-    reportProgress(progressCb, 'smoothing', 0, `Starting ${method} smoothing...`);
+    const strengthLabel = strength === 0 ? 'Taubin' : strength >= 1 ? 'Laplacian' : `${(strength * 100).toFixed(0)}%`;
+    reportProgress(progressCb, 'smoothing', 0, `Starting smoothing (${strengthLabel}, ${iterations} iter)...`);
     
     // Clone geometry to avoid modifying the original
     const workGeometry = geometry.clone();
@@ -1683,65 +1695,41 @@ export async function laplacianSmooth(
     const vertexCount = posAttr.count;
     const triangleCount = vertexCount / 3;
     
-    // Safety check: JavaScript Maps have a practical limit around 16M entries
-    // For very large meshes, skip smoothing to avoid memory issues
-    const MAX_VERTICES_FOR_SMOOTHING = 1_000_000; // 1M vertices (~333K triangles)
-    if (vertexCount > MAX_VERTICES_FOR_SMOOTHING) {
-      console.warn(`[laplacianSmooth] Mesh has ${vertexCount.toLocaleString()} vertices, exceeds limit of ${MAX_VERTICES_FOR_SMOOTHING.toLocaleString()}. Skipping smoothing to avoid memory issues.`);
-      reportProgress(progressCb, 'smoothing', 100, 'Mesh too large for smoothing, skipped');
+    // Safety check for very large meshes
+    const MAX_VERTICES = 1_000_000;
+    if (vertexCount > MAX_VERTICES) {
+      console.warn(`[laplacianSmooth] Mesh has ${vertexCount.toLocaleString()} vertices, exceeds limit. Skipping.`);
+      reportProgress(progressCb, 'smoothing', 100, 'Mesh too large for smoothing');
       return {
         success: true,
         geometry: workGeometry,
         iterations: 0,
-        method,
-        error: `Mesh too large for smoothing (${vertexCount.toLocaleString()} vertices, max ${MAX_VERTICES_FOR_SMOOTHING.toLocaleString()})`,
+        method: 'blended',
+        error: `Mesh too large (${vertexCount.toLocaleString()} vertices)`,
       };
     }
     
     reportProgress(progressCb, 'smoothing', 10, 'Building adjacency map...');
     
-    // Build adjacency map (handles non-indexed geometry by grouping vertices by position)
+    // Build vertex adjacency
     const { adjacency, vertexGroups } = buildAdjacencyMap(positions, vertexCount, triangleCount);
     
-    reportProgress(progressCb, 'smoothing', 20, `Running ${method} smoothing (${iterations} iterations)...`);
+    reportProgress(progressCb, 'smoothing', 20, `Smoothing (${iterations} iterations)...`);
     
-    let smoothedPositions: Float32Array;
-    
-    switch (method) {
-      case 'taubin':
-        smoothedPositions = taubinSmoothing(
-          positions, adjacency, vertexGroups, iterations, lambda, mu, vertexCount
-        );
-        break;
-        
-      case 'hc':
-        smoothedPositions = hcSmoothing(
-          positions, new Float32Array(positions), adjacency, vertexGroups, iterations, alpha, beta, vertexCount
-        );
-        break;
-      
-      case 'gaussian':
-        smoothedPositions = gaussianSmoothing(
-          positions, adjacency, vertexGroups, iterations, sigma, vertexCount
-        );
-        break;
-        
-      case 'combined':
-      default:
-        // Combined now uses only Gaussian smoothing (simplest and most effective)
-        // Use gaussianIterations if provided, otherwise use iterations
-        const gaussianIters = opts.gaussianIterations ?? iterations;
-        
-        reportProgress(progressCb, 'smoothing', 30, `Gaussian smoothing (${gaussianIters} iterations)...`);
-        smoothedPositions = gaussianSmoothing(
-          positions, adjacency, vertexGroups, gaussianIters, sigma, vertexCount
-        );
-        break;
-    }
+    // Apply trCAD-style smoothing
+    const smoothedPositions = trCADSmoothing(
+      positions,
+      adjacency,
+      vertexGroups,
+      iterations,
+      strength,
+      quality,
+      vertexCount
+    );
     
     reportProgress(progressCb, 'smoothing', 90, 'Updating geometry...');
     
-    // Update positions in geometry
+    // Update positions
     posAttr.array.set(smoothedPositions);
     posAttr.needsUpdate = true;
     
@@ -1754,7 +1742,7 @@ export async function laplacianSmooth(
       success: true,
       geometry: workGeometry,
       iterations,
-      method,
+      method: 'blended',
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown smoothing error';
@@ -1765,6 +1753,573 @@ export async function laplacianSmooth(
       error: errorMessage,
     };
   }
+}
+
+// ============================================================================
+// trCAD-Style Mesh Smoothing Implementation
+// Based on: https://docs.trcad.trinckle.com/trcad_manual/modifier_ref_mod_smoothing.php
+// Reference: Taubin, G. "A Signal Processing Approach To Fair Surface Design" (SIGGRAPH 95)
+// ============================================================================
+
+/**
+ * Vertex classification for heightmap-derived meshes.
+ */
+enum VertexSurfaceType {
+  TOP_SURFACE,      // On the top (offset) surface - variable Y
+  BOTTOM_SURFACE,   // On the bottom (flat) surface - constant Y = clipYMin
+  WALL,             // On the wall connecting top to bottom
+}
+
+/**
+ * Analyze the mesh to classify vertices by surface type.
+ * 
+ * For heightmap meshes:
+ * - TOP_SURFACE: Vertices at variable heights (the offset surface)
+ * - BOTTOM_SURFACE: Vertices at the minimum Y (flat bottom)
+ * - WALL: Vertices that connect top to bottom (have neighbors at different Y levels)
+ * 
+ * This is more accurate than just checking Y position because it considers connectivity.
+ */
+function classifyHeightmapVertices(
+  positions: Float32Array,
+  vertexCount: number,
+  adjacency: Map<number, Set<number>>,
+  vertexGroups: number[][]
+): {
+  bottomY: number;
+  yRange: number;
+  vertexTypes: Map<number, VertexSurfaceType>;
+  topSurfaceVertices: Set<number>;
+  bottomSurfaceVertices: Set<number>;
+  wallVertices: Set<number>;
+} {
+  // Find Y range
+  let minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < vertexCount; i++) {
+    const y = positions[i * 3 + 1];
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  
+  const yRange = maxY - minY;
+  // Use a small threshold relative to Y range for bottom detection
+  const bottomThreshold = minY + Math.max(0.001, yRange * 0.01);
+  
+  const vertexTypes = new Map<number, VertexSurfaceType>();
+  const topSurfaceVertices = new Set<number>();
+  const bottomSurfaceVertices = new Set<number>();
+  const wallVertices = new Set<number>();
+  
+  const processedGroups = new Set<number>();
+  
+  // First pass: classify based on Y position and neighbor Y variance
+  for (let i = 0; i < vertexCount; i++) {
+    const group = vertexGroups[i];
+    const groupId = group[0];
+    
+    if (processedGroups.has(groupId)) continue;
+    processedGroups.add(groupId);
+    
+    const y = positions[i * 3 + 1];
+    const isAtBottom = y <= bottomThreshold;
+    
+    // Check neighbors to determine if this is a wall vertex
+    const neighbors = adjacency.get(i);
+    let hasHigherNeighbor = false;
+    let hasLowerNeighbor = false;
+    let hasSameHeightNeighbor = false;
+    
+    if (neighbors) {
+      for (const ni of neighbors) {
+        const ny = positions[ni * 3 + 1];
+        const yDiff = ny - y;
+        
+        if (yDiff > yRange * 0.05) {
+          hasHigherNeighbor = true;
+        } else if (yDiff < -yRange * 0.05) {
+          hasLowerNeighbor = true;
+        } else {
+          hasSameHeightNeighbor = true;
+        }
+      }
+    }
+    
+    // Classify the vertex
+    let surfaceType: VertexSurfaceType;
+    
+    if (isAtBottom) {
+      // At bottom Y level
+      if (hasHigherNeighbor) {
+        // Has connection to higher vertices = wall corner at bottom
+        surfaceType = VertexSurfaceType.WALL;
+      } else {
+        // Only same-height neighbors = interior bottom surface
+        surfaceType = VertexSurfaceType.BOTTOM_SURFACE;
+      }
+    } else {
+      // Not at bottom
+      if (hasLowerNeighbor && hasHigherNeighbor) {
+        // Has both higher and lower neighbors = middle of wall
+        surfaceType = VertexSurfaceType.WALL;
+      } else if (hasLowerNeighbor) {
+        // Has lower neighbors = top edge of wall OR top surface boundary
+        // If most neighbors are at same height, it's top surface boundary
+        surfaceType = hasSameHeightNeighbor ? VertexSurfaceType.TOP_SURFACE : VertexSurfaceType.WALL;
+      } else {
+        // Only same-height or higher neighbors = top surface
+        surfaceType = VertexSurfaceType.TOP_SURFACE;
+      }
+    }
+    
+    // Apply to all vertices in this group
+    for (const vi of group) {
+      vertexTypes.set(vi, surfaceType);
+      switch (surfaceType) {
+        case VertexSurfaceType.TOP_SURFACE:
+          topSurfaceVertices.add(vi);
+          break;
+        case VertexSurfaceType.BOTTOM_SURFACE:
+          bottomSurfaceVertices.add(vi);
+          break;
+        case VertexSurfaceType.WALL:
+          wallVertices.add(vi);
+          break;
+      }
+    }
+  }
+  
+  return {
+    bottomY: minY,
+    yRange,
+    vertexTypes,
+    topSurfaceVertices,
+    bottomSurfaceVertices,
+    wallVertices,
+  };
+}
+
+/**
+ * trCAD-style mesh smoothing that blends between Taubin and Laplacian smoothing.
+ * 
+ * HEIGHTMAP-AWARE HORIZONTAL SMOOTHING:
+ * For heightmap-derived meshes, jagged edges occur in the HORIZONTAL plane (X-Z in Three.js).
+ * The Y coordinate (Three.js) represents HEIGHT and must be preserved to maintain the
+ * correct offset/clearance from the part.
+ * 
+ * Coordinate mapping:
+ * - Three.js: X, Z = horizontal plane, Y = up (height)
+ * - World:    X, Y = horizontal plane, Z = up (height)
+ * 
+ * Smoothing behavior:
+ * - TOP_SURFACE & WALL: Smooth X-Z only (horizontal), PRESERVE Y (height)
+ * - BOTTOM_SURFACE: No smoothing (keeps flat bottom intact)
+ * 
+ * The algorithm works as follows:
+ * - Taubin smoothing (strength=0): Two-pass algorithm that preserves volume.
+ *   Pass 1: Shrink with λ (moves vertices toward neighbors)
+ *   Pass 2: Inflate with μ (moves vertices away from neighbors to counteract shrinkage)
+ * 
+ * - Laplacian smoothing (strength=1): Single-pass algorithm with stronger effect.
+ *   Only shrinks, causing the mesh to progressively shrink with more iterations.
+ * 
+ * @param positions - Vertex positions as Float32Array
+ * @param adjacency - Adjacency map for each vertex
+ * @param vertexGroups - Groups of vertices at the same position
+ * @param iterations - Number of smoothing iterations (iter parameter)
+ * @param strength - Blend factor 0-1: 0=pure Taubin (weak), 1=pure Laplacian (strong)
+ * @param quality - If true, use cotangent weights for better quality (slower)
+ * @param vertexCount - Total number of vertices
+ * @returns Smoothed positions
+ */
+function trCADSmoothing(
+  positions: Float32Array,
+  adjacency: Map<number, Set<number>>,
+  vertexGroups: number[][],
+  iterations: number,
+  strength: number,
+  quality: boolean,
+  vertexCount: number
+): Float32Array {
+  // Clamp strength to [0, 1]
+  const s = Math.max(0, Math.min(1, strength));
+  
+  // Taubin smoothing parameters from the original paper (Taubin95)
+  const TAUBIN_LAMBDA = 0.5;
+  const TAUBIN_MU = -0.53;
+  const LAPLACIAN_LAMBDA = 0.5;
+  
+  // Classify vertices by surface type for heightmap-aware smoothing
+  const heightmapInfo = classifyHeightmapVertices(positions, vertexCount, adjacency, vertexGroups);
+  
+  // Build cotangent weights if quality mode
+  let cotWeights: Map<string, number> | null = null;
+  if (quality) {
+    cotWeights = buildCotangentWeights(positions, vertexCount, vertexGroups);
+  }
+  
+  let current: any = new Float32Array(positions);
+  
+  for (let iter = 0; iter < iterations; iter++) {
+    if (s === 0) {
+      // Pure Taubin: two passes per iteration
+      current = smoothPassHeightmapAware(current, adjacency, vertexGroups, TAUBIN_LAMBDA, quality, cotWeights, vertexCount, heightmapInfo);
+      current = smoothPassHeightmapAware(current, adjacency, vertexGroups, TAUBIN_MU, quality, cotWeights, vertexCount, heightmapInfo);
+    } else if (s >= 1) {
+      // Pure Laplacian
+      current = smoothPassHeightmapAware(current, adjacency, vertexGroups, LAPLACIAN_LAMBDA, quality, cotWeights, vertexCount, heightmapInfo);
+    } else {
+      // Blended: compute both and interpolate
+      let taubinResult = smoothPassHeightmapAware(current, adjacency, vertexGroups, TAUBIN_LAMBDA, quality, cotWeights, vertexCount, heightmapInfo);
+      taubinResult = smoothPassHeightmapAware(taubinResult, adjacency, vertexGroups, TAUBIN_MU, quality, cotWeights, vertexCount, heightmapInfo);
+      
+      const laplacianResult = smoothPassHeightmapAware(current, adjacency, vertexGroups, LAPLACIAN_LAMBDA, quality, cotWeights, vertexCount, heightmapInfo);
+      
+      const blended = new Float32Array(current.length);
+      for (let i = 0; i < current.length; i++) {
+        blended[i] = (1 - s) * taubinResult[i] + s * laplacianResult[i];
+      }
+      current = blended;
+    }
+  }
+  
+  return current as Float32Array;
+}
+
+/**
+ * Single smoothing pass with heightmap-aware vertex handling.
+ * 
+ * For heightmap-derived meshes, the jagged edges are in the HORIZONTAL plane (X-Z in Three.js,
+ * which is X-Y in world coordinates). The Y coordinate (Three.js) represents HEIGHT (world Z)
+ * and should be PRESERVED to maintain the correct offset/clearance from the part.
+ * 
+ * Smoothing behavior:
+ * - TOP_SURFACE: Smooth X-Z only (horizontal), preserve Y (height)
+ * - WALL: Smooth X-Z only (horizontal), preserve Y (height)
+ * - BOTTOM_SURFACE: No smoothing at all
+ * 
+ * This ensures the boundary contour becomes smoother without affecting the height profile.
+ */
+function smoothPassHeightmapAware(
+  positions: Float32Array,
+  adjacency: Map<number, Set<number>>,
+  vertexGroups: number[][],
+  factor: number,
+  quality: boolean,
+  cotWeights: Map<string, number> | null,
+  vertexCount: number,
+  heightmapInfo: {
+    bottomY: number;
+    yRange: number;
+    vertexTypes: Map<number, VertexSurfaceType>;
+    topSurfaceVertices: Set<number>;
+    bottomSurfaceVertices: Set<number>;
+    wallVertices: Set<number>;
+  }
+): Float32Array {
+  const result = new Float32Array(positions.length);
+  const processedGroups = new Set<number>();
+  
+  // Y tolerance for "same height" neighbor filtering
+  const yTolerance = Math.max(0.001, heightmapInfo.yRange * 0.15);
+  
+  for (let i = 0; i < vertexCount; i++) {
+    const group = vertexGroups[i];
+    const groupId = group[0];
+    
+    // Process each unique position only once
+    if (processedGroups.has(groupId)) {
+      result[i * 3] = result[groupId * 3];
+      result[i * 3 + 1] = result[groupId * 3 + 1];
+      result[i * 3 + 2] = result[groupId * 3 + 2];
+      continue;
+    }
+    processedGroups.add(groupId);
+    
+    const px = positions[i * 3];
+    const py = positions[i * 3 + 1]; // Y = height in Three.js (world Z)
+    const pz = positions[i * 3 + 2];
+    
+    // Get vertex surface type
+    const surfaceType = heightmapInfo.vertexTypes.get(i) ?? VertexSurfaceType.TOP_SURFACE;
+    
+    // BOTTOM_SURFACE vertices: No smoothing at all - keep original position
+    if (surfaceType === VertexSurfaceType.BOTTOM_SURFACE) {
+      for (const vi of group) {
+        result[vi * 3] = px;
+        result[vi * 3 + 1] = py;
+        result[vi * 3 + 2] = pz;
+      }
+      continue;
+    }
+    
+    const neighbors = adjacency.get(i);
+    if (!neighbors || neighbors.size === 0) {
+      for (const vi of group) {
+        result[vi * 3] = px;
+        result[vi * 3 + 1] = py;
+        result[vi * 3 + 2] = pz;
+      }
+      continue;
+    }
+    
+    // Compute weighted centroid of FILTERED neighbors (X and Z only, not Y)
+    let sumX = 0, sumZ = 0;
+    let totalWeight = 0;
+    const visitedNeighborGroups = new Set<number>();
+    
+    for (const ni of neighbors) {
+      const neighborGroupId = vertexGroups[ni][0];
+      if (visitedNeighborGroups.has(neighborGroupId)) continue;
+      visitedNeighborGroups.add(neighborGroupId);
+      
+      const nx = positions[ni * 3];
+      const ny = positions[ni * 3 + 1];
+      const nz = positions[ni * 3 + 2];
+      const neighborType = heightmapInfo.vertexTypes.get(ni);
+      
+      // ALWAYS exclude BOTTOM_SURFACE neighbors - they don't move
+      if (neighborType === VertexSurfaceType.BOTTOM_SURFACE) continue;
+      
+      // Filter to same-height neighbors for horizontal smoothing
+      // This ensures we only smooth with vertices at similar heights
+      if (Math.abs(ny - py) > yTolerance) continue;
+      
+      let weight = 1.0;
+      if (quality && cotWeights) {
+        const edgeKey = makeEdgeKey(groupId, neighborGroupId);
+        weight = cotWeights.get(edgeKey) ?? 1.0;
+      }
+      
+      // Only accumulate X and Z for horizontal smoothing
+      sumX += nx * weight;
+      sumZ += nz * weight;
+      totalWeight += weight;
+    }
+    
+    if (totalWeight > 0) {
+      const cx = sumX / totalWeight;
+      const cz = sumZ / totalWeight;
+      
+      // Smooth X and Z (horizontal plane), PRESERVE Y (height)
+      const newX = px + factor * (cx - px);
+      const newY = py; // ALWAYS preserve Y (height) to maintain offset distance
+      const newZ = pz + factor * (cz - pz);
+      
+      for (const vi of group) {
+        result[vi * 3] = newX;
+        result[vi * 3 + 1] = newY;
+        result[vi * 3 + 2] = newZ;
+      }
+    } else {
+      // No valid neighbors after filtering - keep original position
+      for (const vi of group) {
+        result[vi * 3] = px;
+        result[vi * 3 + 1] = py;
+        result[vi * 3 + 2] = pz;
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Original smoothPass function for non-heightmap meshes.
+ * Kept for backwards compatibility and general 3D smoothing.
+ * 
+ * @param factor - Positive = shrink toward centroid, negative = inflate away
+ */
+function smoothPass(
+  positions: Float32Array,
+  adjacency: Map<number, Set<number>>,
+  vertexGroups: number[][],
+  factor: number,
+  quality: boolean,
+  cotWeights: Map<string, number> | null,
+  vertexCount: number
+): Float32Array {
+  const result = new Float32Array(positions.length);
+  const processedGroups = new Set<number>();
+  
+  for (let i = 0; i < vertexCount; i++) {
+    const group = vertexGroups[i];
+    const groupId = group[0];
+    
+    // Process each unique position only once
+    if (processedGroups.has(groupId)) {
+      // Copy from already computed position
+      result[i * 3] = result[groupId * 3];
+      result[i * 3 + 1] = result[groupId * 3 + 1];
+      result[i * 3 + 2] = result[groupId * 3 + 2];
+      continue;
+    }
+    processedGroups.add(groupId);
+    
+    const px = positions[i * 3];
+    const py = positions[i * 3 + 1];
+    const pz = positions[i * 3 + 2];
+    
+    const neighbors = adjacency.get(i);
+    if (!neighbors || neighbors.size === 0) {
+      // No neighbors - keep original position
+      for (const vi of group) {
+        result[vi * 3] = px;
+        result[vi * 3 + 1] = py;
+        result[vi * 3 + 2] = pz;
+      }
+      continue;
+    }
+    
+    // Compute weighted centroid of neighbors (Laplacian)
+    let sumX = 0, sumY = 0, sumZ = 0;
+    let totalWeight = 0;
+    const visitedNeighborGroups = new Set<number>();
+    
+    for (const ni of neighbors) {
+      const neighborGroupId = vertexGroups[ni][0];
+      
+      // Skip if we've already counted this neighbor group
+      if (visitedNeighborGroups.has(neighborGroupId)) continue;
+      visitedNeighborGroups.add(neighborGroupId);
+      
+      // Get weight: cotangent weight for quality mode, uniform otherwise
+      let weight = 1.0;
+      if (quality && cotWeights) {
+        const edgeKey = makeEdgeKey(groupId, neighborGroupId);
+        weight = cotWeights.get(edgeKey) ?? 1.0;
+      }
+      
+      sumX += positions[ni * 3] * weight;
+      sumY += positions[ni * 3 + 1] * weight;
+      sumZ += positions[ni * 3 + 2] * weight;
+      totalWeight += weight;
+    }
+    
+    if (totalWeight > 0) {
+      // Centroid of neighbors
+      const cx = sumX / totalWeight;
+      const cy = sumY / totalWeight;
+      const cz = sumZ / totalWeight;
+      
+      // Laplacian: L(p) = centroid - p
+      // New position: p' = p + factor * L(p) = p + factor * (centroid - p)
+      const newX = px + factor * (cx - px);
+      const newY = py + factor * (cy - py);
+      const newZ = pz + factor * (cz - pz);
+      
+      // Apply to all vertices in this group
+      for (const vi of group) {
+        result[vi * 3] = newX;
+        result[vi * 3 + 1] = newY;
+        result[vi * 3 + 2] = newZ;
+      }
+    } else {
+      // Fallback: keep original
+      for (const vi of group) {
+        result[vi * 3] = px;
+        result[vi * 3 + 1] = py;
+        result[vi * 3 + 2] = pz;
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Build cotangent weights for quality smoothing.
+ * Cotangent weights (Laplacian-Beltrami) provide more geometrically accurate
+ * smoothing by considering triangle shapes.
+ * 
+ * IMPORTANT: Edge keys are built using vertex GROUP IDs (first vertex of each
+ * position group) to match how smoothPass looks up weights.
+ */
+function buildCotangentWeights(
+  positions: Float32Array,
+  vertexCount: number,
+  vertexGroups: number[][]
+): Map<string, number> {
+  const weights = new Map<string, number>();
+  const triangleCount = vertexCount / 3;
+  
+  for (let t = 0; t < triangleCount; t++) {
+    const i0 = t * 3;
+    const i1 = t * 3 + 1;
+    const i2 = t * 3 + 2;
+    
+    // Get GROUP IDs for each vertex (first vertex of each position group)
+    const g0 = vertexGroups[i0][0];
+    const g1 = vertexGroups[i1][0];
+    const g2 = vertexGroups[i2][0];
+    
+    // Skip degenerate triangles where vertices share the same position
+    if (g0 === g1 || g1 === g2 || g2 === g0) continue;
+    
+    // Triangle vertices
+    const p0 = [positions[i0 * 3], positions[i0 * 3 + 1], positions[i0 * 3 + 2]];
+    const p1 = [positions[i1 * 3], positions[i1 * 3 + 1], positions[i1 * 3 + 2]];
+    const p2 = [positions[i2 * 3], positions[i2 * 3 + 1], positions[i2 * 3 + 2]];
+    
+    // Edge vectors
+    const v01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    const v02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    const v12 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    const v10 = [-v01[0], -v01[1], -v01[2]];
+    const v20 = [-v02[0], -v02[1], -v02[2]];
+    const v21 = [-v12[0], -v12[1], -v12[2]];
+    
+    // Cotangent of each angle
+    const cot0 = computeCot(v01, v02); // Angle at vertex 0
+    const cot1 = computeCot(v10, v12); // Angle at vertex 1
+    const cot2 = computeCot(v20, v21); // Angle at vertex 2
+    
+    // For edge opposite to vertex i, weight = cot(angle at i)
+    // Edge 1-2 is opposite to vertex 0, so weight = cot0
+    // Edge 0-2 is opposite to vertex 1, so weight = cot1
+    // Edge 0-1 is opposite to vertex 2, so weight = cot2
+    // Use GROUP IDs for edge keys to match smoothPass lookups
+    addEdgeWeight(weights, g1, g2, cot0);
+    addEdgeWeight(weights, g0, g2, cot1);
+    addEdgeWeight(weights, g0, g1, cot2);
+  }
+  
+  // Normalize and clamp weights to prevent extreme values
+  for (const [key, weight] of weights) {
+    weights.set(key, Math.max(0.01, Math.min(weight, 10.0)));
+  }
+  
+  return weights;
+}
+
+/**
+ * Compute cotangent of angle between two vectors.
+ * cot(θ) = cos(θ) / sin(θ) = (a·b) / |a×b|
+ */
+function computeCot(a: number[], b: number[]): number {
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const crossX = a[1] * b[2] - a[2] * b[1];
+  const crossY = a[2] * b[0] - a[0] * b[2];
+  const crossZ = a[0] * b[1] - a[1] * b[0];
+  const crossMag = Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
+  
+  if (crossMag < 1e-12) return 0;
+  return dot / crossMag;
+}
+
+/**
+ * Create a consistent edge key for two vertex indices.
+ */
+function makeEdgeKey(a: number, b: number): string {
+  return a < b ? `${a}-${b}` : `${b}-${a}`;
+}
+
+/**
+ * Add weight to an edge, accumulating if it already exists.
+ */
+function addEdgeWeight(weights: Map<string, number>, a: number, b: number, w: number): void {
+  const key = makeEdgeKey(a, b);
+  const existing = weights.get(key) ?? 0;
+  weights.set(key, existing + w);
 }
 
 // ============================================================================
