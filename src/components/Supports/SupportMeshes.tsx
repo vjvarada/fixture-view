@@ -1322,9 +1322,16 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     const { radius } = support as any;
     const geo = React.useMemo(() => new THREE.CylinderGeometry(radius, radius, bodyHeight, 64), [radius, bodyHeight]);
     const filletGeo = React.useMemo(() => createCylindricalFilletGeometry(radius, effectiveFilletRadius, FILLET_SEGMENTS), [radius, effectiveFilletRadius]);
+    const bottomCapGeo = React.useMemo(() => {
+      const outerRadius = radius + effectiveFilletRadius;
+      const cap = new THREE.CircleGeometry(outerRadius, 64);
+      cap.rotateX(Math.PI / 2); // Face downward
+      return cap;
+    }, [radius, effectiveFilletRadius]);
     
     return (
       <group onClick={handleClick}>
+        <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} material={mat} />
         <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} material={mat} />
         <group position={[center.x, bodyCenter, center.y]}>
           <mesh geometry={geo} material={mat} />
@@ -1337,10 +1344,41 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     const { width, depth, cornerRadius = 0 } = support as any;
     const filletGeo = React.useMemo(() => createRectangularFilletGeometry(width, depth, cornerRadius, effectiveFilletRadius, FILLET_SEGMENTS), [width, depth, cornerRadius, effectiveFilletRadius]);
     
+    // Bottom cap geometry
+    const bottomCapGeo = React.useMemo(() => {
+      const capWidth = width + effectiveFilletRadius * 2;
+      const capDepth = depth + effectiveFilletRadius * 2;
+      const capCornerRadius = cornerRadius + effectiveFilletRadius;
+      
+      if (capCornerRadius <= 0.01) {
+        const cap = new THREE.PlaneGeometry(capWidth, capDepth);
+        cap.rotateX(Math.PI / 2); // Face downward
+        return cap;
+      } else {
+        const hw = capWidth / 2;
+        const hd = capDepth / 2;
+        const r = Math.min(capCornerRadius, hw, hd);
+        const shape = new THREE.Shape();
+        shape.moveTo(-hw + r, -hd);
+        shape.lineTo(hw - r, -hd);
+        shape.quadraticCurveTo(hw, -hd, hw, -hd + r);
+        shape.lineTo(hw, hd - r);
+        shape.quadraticCurveTo(hw, hd, hw - r, hd);
+        shape.lineTo(-hw + r, hd);
+        shape.quadraticCurveTo(-hw, hd, -hw, hd - r);
+        shape.lineTo(-hw, -hd + r);
+        shape.quadraticCurveTo(-hw, -hd, -hw + r, -hd);
+        const cap = new THREE.ShapeGeometry(shape, 32);
+        cap.rotateX(Math.PI / 2); // Face downward
+        return cap;
+      }
+    }, [width, depth, cornerRadius, effectiveFilletRadius]);
+    
     if (cornerRadius <= 0) {
       const geo = React.useMemo(() => new THREE.BoxGeometry(width, bodyHeight, depth), [width, bodyHeight, depth]);
       return (
         <group onClick={handleClick}>
+          <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
           <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
           <group position={[center.x, bodyCenter, center.y]} rotation={[0, rotY, 0]}>
             <mesh geometry={geo} material={mat} />
@@ -1371,6 +1409,7 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     
     return (
       <group onClick={handleClick}>
+        <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
         <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
         <group position={[center.x, effectiveBaseY + effectiveFilletRadius, center.y]} rotation={[0, rotY, 0]}>
           <mesh geometry={rrGeo} material={mat} />
@@ -1410,9 +1449,16 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     // The cone geometry: bottom radius should match where the fillet ends
     const geo = React.useMemo(() => new THREE.CylinderGeometry(topRadius, filletTopRadius, conicalBodyHeight, 64), [topRadius, filletTopRadius, conicalBodyHeight]);
     const filletGeo = React.useMemo(() => createConicalFilletGeometry(baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius, FILLET_SEGMENTS), [baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius]);
+    const bottomCapGeo = React.useMemo(() => {
+      const outerRadius = baseRadius + effectiveFilletRadius;
+      const cap = new THREE.CircleGeometry(outerRadius, 64);
+      cap.rotateX(Math.PI / 2); // Face downward
+      return cap;
+    }, [baseRadius, effectiveFilletRadius]);
     
     return (
       <group onClick={handleClick}>
+        <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} material={mat} />
         <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} material={mat} />
         <group position={[center.x, conicalBodyCenter, center.y]}>
           <mesh geometry={geo} material={mat} />
@@ -1457,6 +1503,11 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     const filletGeo = React.useMemo(() => {
       if (!validPolygon) return new THREE.BufferGeometry();
       return createPolygonFilletGeometry(validPolygon, safeCornerRadius, effectiveFilletRadius, FILLET_SEGMENTS);
+    }, [validPolygon, safeCornerRadius, effectiveFilletRadius]);
+    
+    const bottomCapGeo = React.useMemo(() => {
+      if (!validPolygon) return new THREE.BufferGeometry();
+      return createBottomCapGeometry('custom', { polygon: validPolygon, cornerRadius: safeCornerRadius }, effectiveFilletRadius);
     }, [validPolygon, safeCornerRadius, effectiveFilletRadius]);
     
     const geo = React.useMemo(() => {
@@ -1539,6 +1590,7 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     
     return (
       <group onClick={handleClick}>
+        {bottomCapGeo && <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />}
         <mesh geometry={filletGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
         <group position={[center.x, effectiveBaseY + effectiveFilletRadius, center.y]} rotation={[0, rotY, 0]}>
           <mesh geometry={geo} material={mat} />

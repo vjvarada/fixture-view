@@ -75,17 +75,6 @@ const WORKFLOW_STEPS: StepConfig[] = [
     ]
   },
   {
-    id: 'cavity',
-    label: 'Cavity',
-    description: 'Subtract workpiece geometry',
-    icon: SquaresSubtract,
-    helpText: [
-      'Select the fixture component as base',
-      'Choose workpieces to subtract',
-      'Adjust clearance for fit tolerance'
-    ]
-  },
-  {
     id: 'clamps',
     label: 'Clamps',
     description: 'Add clamping mechanisms',
@@ -105,6 +94,17 @@ const WORKFLOW_STEPS: StepConfig[] = [
       'Add version numbers and identifiers',
       'Position labels on visible surfaces',
       'Emboss or deboss text as needed'
+    ]
+  },
+  {
+    id: 'cavity',
+    label: 'Cavity',
+    description: 'Subtract workpiece geometry',
+    icon: SquaresSubtract,
+    helpText: [
+      'Select the fixture component as base',
+      'Choose workpieces to subtract',
+      'Adjust clearance for fit tolerance'
     ]
   },
   {
