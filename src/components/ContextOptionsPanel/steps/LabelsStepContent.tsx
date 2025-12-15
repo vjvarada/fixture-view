@@ -1,4 +1,11 @@
-import React, { useState, Suspense, useEffect } from 'react';
+/**
+ * LabelsStepContent
+ *
+ * Context panel step for creating and configuring labels.
+ * Provides a 3D preview, font selection, text input, and dimension controls.
+ */
+
+import React, { useState, Suspense, useEffect, useCallback, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,8 +14,14 @@ import { Slider } from '@/components/ui/slider';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { AlertCircle, Type, Plus } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { AlertCircle, Plus } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center, Text3D } from '@react-three/drei';
 import * as THREE from 'three';
@@ -25,6 +38,26 @@ import {
   getFontFile,
 } from '@/components/Labels/types';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Scale factor for 3D preview to fit container */
+const PREVIEW_TARGET_SIZE = 30;
+
+/** Minimum font size for preview scaling calculation */
+const PREVIEW_MIN_FONT = 10;
+
+/** Preview canvas camera settings */
+const PREVIEW_CAMERA = { position: [0, 0, 80] as [number, number, number], fov: 50 };
+
+/** Preview orbit controls polar angle range */
+const PREVIEW_POLAR_ANGLE = { min: Math.PI / 3, max: Math.PI / 2 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface LabelsStepContentProps {
   hasWorkpiece?: boolean;
   hasBaseplate?: boolean;
@@ -37,17 +70,52 @@ interface LabelsStepContentProps {
   onSelectLabel?: (labelId: string | null) => void;
 }
 
-// 3D Preview component for the label
-const Label3DPreview: React.FC<{
+interface Label3DPreviewProps {
   text: string;
   fontSize: number;
   depth: number;
   font: LabelFont;
-}> = ({ text, fontSize, depth, font }) => {
-  // Scale factor to fit preview nicely
-  const scale = 30 / Math.max(fontSize, 10);
+}
+
+interface LabelFormState {
+  text: string;
+  fontSize: number;
+  depth: number;
+  font: LabelFont;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Generates a unique label ID */
+const generateLabelId = (): string => `label-${Date.now()}`;
+
+/** Creates a new label config from form state */
+const createLabelConfig = (form: LabelFormState): LabelConfig => ({
+  id: generateLabelId(),
+  text: form.text,
+  fontSize: form.fontSize,
+  depth: form.depth,
+  font: form.font,
+  position: new THREE.Vector3(0, 10, 0), // Will be repositioned by 3DScene
+  rotation: new THREE.Euler(-Math.PI / 2, 0, 0), // Face up
+});
+
+/** Dispatches a label-related custom event */
+const dispatchLabelEvent = (eventName: string, detail: unknown): void => {
+  window.dispatchEvent(new CustomEvent(eventName, { detail }));
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 3D preview of the label */
+const Label3DPreview: React.FC<Label3DPreviewProps> = ({ text, fontSize, depth, font }) => {
+  const scale = PREVIEW_TARGET_SIZE / Math.max(fontSize, PREVIEW_MIN_FONT);
   const fontFile = getFontFile(font);
-  
+
   return (
     <Center scale={scale}>
       <Text3D
@@ -58,15 +126,138 @@ const Label3DPreview: React.FC<{
         bevelEnabled={false}
       >
         {text || 'Label'}
-        <meshStandardMaterial
-          color="#4080ff"
-          metalness={0.2}
-          roughness={0.6}
-        />
+        <meshStandardMaterial color="#4080ff" metalness={0.2} roughness={0.6} />
       </Text3D>
     </Center>
   );
 };
+
+/** Alert shown when prerequisites are not met */
+const PrerequisiteAlert: React.FC<{ message: string }> = ({ message }) => (
+  <div className="p-4">
+    <Alert className="font-tech">
+      <AlertCircle className="h-4 w-4" />
+      <AlertDescription className="text-xs">{message}</AlertDescription>
+    </Alert>
+  </div>
+);
+
+/** 3D preview canvas card */
+const PreviewCard: React.FC<Label3DPreviewProps> = (props) => (
+  <Card className="tech-glass overflow-hidden">
+    <div className="h-[140px] bg-gradient-to-b from-background to-muted/20">
+      <Canvas camera={PREVIEW_CAMERA}>
+        <ambientLight intensity={0.6} />
+        <directionalLight position={[10, 10, 10]} intensity={0.8} />
+        <Suspense fallback={null}>
+          <Label3DPreview {...props} />
+        </Suspense>
+        <OrbitControls
+          enablePan={false}
+          enableZoom={false}
+          minPolarAngle={PREVIEW_POLAR_ANGLE.min}
+          maxPolarAngle={PREVIEW_POLAR_ANGLE.max}
+        />
+      </Canvas>
+    </div>
+    <div className="p-2 text-center border-t border-border/50">
+      <p className="text-[10px] text-muted-foreground font-tech">3D Preview</p>
+    </div>
+  </Card>
+);
+
+/** Font selection dropdown */
+const FontSelect: React.FC<{
+  value: LabelFont;
+  onChange: (value: LabelFont) => void;
+}> = ({ value, onChange }) => (
+  <div className="space-y-2">
+    <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
+      Font
+    </Label>
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className="h-8 text-xs">
+        <SelectValue placeholder="Select font" />
+      </SelectTrigger>
+      <SelectContent>
+        {LABEL_FONTS.map((f) => (
+          <SelectItem key={f.value} value={f.value} className="text-xs">
+            {f.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  </div>
+);
+
+/** Slider control with badge */
+const SliderControl: React.FC<{
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  formatValue?: (v: number) => string;
+  helpText?: string;
+  onChange: (value: number) => void;
+}> = ({ label, value, min, max, step, unit = 'mm', formatValue, helpText, onChange }) => (
+  <div className="space-y-3">
+    <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
+      {label}
+    </Label>
+    <div className="flex items-center gap-3">
+      <Slider
+        value={[value]}
+        onValueChange={([v]) => onChange(v)}
+        min={min}
+        max={max}
+        step={step}
+        className="flex-1"
+      />
+      <Badge variant="secondary" className="font-tech min-w-[50px] justify-center">
+        {formatValue ? formatValue(value) : value}
+        {unit}
+      </Badge>
+    </div>
+    {helpText && <p className="text-[10px] text-muted-foreground font-tech">{helpText}</p>}
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hooks
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Hook to listen for label selection from 3D scene */
+function useLabelSelectionListener(onSelectLabel?: (id: string | null) => void): void {
+  useEffect(() => {
+    const handleLabelSelected = (e: Event): void => {
+      onSelectLabel?.((e as CustomEvent).detail);
+    };
+
+    window.addEventListener('label-selected', handleLabelSelected);
+    return () => window.removeEventListener('label-selected', handleLabelSelected);
+  }, [onSelectLabel]);
+}
+
+/** Hook to listen for label position updates from 3D scene */
+function useLabelAddedListener(
+  onUpdateLabel?: (labelId: string, updates: Partial<LabelConfig>) => void
+): void {
+  useEffect(() => {
+    const handleLabelAdded = (e: Event): void => {
+      const label = (e as CustomEvent).detail as LabelConfig;
+      onUpdateLabel?.(label.id, { position: label.position, rotation: label.rotation });
+    };
+
+    window.addEventListener('label-added', handleLabelAdded);
+    return () => window.removeEventListener('label-added', handleLabelAdded);
+  }, [onUpdateLabel]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Component
+// ─────────────────────────────────────────────────────────────────────────────
 
 const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
   hasWorkpiece = false,
@@ -74,175 +265,107 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
   hasSupports = false,
   labels = [],
   selectedLabelId = null,
-  onAddLabel,
   onUpdateLabel,
   onDeleteLabel,
   onSelectLabel,
 }) => {
-  // Form state for new label
+  // Form state
   const [labelText, setLabelText] = useState(DEFAULT_LABEL_CONFIG.text);
   const [fontSize, setFontSize] = useState(DEFAULT_LABEL_CONFIG.fontSize);
   const [depth, setDepth] = useState(DEFAULT_LABEL_CONFIG.depth);
   const [font, setFont] = useState<LabelFont>(DEFAULT_LABEL_CONFIG.font);
 
-  // Get the selected label for properties panel
-  const selectedLabel = labels.find(l => l.id === selectedLabelId);
+  // Find selected label
+  const selectedLabel = useMemo(
+    () => labels.find((l) => l.id === selectedLabelId),
+    [labels, selectedLabelId]
+  );
 
-  // Update form when a label is selected
+  // Sync form with selected label
   useEffect(() => {
-    if (selectedLabel) {
-      setLabelText(selectedLabel.text);
-      setFontSize(selectedLabel.fontSize);
-      setDepth(selectedLabel.depth);
-      setFont(selectedLabel.font || 'helvetiker');
-    }
+    if (!selectedLabel) return;
+
+    setLabelText(selectedLabel.text);
+    setFontSize(selectedLabel.fontSize);
+    setDepth(selectedLabel.depth);
+    setFont(selectedLabel.font || 'helvetiker');
   }, [selectedLabel]);
 
-  // Listen for label selection from 3D scene
-  useEffect(() => {
-    const handleLabelSelected = (e: CustomEvent) => {
-      onSelectLabel?.(e.detail);
-    };
-    window.addEventListener('label-selected', handleLabelSelected as EventListener);
-    return () => window.removeEventListener('label-selected', handleLabelSelected as EventListener);
-  }, [onSelectLabel]);
+  // Event listeners
+  useLabelSelectionListener(onSelectLabel);
+  useLabelAddedListener(onUpdateLabel);
 
-  // Listen for label added event (position update from 3DScene)
-  useEffect(() => {
-    const handleLabelAdded = (e: CustomEvent) => {
-      const label = e.detail as LabelConfig;
-      // Update the labels array with the positioned label
-      onUpdateLabel?.(label.id, { position: label.position, rotation: label.rotation });
-    };
-    window.addEventListener('label-added', handleLabelAdded as EventListener);
-    return () => window.removeEventListener('label-added', handleLabelAdded as EventListener);
-  }, [onUpdateLabel]);
+  // Handlers
+  const updateSelectedLabel = useCallback(
+    (updates: Partial<LabelConfig>): void => {
+      if (!selectedLabelId) return;
 
+      dispatchLabelEvent('label-update', { labelId: selectedLabelId, updates });
+      onUpdateLabel?.(selectedLabelId, updates);
+    },
+    [selectedLabelId, onUpdateLabel]
+  );
+
+  const handleAddLabel = useCallback((): void => {
+    const newLabel = createLabelConfig({ text: labelText, fontSize, depth, font });
+    dispatchLabelEvent('label-add', newLabel);
+  }, [labelText, fontSize, depth, font]);
+
+  const handleFontChange = useCallback(
+    (value: LabelFont): void => {
+      setFont(value);
+      if (selectedLabelId) updateSelectedLabel({ font: value });
+    },
+    [selectedLabelId, updateSelectedLabel]
+  );
+
+  const handleTextChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>): void => {
+      const value = e.target.value;
+      setLabelText(value);
+      if (selectedLabelId) updateSelectedLabel({ text: value });
+    },
+    [selectedLabelId, updateSelectedLabel]
+  );
+
+  const handleFontSizeChange = useCallback(
+    (value: number): void => {
+      setFontSize(value);
+      if (selectedLabelId) updateSelectedLabel({ fontSize: value });
+    },
+    [selectedLabelId, updateSelectedLabel]
+  );
+
+  const handleDepthChange = useCallback(
+    (value: number): void => {
+      setDepth(value);
+      if (selectedLabelId) updateSelectedLabel({ depth: value });
+    },
+    [selectedLabelId, updateSelectedLabel]
+  );
+
+  // Prerequisite checks
   if (!hasWorkpiece) {
-    return (
-      <div className="p-4">
-        <Alert className="font-tech">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-xs">
-            Import a workpiece to add labels.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
+    return <PrerequisiteAlert message="Import a workpiece to add labels." />;
   }
-
   if (!hasBaseplate) {
-    return (
-      <div className="p-4">
-        <Alert className="font-tech">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-xs">
-            Create a baseplate first before adding labels.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
+    return <PrerequisiteAlert message="Create a baseplate first before adding labels." />;
   }
-
   if (!hasSupports) {
     return (
-      <div className="p-4">
-        <Alert className="font-tech">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="text-xs">
-            Add supports first before adding labels. Labels are positioned outside the support area.
-          </AlertDescription>
-        </Alert>
-      </div>
+      <PrerequisiteAlert message="Add supports first before adding labels. Labels are positioned outside the support area." />
     );
   }
 
-  const handleAddLabel = () => {
-    const newLabel: LabelConfig = {
-      id: `label-${Date.now()}`,
-      text: labelText,
-      fontSize,
-      depth,
-      font,
-      position: new THREE.Vector3(0, 10, 0), // Will be positioned by 3DScene
-      rotation: new THREE.Euler(-Math.PI / 2, 0, 0), // Face up by default
-    };
-    // Dispatch event for 3DScene to handle positioning and rendering
-    // AppShell listens to 'label-added' event (dispatched by 3DScene after positioning)
-    // so we don't call onAddLabel here to avoid duplicates
-    window.dispatchEvent(new CustomEvent('label-add', { detail: newLabel }));
-  };
-
-  const handleUpdateSelectedLabel = (updates: Partial<LabelConfig>) => {
-    if (selectedLabelId) {
-      window.dispatchEvent(new CustomEvent('label-update', { detail: { labelId: selectedLabelId, updates } }));
-      onUpdateLabel?.(selectedLabelId, updates);
-    }
-  };
-
-  const handleDeleteSelected = () => {
-    if (selectedLabelId) {
-      window.dispatchEvent(new CustomEvent('label-delete', { detail: selectedLabelId }));
-      onDeleteLabel?.(selectedLabelId);
-      onSelectLabel?.(null);
-    }
-  };
+  const canAddLabel = labelText.trim().length > 0;
 
   return (
     <div className="p-4 space-y-4 overflow-auto max-h-[calc(100vh-200px)]">
       {/* 3D Preview */}
-      <Card className="tech-glass overflow-hidden">
-        <div className="h-[140px] bg-gradient-to-b from-background to-muted/20">
-          <Canvas camera={{ position: [0, 0, 80], fov: 50 }}>
-            <ambientLight intensity={0.6} />
-            <directionalLight position={[10, 10, 10]} intensity={0.8} />
-            <Suspense fallback={null}>
-              <Label3DPreview
-                text={labelText}
-                fontSize={fontSize}
-                depth={depth}
-                font={font}
-              />
-            </Suspense>
-            <OrbitControls
-              enablePan={false}
-              enableZoom={false}
-              minPolarAngle={Math.PI / 3}
-              maxPolarAngle={Math.PI / 2}
-            />
-          </Canvas>
-        </div>
-        <div className="p-2 text-center border-t border-border/50">
-          <p className="text-[10px] text-muted-foreground font-tech">3D Preview</p>
-        </div>
-      </Card>
+      <PreviewCard text={labelText} fontSize={fontSize} depth={depth} font={font} />
 
       {/* Font Selection */}
-      <div className="space-y-2">
-        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
-          Font
-        </Label>
-        <Select
-          value={font}
-          onValueChange={(value: LabelFont) => {
-            setFont(value);
-            if (selectedLabelId) {
-              handleUpdateSelectedLabel({ font: value });
-            }
-          }}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue placeholder="Select font" />
-          </SelectTrigger>
-          <SelectContent>
-            {LABEL_FONTS.map((f) => (
-              <SelectItem key={f.value} value={f.value} className="text-xs">
-                {f.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <FontSelect value={font} onChange={handleFontChange} />
 
       {/* Label Text Input */}
       <div className="space-y-2">
@@ -251,69 +374,33 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
         </Label>
         <Input
           value={labelText}
-          onChange={(e) => {
-            setLabelText(e.target.value);
-            if (selectedLabelId) {
-              handleUpdateSelectedLabel({ text: e.target.value });
-            }
-          }}
+          onChange={handleTextChange}
           placeholder="Enter label text..."
           className="font-tech"
         />
       </div>
 
       {/* Font Size */}
-      <div className="space-y-3">
-        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
-          Font Size (min {MIN_FONT_SIZE}mm)
-        </Label>
-        <div className="flex items-center gap-3">
-          <Slider
-            value={[fontSize]}
-            onValueChange={([v]) => {
-              setFontSize(v);
-              if (selectedLabelId) {
-                handleUpdateSelectedLabel({ fontSize: v });
-              }
-            }}
-            min={MIN_FONT_SIZE}
-            max={MAX_FONT_SIZE}
-            step={1}
-            className="flex-1"
-          />
-          <Badge variant="secondary" className="font-tech min-w-[50px] justify-center">
-            {fontSize}mm
-          </Badge>
-        </div>
-      </div>
+      <SliderControl
+        label={`Font Size (min ${MIN_FONT_SIZE}mm)`}
+        value={fontSize}
+        min={MIN_FONT_SIZE}
+        max={MAX_FONT_SIZE}
+        step={1}
+        onChange={handleFontSizeChange}
+      />
 
       {/* Emboss Height */}
-      <div className="space-y-3">
-        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
-          Emboss Height
-        </Label>
-        <div className="flex items-center gap-3">
-          <Slider
-            value={[depth]}
-            onValueChange={([v]) => {
-              setDepth(v);
-              if (selectedLabelId) {
-                handleUpdateSelectedLabel({ depth: v });
-              }
-            }}
-            min={MIN_DEPTH}
-            max={MAX_DEPTH}
-            step={0.1}
-            className="flex-1"
-          />
-          <Badge variant="secondary" className="font-tech min-w-[50px] justify-center">
-            {depth.toFixed(1)}mm
-          </Badge>
-        </div>
-        <p className="text-[10px] text-muted-foreground font-tech">
-          Default: {DEFAULT_DEPTH}mm. Use Z-axis gizmo to adjust after placing.
-        </p>
-      </div>
+      <SliderControl
+        label="Emboss Height"
+        value={depth}
+        min={MIN_DEPTH}
+        max={MAX_DEPTH}
+        step={0.1}
+        formatValue={(v) => v.toFixed(1)}
+        helpText={`Default: ${DEFAULT_DEPTH}mm. Use Z-axis gizmo to adjust after placing.`}
+        onChange={handleDepthChange}
+      />
 
       <Separator />
 
@@ -323,7 +410,7 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
         size="sm"
         className="w-full font-tech"
         onClick={handleAddLabel}
-        disabled={!labelText.trim()}
+        disabled={!canAddLabel}
       >
         <Plus className="w-4 h-4 mr-2" />
         Add Label to Scene
@@ -338,7 +425,8 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
       {/* Labels count indicator */}
       {labels.length > 0 && (
         <p className="text-[10px] text-muted-foreground font-tech text-center">
-          {labels.length} label{labels.length !== 1 ? 's' : ''} added. View and edit in Properties panel.
+          {labels.length} label{labels.length !== 1 ? 's' : ''} added. View and edit in Properties
+          panel.
         </p>
       )}
     </div>

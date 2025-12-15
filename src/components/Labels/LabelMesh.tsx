@@ -1,16 +1,31 @@
 /**
  * LabelMesh
- * 
- * Renders a 3D text label using TextGeometry from three.js.
- * Supports embossed (raised) labels only.
- * Supports multiple fonts: Helvetica, Roboto, Arial.
+ *
+ * Renders a 3D text label using Text3D from @react-three/drei.
+ * Supports embossed (raised) labels with multiple font options.
  */
 
 import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { Text3D } from '@react-three/drei';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
-import { LabelConfig, getFontFile } from './types';
+import { LabelConfig, getFontFile, toVector3, toEuler } from './types';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DOUBLE_CLICK_THRESHOLD_MS = 300;
+const SELECTION_COLOR = 0x93c5fd;
+const DEFAULT_COLOR = 0x666666;
+const PREVIEW_COLOR = 0x3b82f6;
+const PREVIEW_OPACITY = 0.7;
+const MIN_VALID_DIMENSION = 0.01;
+const OFFSET_CHANGE_THRESHOLD = 0.01;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface LabelMeshProps {
   label: LabelConfig;
@@ -21,11 +36,46 @@ interface LabelMeshProps {
   onBoundsComputed?: (labelId: string, width: number, height: number) => void;
 }
 
-// Double-click detection threshold in milliseconds
-const DOUBLE_CLICK_THRESHOLD_MS = 300;
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Selection color (matches support selection)
-const SELECTION_COLOR = 0x93c5fd;
+/** Creates the material for the label based on state */
+const createLabelMaterial = (preview: boolean, selected: boolean): THREE.MeshStandardMaterial => {
+  const color = preview ? PREVIEW_COLOR : selected ? SELECTION_COLOR : DEFAULT_COLOR;
+
+  return new THREE.MeshStandardMaterial({
+    color,
+    transparent: preview,
+    opacity: preview ? PREVIEW_OPACITY : 1,
+    metalness: 0.1,
+    roughness: 0.6,
+    side: THREE.DoubleSide,
+    emissive: selected ? SELECTION_COLOR : 0x000000,
+    emissiveIntensity: selected ? 0.15 : 0,
+  });
+};
+
+/** Validates if the computed bounds are reasonable for the given text */
+const isValidBounds = (
+  width: number,
+  height: number,
+  textLength: number,
+  fontSize: number
+): boolean => {
+  if (width < MIN_VALID_DIMENSION || height < MIN_VALID_DIMENSION) {
+    return false;
+  }
+
+  const expectedMinWidth = textLength * fontSize * 0.3;
+  const expectedMaxWidth = textLength * fontSize * 1.0;
+
+  return width >= expectedMinWidth * 0.5 && width <= expectedMaxWidth * 2;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────────────────────
 
 const LabelMesh: React.FC<LabelMeshProps> = ({
   label,
@@ -38,140 +88,86 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
   const groupRef = useRef<THREE.Group>(null);
   const textRef = useRef<THREE.Mesh>(null);
   const lastClickTimeRef = useRef<number>(0);
-  const lastReportedBoundsRef = useRef<{ width: number; height: number; text: string } | null>(null);
   const boundsComputedRef = useRef(false);
-  
-  // Track computed offset for manual centering
-  const [textOffset, setTextOffset] = useState<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
 
-  // Material based on state
-  const material = useMemo(() => {
-    return new THREE.MeshStandardMaterial({
-      color: preview ? 0x3b82f6 : selected ? SELECTION_COLOR : 0x666666,
-      transparent: preview,
-      opacity: preview ? 0.7 : 1,
-      metalness: 0.1,
-      roughness: 0.6,
-      side: THREE.DoubleSide,
-      emissive: selected ? SELECTION_COLOR : 0x000000,
-      emissiveIntensity: selected ? 0.15 : 0,
-    });
-  }, [preview, selected]);
+  const [textOffset, setTextOffset] = useState(() => new THREE.Vector3(0, 0, 0));
 
-  // Handle click/double-click
-  const handleClick = useCallback((event: ThreeEvent<MouseEvent>) => {
-    event.stopPropagation();
-    
-    const now = Date.now();
-    const timeSinceLastClick = now - lastClickTimeRef.current;
-    
-    if (timeSinceLastClick < DOUBLE_CLICK_THRESHOLD_MS) {
-      // Double-click detected
-      onDoubleClick?.(label.id);
-      lastClickTimeRef.current = 0;
-    } else {
-      // Single click - select
-      onSelect?.(label.id);
-      lastClickTimeRef.current = now;
-    }
-  }, [label.id, onSelect, onDoubleClick]);
+  // Memoized values
+  const material = useMemo(() => createLabelMaterial(preview, selected), [preview, selected]);
+  const position = useMemo(() => toVector3(label.position), [label.position]);
+  const rotation = useMemo(() => toEuler(label.rotation), [label.rotation]);
+  const fontFile = useMemo(() => getFontFile(label.font ?? 'helvetiker'), [label.font]);
 
-  // Ensure position is a THREE.Vector3
-  const position = useMemo(() => {
-    const pos = label.position;
-    if (pos instanceof THREE.Vector3) {
-      return pos;
-    }
-    return new THREE.Vector3((pos as any).x, (pos as any).y, (pos as any).z);
-  }, [label.position]);
-
-  // Ensure rotation is a THREE.Euler
-  const rotation = useMemo(() => {
-    const rot = label.rotation;
-    if (rot instanceof THREE.Euler) {
-      return rot;
-    }
-    return new THREE.Euler((rot as any).x, (rot as any).y, (rot as any).z);
-  }, [label.rotation]);
-
-  // Emboss height - positive extrusion outward from surface
-  const extrudeDepth = label.depth;
-
-  // Track the current text to detect geometry updates
-  const currentTextRef = useRef(label.text);
-
-  // Reset bounds tracking when text, fontSize, or font changes
+  // Reset bounds tracking when label properties change
   useEffect(() => {
     boundsComputedRef.current = false;
-    lastReportedBoundsRef.current = null;
-    currentTextRef.current = label.text;
-    // Reset offset to trigger re-centering
     setTextOffset(new THREE.Vector3(0, 0, 0));
   }, [label.text, label.fontSize, label.font]);
 
-  // Compute bounds and manually center the text
+  // Handle click with double-click detection
+  const handleClick = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation();
+
+      const now = Date.now();
+      const timeSinceLastClick = now - lastClickTimeRef.current;
+
+      if (timeSinceLastClick < DOUBLE_CLICK_THRESHOLD_MS) {
+        onDoubleClick?.(label.id);
+        lastClickTimeRef.current = 0;
+      } else {
+        onSelect?.(label.id);
+        lastClickTimeRef.current = now;
+      }
+    },
+    [label.id, onSelect, onDoubleClick]
+  );
+
+  // Compute bounds and center text on each frame
   useFrame(() => {
-    if (!textRef.current) return;
-    
     const mesh = textRef.current;
-    if (!mesh.geometry) return;
-    
-    // Compute bounding box of the text geometry
+    if (!mesh?.geometry) return;
+
     mesh.geometry.computeBoundingBox();
     const box = mesh.geometry.boundingBox;
     if (!box) return;
-    
-    // Get the actual width (X) and height (Y) of the text in local space
-    // Text3D: X is width (character direction), Y is height (font size direction), Z is depth
+
     const width = box.max.x - box.min.x;
     const height = box.max.y - box.min.y;
-    
-    // Skip if geometry appears to be empty/default (not yet updated)
-    if (width < 0.01 || height < 0.01) return;
-    
-    // Check if width is reasonable for the current text
-    const expectedMinWidth = label.text.length * label.fontSize * 0.3;
-    const expectedMaxWidth = label.text.length * label.fontSize * 1.0;
-    if (width < expectedMinWidth * 0.5 || width > expectedMaxWidth * 2) {
+
+    if (!isValidBounds(width, height, label.text.length, label.fontSize)) {
       return;
     }
-    
-    // Compute center offset - Text3D starts at origin, we need to shift to center it
-    // Center X (width direction) and Y (height direction), not Z (depth)
+
+    // Compute centering offset
     const centerX = (box.min.x + box.max.x) / 2;
     const centerY = (box.min.y + box.max.y) / 2;
     const newOffset = new THREE.Vector3(-centerX, -centerY, 0);
-    
-    // Update text offset if changed significantly
-    if (Math.abs(textOffset.x - newOffset.x) > 0.01 || Math.abs(textOffset.y - newOffset.y) > 0.01) {
+
+    // Update offset if changed significantly
+    const offsetChanged =
+      Math.abs(textOffset.x - newOffset.x) > OFFSET_CHANGE_THRESHOLD ||
+      Math.abs(textOffset.y - newOffset.y) > OFFSET_CHANGE_THRESHOLD;
+
+    if (offsetChanged) {
       setTextOffset(newOffset);
     }
-    
-    // Report bounds if not already done for this text
+
+    // Report bounds once
     if (!boundsComputedRef.current && onBoundsComputed) {
-      lastReportedBoundsRef.current = { width, height, text: label.text };
       boundsComputedRef.current = true;
       onBoundsComputed(label.id, width, height);
     }
   });
 
-  // Get font file path based on label font config
-  const fontFile = useMemo(() => getFontFile(label.font || 'helvetiker'), [label.font]);
-
   return (
-    <group
-      ref={groupRef}
-      position={position}
-      rotation={rotation}
-      onClick={handleClick}
-    >
-      {/* Manual centering using computed offset - ensures visual matches hull calculation */}
+    <group ref={groupRef} position={position} rotation={rotation} onClick={handleClick}>
       <group position={textOffset}>
         <Text3D
           ref={textRef}
           font={fontFile}
           size={label.fontSize}
-          height={extrudeDepth}
+          height={label.depth}
           curveSegments={4}
           bevelEnabled={false}
         >
