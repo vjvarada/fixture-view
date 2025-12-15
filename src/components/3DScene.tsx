@@ -20,7 +20,7 @@ import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResul
 import SupportTransformControls from './Supports/SupportTransformControls';
 import { LabelMesh, LabelTransformControls } from './Labels';
 import { LabelConfig } from './Labels/types';
-import { ClampMesh, ClampTransformControls, PlacedClamp, ClampModel, getClampById } from './Clamps';
+import { ClampMesh, ClampTransformControls, ClampWithSupport, PlacedClamp, ClampModel, getClampById } from './Clamps';
 
 /** Target triangle count for offset mesh decimation */
 const OFFSET_MESH_DECIMATION_TARGET = 50_000;
@@ -794,6 +794,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const [placedClamps, setPlacedClamps] = useState<PlacedClamp[]>([]);
   const [selectedClampId, setSelectedClampId] = useState<string | null>(null);
   const [showClampDebug, setShowClampDebug] = useState(true); // Show debug geometries for clamps
+  // Track minimum placement offsets for each clamp (from clamp-data-loaded events)
+  const [clampMinOffsets, setClampMinOffsets] = useState<Map<string, number>>(new Map());
   
   // Debug: perimeter visualization from auto-placement (disabled by default)
   // Set DEBUG_SHOW_PERIMETER to true to enable red boundary line visualization
@@ -2046,8 +2048,15 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const onClampPlace = (e: CustomEvent) => {
       const { clampModelId, position } = e.detail as { clampModelId: string; position?: { x: number; y: number; z: number } };
       
-      // Default position at origin or provided position
-      const defaultPosition = position || { x: 0, y: baseTopY, z: 0 };
+      // Default minimum placement offset (will be updated when clamp data loads)
+      // Use a reasonable default that assumes cutouts extend ~15mm below fixture point
+      const defaultMinOffset = 15;
+      const minPlacementY = baseTopY + defaultMinOffset;
+      
+      // Default position at minimum placement height or provided position
+      const defaultPosition = position || { x: 0, y: minPlacementY, z: 0 };
+      // Ensure Y is at least at minimum placement height
+      defaultPosition.y = Math.max(defaultPosition.y, minPlacementY);
       
       const newClamp: PlacedClamp = {
         id: `clamp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -2066,15 +2075,52 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
     const onClampUpdate = (e: CustomEvent) => {
       const { clampId, updates } = e.detail as { clampId: string; updates: Partial<PlacedClamp> };
+      
+      // Enforce minimum Y position if we have the offset for this clamp
+      if (updates.position) {
+        const minOffset = clampMinOffsets.get(clampId) ?? 15; // Default 15mm
+        const minY = baseTopY + minOffset;
+        updates.position.y = Math.max(updates.position.y, minY);
+      }
+      
       setPlacedClamps(prev => prev.map(c => c.id === clampId ? { ...c, ...updates } : c));
     };
 
     const onClampDelete = (e: CustomEvent) => {
       const clampId = e.detail as string;
       setPlacedClamps(prev => prev.filter(c => c.id !== clampId));
+      setClampMinOffsets(prev => {
+        const next = new Map(prev);
+        next.delete(clampId);
+        return next;
+      });
       if (selectedClampId === clampId) {
         setSelectedClampId(null);
       }
+    };
+    
+    // Handle clamp data loaded events (update minimum placement offset)
+    const onClampDataLoaded = (e: CustomEvent) => {
+      const { clampId, minPlacementOffset } = e.detail as { 
+        clampId: string; 
+        minPlacementOffset: number;
+        fixturePointY: number;
+      };
+      
+      console.log('[3DScene] Clamp data loaded:', { clampId, minPlacementOffset });
+      
+      // Store the minimum offset for this clamp
+      setClampMinOffsets(prev => new Map(prev).set(clampId, minPlacementOffset));
+      
+      // Update clamp position if it's below the minimum
+      const minY = baseTopY + minPlacementOffset;
+      setPlacedClamps(prev => prev.map(c => {
+        if (c.id === clampId && c.position.y < minY) {
+          console.log('[3DScene] Adjusting clamp position from', c.position.y, 'to', minY);
+          return { ...c, position: { ...c.position, y: minY } };
+        }
+        return c;
+      }));
     };
 
     const onClampSelect = (e: CustomEvent) => {
@@ -2085,6 +2131,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const onClampsClearAll = () => {
       setPlacedClamps([]);
       setSelectedClampId(null);
+      setClampMinOffsets(new Map());
     };
 
     const onClampToggleDebug = (e: CustomEvent) => {
@@ -2098,6 +2145,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     window.addEventListener('clamp-select', onClampSelect as EventListener);
     window.addEventListener('clamps-clear-all', onClampsClearAll);
     window.addEventListener('clamp-toggle-debug', onClampToggleDebug as EventListener);
+    window.addEventListener('clamp-data-loaded', onClampDataLoaded as EventListener);
 
     return () => {
       window.removeEventListener('clamp-place', onClampPlace as EventListener);
@@ -2106,8 +2154,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       window.removeEventListener('clamp-select', onClampSelect as EventListener);
       window.removeEventListener('clamps-clear-all', onClampsClearAll);
       window.removeEventListener('clamp-toggle-debug', onClampToggleDebug as EventListener);
+      window.removeEventListener('clamp-data-loaded', onClampDataLoaded as EventListener);
     };
-  }, [selectedClampId, baseTopY]);
+  }, [selectedClampId, baseTopY, clampMinOffsets]);
 
   // Build a THREE.Mesh for a support using the same dimensions/origining as SupportMesh
   const buildSupportMesh = useCallback((support: AnySupport, baseTop: number) => {
@@ -3825,12 +3874,14 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           if (!clampModel) return null;
           
           return (
-            <ClampMesh
+            <ClampWithSupport
               key={placedClamp.id}
               clampModel={clampModel}
               placedClamp={placedClamp}
               selected={selectedClampId === placedClamp.id}
               showDebug={showClampDebug}
+              baseTopY={baseTopY}
+              showSupport={true}
               onClick={(id) => {
                 setSelectedClampId(id);
                 window.dispatchEvent(new CustomEvent('clamp-selected', { detail: id }));

@@ -26,6 +26,8 @@ export interface LoadedClampData {
   fixturePointTopCenter: THREE.Vector3;
   /** Bounding box of main clamp */
   boundingBox: THREE.Box3;
+  /** Minimum placement height offset (from fixture point to lowest cutout point) */
+  minPlacementOffset: number;
 }
 
 // Keep old interface for backwards compatibility
@@ -415,6 +417,27 @@ export async function loadClampModel(clamp: ClampModel): Promise<ClampLoadResult
       );
     }
     
+    // Calculate minimum placement offset based on fixture cutouts
+    // This is the distance from the fixture point to the lowest point of the cutouts
+    // When placed at height H, the cutouts extend down to H + minPlacementOffset
+    // For the cutouts to not go below the baseplate, H >= baseTopY - minPlacementOffset
+    let minPlacementOffset = 0;
+    if (fixtureCutoutsGeometry) {
+      fixtureCutoutsGeometry.computeBoundingBox();
+      const cutoutsBbox = fixtureCutoutsGeometry.boundingBox!;
+      // The lowest point of the cutouts in local Z-up space (Y is up after conversion)
+      const cutoutsMinY = cutoutsBbox.min.y;
+      // The fixture point Y position
+      const fixturePointY = fixturePointTopCenter.y;
+      // Offset = how far below the fixture point the cutouts extend
+      minPlacementOffset = fixturePointY - cutoutsMinY;
+      console.log('[ClampLoader] Minimum placement offset calculated:', {
+        cutoutsMinY,
+        fixturePointY,
+        minPlacementOffset,
+      });
+    }
+    
     return {
       success: true,
       data: {
@@ -425,6 +448,7 @@ export async function loadClampModel(clamp: ClampModel): Promise<ClampLoadResult
         fixtureCutoutsGeometry,
         fixturePointTopCenter,
         boundingBox,
+        minPlacementOffset,
       },
     };
   } catch (error) {
