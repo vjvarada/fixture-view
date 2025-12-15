@@ -843,6 +843,11 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           return [...prev, support];
         });
         
+        // Mark supports step as completed
+        if (!completedSteps.includes('supports')) {
+          setCompletedSteps(prev => [...prev, 'supports']);
+        }
+        
         // Record to undo stack
         const state = { type: 'support-created', support };
         setUndoStack(prev => [...prev, state]);
@@ -859,7 +864,14 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
       const onSupportDelete = (e: CustomEvent) => {
         const supportId = e.detail as string;
-        setSupports(prev => prev.filter(s => s.id !== supportId));
+        setSupports(prev => {
+          const newSupports = prev.filter(s => s.id !== supportId);
+          // Remove completion if no supports left
+          if (newSupports.length === 0) {
+            setCompletedSteps(prevSteps => prevSteps.filter(s => s !== 'supports'));
+          }
+          return newSupports;
+        });
         if (selectedSupportId === supportId) {
           setSelectedSupportId(null);
         }
@@ -868,6 +880,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       const onSupportsClearAll = () => {
         setSupports([]);
         setSelectedSupportId(null);
+        // Remove supports completion when all cleared
+        setCompletedSteps(prev => prev.filter(s => s !== 'supports'));
       };
 
       const onCancelPlacement = () => {
@@ -880,6 +894,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         if (newSupports && Array.isArray(newSupports)) {
           setSupports(newSupports);
           setSelectedSupportId(null);
+          // Mark supports step as completed if we have supports
+          if (newSupports.length > 0 && !completedSteps.includes('supports')) {
+            setCompletedSteps(prev => [...prev, 'supports']);
+          } else if (newSupports.length === 0) {
+            setCompletedSteps(prev => prev.filter(s => s !== 'supports'));
+          }
           console.log('[AppShell] Auto-placed', newSupports.length, 'supports');
         }
       };
@@ -899,7 +919,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         window.removeEventListener('supports-cancel-placement', onCancelPlacement);
         window.removeEventListener('supports-auto-placed', onSupportsAutoPlaced as EventListener);
       };
-    }, [selectedSupportId]);
+    }, [selectedSupportId, completedSteps]);
 
     // Handle support update from properties panel
     const handleSupportUpdate = useCallback((support: AnySupport) => {
