@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { useThree, ThreeEvent } from '@react-three/fiber';
-import { OrbitControls as DreiOrbitControls, Html } from '@react-three/drei';
+import { OrbitControls as DreiOrbitControls, Html, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import BasePlate from "./BasePlate";
 import type { BasePlateConfig } from './BasePlate/types';
@@ -3527,6 +3527,14 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           }
         }}
       />
+
+      {/* Gizmo Helper for quick view changes */}
+      <GizmoHelper
+        alignment="top-right"
+        margin={[80, 80]}
+      >
+        <GizmoViewport axisColors={['#ff4060', '#40ff60', '#4080ff']} labels={['X', 'Z', 'Y']} labelColor="white" />
+      </GizmoHelper>
 
       {/* Processing indicator for GPU offset + support trimming */}
       {supportsTrimProcessing && (
