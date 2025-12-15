@@ -7,6 +7,7 @@ import { Slider } from '@/components/ui/slider';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { AlertCircle, Type, Plus } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Center, Text3D } from '@react-three/drei';
@@ -19,6 +20,9 @@ import {
   MIN_DEPTH,
   MAX_DEPTH,
   DEFAULT_DEPTH,
+  LabelFont,
+  LABEL_FONTS,
+  getFontFile,
 } from '@/components/Labels/types';
 
 interface LabelsStepContentProps {
@@ -38,14 +42,16 @@ const Label3DPreview: React.FC<{
   text: string;
   fontSize: number;
   depth: number;
-}> = ({ text, fontSize, depth }) => {
+  font: LabelFont;
+}> = ({ text, fontSize, depth, font }) => {
   // Scale factor to fit preview nicely
   const scale = 30 / Math.max(fontSize, 10);
+  const fontFile = getFontFile(font);
   
   return (
     <Center scale={scale}>
       <Text3D
-        font="/fonts/helvetiker_bold.typeface.json"
+        font={fontFile}
         size={fontSize}
         height={depth}
         curveSegments={4}
@@ -77,6 +83,7 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
   const [labelText, setLabelText] = useState(DEFAULT_LABEL_CONFIG.text);
   const [fontSize, setFontSize] = useState(DEFAULT_LABEL_CONFIG.fontSize);
   const [depth, setDepth] = useState(DEFAULT_LABEL_CONFIG.depth);
+  const [font, setFont] = useState<LabelFont>(DEFAULT_LABEL_CONFIG.font);
 
   // Get the selected label for properties panel
   const selectedLabel = labels.find(l => l.id === selectedLabelId);
@@ -87,6 +94,7 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
       setLabelText(selectedLabel.text);
       setFontSize(selectedLabel.fontSize);
       setDepth(selectedLabel.depth);
+      setFont(selectedLabel.font || 'helvetiker');
     }
   }, [selectedLabel]);
 
@@ -155,6 +163,7 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
       text: labelText,
       fontSize,
       depth,
+      font,
       position: new THREE.Vector3(0, 10, 0), // Will be positioned by 3DScene
       rotation: new THREE.Euler(-Math.PI / 2, 0, 0), // Face up by default
     };
@@ -192,6 +201,7 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
                 text={labelText}
                 fontSize={fontSize}
                 depth={depth}
+                font={font}
               />
             </Suspense>
             <OrbitControls
@@ -206,6 +216,33 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
           <p className="text-[10px] text-muted-foreground font-tech">3D Preview</p>
         </div>
       </Card>
+
+      {/* Font Selection */}
+      <div className="space-y-2">
+        <Label className="text-xs font-tech text-muted-foreground uppercase tracking-wider">
+          Font
+        </Label>
+        <Select
+          value={font}
+          onValueChange={(value: LabelFont) => {
+            setFont(value);
+            if (selectedLabelId) {
+              handleUpdateSelectedLabel({ font: value });
+            }
+          }}
+        >
+          <SelectTrigger className="h-8 text-xs">
+            <SelectValue placeholder="Select font" />
+          </SelectTrigger>
+          <SelectContent>
+            {LABEL_FONTS.map((f) => (
+              <SelectItem key={f.value} value={f.value} className="text-xs">
+                {f.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
 
       {/* Label Text Input */}
       <div className="space-y-2">

@@ -13,13 +13,20 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Trash2, Type, Crosshair, RotateCcw } from 'lucide-react';
 import * as THREE from 'three';
-import { LabelConfig, MIN_FONT_SIZE, MAX_FONT_SIZE, MIN_DEPTH, MAX_DEPTH } from './types';
+import { LabelConfig, LabelFont, LABEL_FONTS, MIN_FONT_SIZE, MAX_FONT_SIZE, MIN_DEPTH, MAX_DEPTH } from './types';
 
 interface LabelsAccordionProps {
   labels: LabelConfig[];
@@ -102,6 +109,29 @@ const LabelsAccordion: React.FC<LabelsAccordionProps> = ({
             onChange={(e) => onLabelUpdate(label.id, { text: e.target.value })}
             className="h-6 !text-[10px] font-mono"
           />
+        </div>
+
+        {/* Font Selection */}
+        <div className="space-y-2">
+          <Label className="text-[8px] font-tech text-muted-foreground flex items-center gap-1">
+            <Type className="w-2.5 h-2.5" />
+            Font
+          </Label>
+          <Select
+            value={label.font || 'helvetiker'}
+            onValueChange={(value: LabelFont) => onLabelUpdate(label.id, { font: value })}
+          >
+            <SelectTrigger className="h-6 !text-[10px]">
+              <SelectValue placeholder="Select font" />
+            </SelectTrigger>
+            <SelectContent>
+              {LABEL_FONTS.map((f) => (
+                <SelectItem key={f.value} value={f.value} className="text-xs">
+                  {f.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Position */}

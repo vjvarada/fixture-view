@@ -856,6 +856,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const prevLabelHullPointsRef = useRef<Array<{x: number; z: number}>>([]);
   const labelHullPoints = useMemo(() => {
     const points: Array<{x: number; z: number}> = [];
+    // Add margin to label footprint (same as FILLET_RADIUS used for supports)
+    const LABEL_MARGIN = 2.0;
+    
     for (const label of labels) {
       // Use actual computed bounds from rendered geometry if available,
       // otherwise fall back to estimates
@@ -874,7 +877,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
       
       const pos = label.position;
-      // No additional padding - baseplate already has its own padding
+      // Add margin to match support fillet margin for consistent baseplate extension
       
       // Get label's rotation around Y axis (which is Z rotation when label is flat)
       // Label lies flat with X rotation of -PI/2, so its "spin" is stored in rotation.z
@@ -884,8 +887,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // Label lies flat with rotation.x = -PI/2, which flips the Y axis:
       // - Text width runs along world X
       // - Text height (font size) runs along world -Z (inverted)
-      const halfW = textWidth / 2;
-      const halfH = textHeight / 2;
+      // Add LABEL_MARGIN to dimensions (same as supports use FILLET_RADIUS)
+      const halfW = textWidth / 2 + LABEL_MARGIN;
+      const halfH = textHeight / 2 + LABEL_MARGIN;
       
       // Define corner points in the world XZ plane (accounting for the Y flip)
       // In local label space: +localY (font height "up") maps to world -Z

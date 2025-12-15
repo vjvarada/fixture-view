@@ -3,14 +3,14 @@
  * 
  * Renders a 3D text label using TextGeometry from three.js.
  * Supports embossed (raised) labels only.
- * Uses Roboto font optimized for 3D printing readability.
+ * Supports multiple fonts: Helvetica, Roboto, Arial.
  */
 
 import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { Text3D } from '@react-three/drei';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
-import { LabelConfig } from './types';
+import { LabelConfig, getFontFile } from './types';
 
 interface LabelMeshProps {
   label: LabelConfig;
@@ -100,14 +100,14 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
   // Track the current text to detect geometry updates
   const currentTextRef = useRef(label.text);
 
-  // Reset bounds tracking when text or fontSize changes
+  // Reset bounds tracking when text, fontSize, or font changes
   useEffect(() => {
     boundsComputedRef.current = false;
     lastReportedBoundsRef.current = null;
     currentTextRef.current = label.text;
     // Reset offset to trigger re-centering
     setTextOffset(new THREE.Vector3(0, 0, 0));
-  }, [label.text, label.fontSize]);
+  }, [label.text, label.fontSize, label.font]);
 
   // Compute bounds and manually center the text
   useFrame(() => {
@@ -155,6 +155,9 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
     }
   });
 
+  // Get font file path based on label font config
+  const fontFile = useMemo(() => getFontFile(label.font || 'helvetiker'), [label.font]);
+
   return (
     <group
       ref={groupRef}
@@ -166,7 +169,7 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
       <group position={textOffset}>
         <Text3D
           ref={textRef}
-          font="/fonts/helvetiker_bold.typeface.json"
+          font={fontFile}
           size={label.fontSize}
           height={extrudeDepth}
           curveSegments={4}
