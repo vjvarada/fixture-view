@@ -188,7 +188,7 @@ export function useViewer(
     scene.background = new THREE.Color(config.backgroundColor);
     sceneRef.current = scene;
 
-    // Camera (orthographic default to match ToolWorks-like view)
+    // Camera (orthographic default to match RapidTool-like view)
     let camera: THREE.Camera;
     if (config.cameraType === 'orthographic') {
       const aspect = rect.width / rect.height;

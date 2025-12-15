@@ -32,22 +32,23 @@ const createRoundedRectShape = (width: number, height: number, cornerRadiusFacto
   return shape;
 };
 
-// Create an extruded geometry with bevels, rotated for Y-up baseplate
-const createExtrudedBaseplate = (shape: THREE.Shape, depth: number, bevelSizeFactor: number = 0.25): THREE.BufferGeometry => {
-  const bevelThickness = Math.min(0.6, depth * 0.15);
-  const extrudeDepth = Math.max(0.1, depth - 2 * bevelThickness);
+// Create an extruded geometry with 45-degree chamfers, rotated for Y-up baseplate
+const createExtrudedBaseplate = (shape: THREE.Shape, depth: number, chamferSizeFactor: number = 0.15): THREE.BufferGeometry => {
+  // For a 45-degree chamfer, bevelThickness must equal bevelSize
+  const chamferSize = Math.min(1.0, depth * chamferSizeFactor);
+  const extrudeDepth = Math.max(0.1, depth - 2 * chamferSize);
   
   const g = new THREE.ExtrudeGeometry(shape, {
     depth: extrudeDepth,
     bevelEnabled: true,
-    bevelThickness: bevelThickness,
-    bevelSize: Math.min(0.8, depth * bevelSizeFactor),
-    bevelSegments: 2,
+    bevelThickness: chamferSize, // vertical distance
+    bevelSize: chamferSize,       // horizontal distance - equal for 45 degrees
+    bevelSegments: 1,             // single segment = flat chamfer, not rounded fillet
   });
   
   // Rotate to Y-up and translate so bottom sits at Y=0
   g.rotateX(-Math.PI / 2);
-  g.translate(0, bevelThickness, 0);
+  g.translate(0, chamferSize, 0);
   
   return finalizeGeometry(g);
 };
@@ -257,26 +258,25 @@ const BasePlate: React.FC<BasePlateProps> = ({
             }
             shape.closePath();
 
-            // === STEP 5: Extrude and position with bevel/chamfer ===
-            // Calculate bevel size based on depth (similar to rectangular baseplate)
-            const bevelThickness = Math.min(0.6, depth * 0.15);
-            const bevelSize = Math.min(0.8, depth * 0.1);
-            // Reduce extrusion depth so total height (including bevels) equals specified depth
-            const extrudeDepth = Math.max(0.1, depth - 2 * bevelThickness);
+            // === STEP 5: Extrude and position with 45-degree chamfer ===
+            // For a 45-degree chamfer, bevelThickness must equal bevelSize
+            const chamferSize = Math.min(1.0, depth * 0.15);
+            // Reduce extrusion depth so total height (including chamfers) equals specified depth
+            const extrudeDepth = Math.max(0.1, depth - 2 * chamferSize);
             
             const g = new THREE.ExtrudeGeometry(shape, { 
               depth: extrudeDepth, 
               bevelEnabled: true,
-              bevelThickness: bevelThickness,
-              bevelSize: bevelSize,
-              bevelSegments: 2,
+              bevelThickness: chamferSize, // vertical distance
+              bevelSize: chamferSize,       // horizontal distance - equal for 45 degrees
+              bevelSegments: 1,             // single segment = flat chamfer, not rounded fillet
             });
             
-            // After rotation, geometry spans Y=-bevelThickness to Y=extrudeDepth+bevelThickness
-            // = Y=-bevelThickness to Y=(depth-2*bevel)+bevel = Y=-bevelThickness to Y=depth-bevelThickness
-            // Translate up by bevelThickness so bottom sits at Y=0, top at Y=depth
+            // After rotation, geometry spans Y=-chamferSize to Y=extrudeDepth+chamferSize
+            // = Y=-chamferSize to Y=(depth-2*chamfer)+chamfer = Y=-chamferSize to Y=depth-chamferSize
+            // Translate up by chamferSize so bottom sits at Y=0, top at Y=depth
             g.rotateX(-Math.PI / 2);
-            g.translate(0, bevelThickness, 0);
+            g.translate(0, chamferSize, 0);
             
             return finalizeGeometry(g);
           } catch (error) {

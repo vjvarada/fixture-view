@@ -1,7 +1,7 @@
 {
-  "name": "fixture-view-backend",
+  "name": "rapidtool-fixture-backend",
   "version": "1.0.0",
-  "description": "Backend API for ToolWorks - handles STL/STEP/3MF processing and validation",
+  "description": "Backend API for RapidTool-Fixture - handles STL/STEP/3MF processing and validation",
   "main": "dist/index.js",
   "scripts": {
     "dev": "nodemon src/index.ts",

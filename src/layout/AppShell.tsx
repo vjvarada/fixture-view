@@ -956,7 +956,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
               <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
                 <Aperture className="w-4 h-4 text-primary" />
               </div>
-              <span className="font-tech font-semibold text-sm">ToolWorks</span>
+              <span className="font-tech font-semibold text-sm">RapidTool-Fixture</span>
             </div>
 
             <Separator orientation="vertical" className="h-6" />

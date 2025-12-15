@@ -29,10 +29,10 @@ const Login = ({ onLogin }: LoginProps) => {
     // Simulate authentication
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    if (credentials.username === "admin" && credentials.password === "toolworks") {
+    if (credentials.username === "admin" && credentials.password === "rapidtool") {
       onLogin(credentials);
     } else {
-      setError("Invalid credentials. Try admin/toolworks");
+      setError("Invalid credentials. Try admin/rapidtool");
       setIsLoading(false);
     }
   };
@@ -53,10 +53,10 @@ const Login = ({ onLogin }: LoginProps) => {
             <Aperture className="w-8 h-8 text-primary" />
           </div>
           <h1 className="text-3xl font-bold font-tech bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            ToolWorks
+            RapidTool-Fixture
           </h1>
           <p className="text-muted-foreground mt-1 font-tech text-sm">
-            Automated Manufacturing Tool Designer
+            Automated Fixture Designer
           </p>
         </div>
 
@@ -144,7 +144,7 @@ const Login = ({ onLogin }: LoginProps) => {
 
             <div className="mt-6 text-center">
               <p className="text-xs text-muted-foreground font-tech">
-                Demo credentials: <span className="text-primary">admin</span> / <span className="text-primary">toolworks</span>
+                Demo credentials: <span className="text-primary">admin</span> / <span className="text-primary">rapidtool</span>
               </p>
             </div>
           </CardContent>
