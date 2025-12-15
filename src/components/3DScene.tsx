@@ -1974,7 +1974,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         minZ = -50; maxZ = 50;
       }
       
-      const bpDepth = basePlate?.depth ?? 4;
+      // Use the actual baseplate top Y from the mesh bounding box
+      // baseTopY is computed from the actual geometry, accounting for chamfers
+      const labelY = baseTopY;
       
       // Estimate label width based on text length and font size
       const estimatedLabelWidth = newLabel.fontSize * newLabel.text.length * 0.6;
@@ -1983,7 +1985,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // No padding - label edge touches the boundary
       const labelX = (minX + maxX) / 2; // Center X
       const labelZ = maxZ + newLabel.fontSize / 2; // Front edge (positive Z)
-      const labelY = bpDepth; // On top of baseplate surface
       
       newLabel.position = new THREE.Vector3(labelX, labelY, labelZ);
       // Rotate to face up (readable from above)
@@ -2032,7 +2033,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       window.removeEventListener('label-select', onLabelSelect as EventListener);
       window.removeEventListener('labels-clear-all', onLabelsClearAll);
     };
-  }, [basePlate, selectedLabelId, supports, modelBounds]);
+  }, [basePlate, selectedLabelId, supports, modelBounds, baseTopY]);
 
   // Build a THREE.Mesh for a support using the same dimensions/origining as SupportMesh
   const buildSupportMesh = useCallback((support: AnySupport, baseTop: number) => {
@@ -2796,8 +2797,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       } else if (option === 'convex-hull') {
         const depth = clampPos(dimensions?.height, 1, DEFAULT_THICKNESS);
         const oversizeXY = clampPos(dimensions?.oversizeXY ?? dimensions?.padding, 0, 10);
+        const cornerRadius = 5; // Constant corner radius for rounded edges
         // Convex hull computes its own shape from geometry, position stays at origin
-        cfg = { ...cfg, type: 'convex-hull', depth, oversizeXY, width: size.x + oversizeXY * 2, height: size.z + oversizeXY * 2 };
+        cfg = { ...cfg, type: 'convex-hull', depth, oversizeXY, cornerRadius, width: size.x + oversizeXY * 2, height: size.z + oversizeXY * 2 };
         cfg.position = new THREE.Vector3(0, 0, 0);
       } else if (option === 'perforated-panel') {
         const paddingValue = clampPos(dimensions?.padding, 0, 10);
@@ -3461,6 +3463,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           oversizeXY={basePlate.oversizeXY}
           pitch={basePlate.pitch}
           holeDiameter={basePlate.holeDiameter}
+          cornerRadius={basePlate.cornerRadius}
           modelGeometries={basePlate.type === 'convex-hull' && importedParts.length > 0 ? (() => {
             // Collect geometries and matrices from ALL imported parts
             const geometries: Array<{geometry: THREE.BufferGeometry, matrixWorld?: THREE.Matrix4}> = [];

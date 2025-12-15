@@ -38,6 +38,8 @@ export interface BasePlateConfig {
   pitch?: number;
   /** Hole diameter for perforated/mounting panels (mm) */
   holeDiameter?: number;
+  /** Corner radius for convex hull (mm) - rounds off sharp vertices */
+  cornerRadius?: number;
 }
 
 /**
@@ -85,4 +87,6 @@ export interface BasePlateProps {
   additionalHullPoints?: Array<{ x: number; z: number }>;
   /** Live position delta during pivot transform */
   livePositionDelta?: { x: number; z: number } | null;
+  /** Corner radius for convex hull (mm) - rounds off sharp vertices */
+  cornerRadius?: number;
 }

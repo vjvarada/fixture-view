@@ -33,8 +33,7 @@ interface BaseplatesStepContentProps {
   hasWorkpiece?: boolean;
   currentBaseplate?: { id: string; type: string; padding?: number; height?: number } | null;
   onSelectBaseplate: (type: string, options: { padding: number; height: number }) => void;
-  onRemoveBaseplate?: () => void;
-}
+  onRemoveBaseplate?: () => void;}
 
 const BaseplatesStepContent: React.FC<BaseplatesStepContentProps> = ({
   hasWorkpiece = false,

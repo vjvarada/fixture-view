@@ -53,6 +53,104 @@ const createExtrudedBaseplate = (shape: THREE.Shape, depth: number, chamferSizeF
   return finalizeGeometry(g);
 };
 
+// Create a shape with rounded corners from a polygon (convex hull)
+// Points should be in XY plane format (x, y) corresponding to (worldX, -worldZ)
+// Uses quadratic Bezier curves for robust corner rounding
+const createRoundedPolygonShape = (
+  points: Array<{ x: number; y: number }>, 
+  cornerRadius: number
+): THREE.Shape => {
+  const shape = new THREE.Shape();
+  const n = points.length;
+  
+  if (cornerRadius <= 0 || n < 3) {
+    // No rounding - just create the polygon
+    shape.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < n; i++) {
+      shape.lineTo(points[i].x, points[i].y);
+    }
+    shape.closePath();
+    return shape;
+  }
+
+  // For each corner, compute the offset points where we'll start/end the curve
+  const getCornerPoints = (
+    prev: { x: number; y: number },
+    curr: { x: number; y: number },
+    next: { x: number; y: number },
+    radius: number
+  ) => {
+    // Vectors from corner to adjacent points
+    const v1x = prev.x - curr.x;
+    const v1y = prev.y - curr.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+    
+    const len1 = Math.hypot(v1x, v1y);
+    const len2 = Math.hypot(v2x, v2y);
+    
+    if (len1 < 0.001 || len2 < 0.001) {
+      return { start: curr, end: curr, control: curr, valid: false };
+    }
+    
+    // Limit offset to not exceed half of either edge length
+    const maxOffset = Math.min(len1, len2) * 0.45;
+    const offset = Math.min(radius, maxOffset);
+    
+    // Normalized direction vectors
+    const u1x = v1x / len1;
+    const u1y = v1y / len1;
+    const u2x = v2x / len2;
+    const u2y = v2y / len2;
+    
+    // Points offset from corner along each edge
+    const start = {
+      x: curr.x + u1x * offset,
+      y: curr.y + u1y * offset
+    };
+    const end = {
+      x: curr.x + u2x * offset,
+      y: curr.y + u2y * offset
+    };
+    
+    // Control point is the original corner
+    return { start, end, control: curr, valid: offset > 0.01 };
+  };
+
+  // Compute all corner data
+  const cornerData: Array<ReturnType<typeof getCornerPoints>> = [];
+  for (let i = 0; i < n; i++) {
+    const prev = points[(i - 1 + n) % n];
+    const curr = points[i];
+    const next = points[(i + 1) % n];
+    cornerData.push(getCornerPoints(prev, curr, next, cornerRadius));
+  }
+
+  // Build the path
+  // Start at the end point of first corner's curve (where edge 0->1 begins)
+  const firstCorner = cornerData[0];
+  shape.moveTo(firstCorner.end.x, firstCorner.end.y);
+
+  for (let i = 0; i < n; i++) {
+    const nextIdx = (i + 1) % n;
+    const nextCorner = cornerData[nextIdx];
+    
+    // Line from current position to the start of the next corner's curve
+    shape.lineTo(nextCorner.start.x, nextCorner.start.y);
+    
+    // Quadratic curve around the corner
+    if (nextCorner.valid) {
+      shape.quadraticCurveTo(
+        nextCorner.control.x, nextCorner.control.y,
+        nextCorner.end.x, nextCorner.end.y
+      );
+    }
+  }
+
+  shape.closePath();
+  return shape;
+};
+
 const BasePlate: React.FC<BasePlateProps> = ({
   type,
   width = 100,
@@ -74,6 +172,7 @@ const BasePlate: React.FC<BasePlateProps> = ({
   meshRef: externalMeshRef,
   additionalHullPoints = [],
   livePositionDelta = null,
+  cornerRadius = 0,
 }) => {
   const internalMeshRef = useRef<THREE.Mesh>(null);
   const meshRef = externalMeshRef || internalMeshRef;
@@ -251,12 +350,22 @@ const BasePlate: React.FC<BasePlateProps> = ({
             // Shape is defined in XY plane, we'll rotate to XZ after extrusion
             // Map our XZ coordinates to Shape's XY: shape.x = world.x, shape.y = -world.z
             // We negate Z because rotateX(-PI/2) will flip the Y axis
-            const shape = new THREE.Shape();
-            shape.moveTo(finalHull[0].x, -finalHull[0].z);
-            for (let i = 1; i < finalHull.length; i++) {
-              shape.lineTo(finalHull[i].x, -finalHull[i].z);
-            }
-            shape.closePath();
+            
+            // Convert hull points to XY format for shape creation
+            const hullPointsXY = finalHull.map(p => ({ x: p.x, y: -p.z }));
+            
+            // Create shape with optional rounded corners
+            const shape = cornerRadius > 0 
+              ? createRoundedPolygonShape(hullPointsXY, cornerRadius)
+              : (() => {
+                  const s = new THREE.Shape();
+                  s.moveTo(hullPointsXY[0].x, hullPointsXY[0].y);
+                  for (let i = 1; i < hullPointsXY.length; i++) {
+                    s.lineTo(hullPointsXY[i].x, hullPointsXY[i].y);
+                  }
+                  s.closePath();
+                  return s;
+                })();
 
             // === STEP 5: Extrude and position with 45-degree chamfer ===
             // For a 45-degree chamfer, bevelThickness must equal bevelSize
@@ -308,7 +417,7 @@ const BasePlate: React.FC<BasePlateProps> = ({
       default:
         return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.08), depth);
     }
-  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints, livePositionDelta]);
+  }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints, livePositionDelta, cornerRadius]);
 
   // Update geometry when props change
   React.useEffect(() => {
