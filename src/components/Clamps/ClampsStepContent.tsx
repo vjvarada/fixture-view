@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import {
@@ -164,7 +163,6 @@ const ClampsStepContent: React.FC<ClampsStepContentProps> = ({
   const [imageErrors, setImageErrors] = useState<Set<string>>(new Set());
   const [selectedClamp, setSelectedClamp] = useState<ClampModel | null>(null);
   const [expandedClamp, setExpandedClamp] = useState<string | null>(null);
-  const [showDebug, setShowDebug] = useState(true);
   const [isPlacementMode, setIsPlacementMode] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   
@@ -490,21 +488,6 @@ const ClampsStepContent: React.FC<ClampsStepContentProps> = ({
           Cancel Placement
         </Button>
       )}
-
-      {/* Debug Toggle */}
-      <div className="flex items-center justify-between">
-        <Label htmlFor="show-debug" className="text-xs font-tech text-muted-foreground">
-          Show Debug Meshes
-        </Label>
-        <Switch
-          id="show-debug"
-          checked={showDebug}
-          onCheckedChange={(checked) => {
-            setShowDebug(checked);
-            window.dispatchEvent(new CustomEvent('clamp-toggle-debug', { detail: checked }));
-          }}
-        />
-      </div>
 
       {/* Info Card */}
       <Card className="tech-glass">

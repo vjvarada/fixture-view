@@ -794,7 +794,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Clamps state
   const [placedClamps, setPlacedClamps] = useState<PlacedClamp[]>([]);
   const [selectedClampId, setSelectedClampId] = useState<string | null>(null);
-  const [showClampDebug, setShowClampDebug] = useState(true); // Show debug geometries for clamps
+  const [showClampDebug, setShowClampDebug] = useState(false); // Debug geometries disabled
   // Track minimum placement offsets for each clamp (from clamp-data-loaded events)
   const [clampMinOffsets, setClampMinOffsets] = useState<Map<string, number>>(new Map());
   // Track clamp support info for each clamp (for baseplate bounds calculation and collision)
