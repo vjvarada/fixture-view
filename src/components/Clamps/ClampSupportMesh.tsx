@@ -10,13 +10,16 @@
  * recreating geometry on every clamp transform change during drag.
  */
 
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { CustomSupport } from '../Supports/types';
 import { ClampSupportInfo, createClampSupport } from './clampSupportUtils';
 import { PlacedClamp } from './types';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+// Reusable CSG evaluator for better performance
+const csgEvaluator = new Evaluator();
 
 interface ClampSupportMeshProps {
   /** The placed clamp this support belongs to */
@@ -692,7 +695,7 @@ function createPolygonFilletGeometry(
  * 
  * OPTIMIZED: Geometry is created at origin without baking position.
  * Position/rotation are applied via React Three Fiber transform props.
- * CSG is only computed when height changes (not during XZ drag).
+ * CSG is deferred until gizmo closes to avoid expensive operations during movement.
  */
 const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
   placedClamp,
@@ -703,6 +706,25 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
   fixtureCutoutsGeometry,
   fixturePointTopCenter,
 }) => {
+  // Track whether THIS clamp's gizmo is open (selected for transform)
+  const [isGizmoOpen, setIsGizmoOpen] = useState(false);
+  // Track the last CSG-computed geometry to show while gizmo is open
+  const lastCSGGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  
+  // Listen for clamp selection events to know when gizmo opens/closes
+  useEffect(() => {
+    const handleClampSelected = (e: CustomEvent) => {
+      const selectedClampId = e.detail;
+      // Gizmo is open if THIS clamp is selected
+      setIsGizmoOpen(selectedClampId === placedClamp.id);
+    };
+    
+    window.addEventListener('clamp-selected', handleClampSelected as EventListener);
+    return () => {
+      window.removeEventListener('clamp-selected', handleClampSelected as EventListener);
+    };
+  }, [placedClamp.id]);
+  
   // Memoize clamp position/rotation to avoid object recreation
   const clampPosition = placedClamp.position;
   const clampRotationY = placedClamp.rotation.y;
@@ -744,14 +766,18 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
     return createCutoutsGeometryAtOrigin(fixtureCutoutsGeometry, fixturePointTopCenter);
   }, [fixtureCutoutsGeometry, fixturePointTopCenter]);
 
-  // Apply CSG subtraction - only depends on shape, not position
-  // The cutouts are at origin, the support is at origin, CSG at origin
-  const geometry = useMemo(() => {
+  // Apply CSG subtraction - DEFERRED during drag for performance
+  // While gizmo is open, we show base geometry; CSG runs after gizmo closes
+  const csgGeometry = useMemo(() => {
+    // Skip CSG while gizmo is open - will recalculate when gizmo closes
+    if (isGizmoOpen) {
+      return null; // Signal to use cached or base geometry
+    }
+    
     if (!baseGeometry) return null;
     
     // If no cutouts, return base geometry
     if (!cutoutsAtOrigin) {
-      console.log('[ClampSupportMesh] No cutouts geometry available');
       return baseGeometry;
     }
 
@@ -771,20 +797,12 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
       // To align cutouts Y with support Y:
       // - In local clamp space, mount surface is at Y = mountSurfaceLocalY
       // - In support space, mount surface (top) is at Y = supportHeight
-      // - So: supportY = localY - mountSurfaceLocalY + supportHeight
       // - Offset = supportHeight - mountSurfaceLocalY
       
       const yOffset = supportHeight - supportInfo.mountSurfaceLocalY;
       cutoutsClone.translate(0, yOffset, 0);
       
-      console.log('[ClampSupportMesh] CSG params:', {
-        supportHeight,
-        mountSurfaceLocalY: supportInfo.mountSurfaceLocalY,
-        fixturePointY: fixturePointTopCenter?.y,
-        yOffset,
-      });
-      
-      // Ensure UVs exist for CSG
+      // Ensure UVs exist for CSG (three-bvh-csg requires UV attribute)
       if (!supportClone.getAttribute('uv')) {
         const posAttr = supportClone.getAttribute('position');
         if (posAttr) {
@@ -793,28 +811,45 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
         }
       }
       
-      // Create brushes for CSG
+      // Create brushes for CSG (Brush caches BVH for faster operations)
       const supportBrush = new Brush(supportClone);
       const cutoutsBrush = new Brush(cutoutsClone);
       
-      // Perform CSG subtraction
-      const evaluator = new Evaluator();
-      const result = evaluator.evaluate(supportBrush, cutoutsBrush, SUBTRACTION);
+      // Perform CSG subtraction using shared evaluator
+      const result = csgEvaluator.evaluate(supportBrush, cutoutsBrush, SUBTRACTION);
       
       if (result && result.geometry) {
         result.geometry.computeVertexNormals();
-        console.log('[ClampSupportMesh] CSG subtraction successful');
         return result.geometry;
       }
       
-      console.warn('[ClampSupportMesh] CSG returned no geometry');
       // Fallback to base geometry if CSG fails
       return baseGeometry;
     } catch (error) {
       console.warn('[ClampSupportMesh] CSG subtraction failed:', error);
       return baseGeometry;
     }
-  }, [baseGeometry, cutoutsAtOrigin, supportHeight, supportInfo.mountSurfaceLocalY, fixturePointTopCenter]);
+  }, [baseGeometry, cutoutsAtOrigin, supportHeight, supportInfo.mountSurfaceLocalY, isGizmoOpen]);
+
+  // Cache the last successful CSG geometry and determine what to render
+  // While gizmo open: use base geometry (fast)
+  // After gizmo closes: use CSG geometry (accurate)
+  const geometry = useMemo(() => {
+    if (csgGeometry) {
+      // CSG completed - cache and use it
+      lastCSGGeometryRef.current = csgGeometry;
+      return csgGeometry;
+    }
+    
+    if (isGizmoOpen) {
+      // While gizmo is open, use base geometry for performance
+      // (CSG will recalculate when gizmo closes)
+      return baseGeometry;
+    }
+    
+    // Fallback to cached CSG or base geometry
+    return lastCSGGeometryRef.current || baseGeometry;
+  }, [csgGeometry, isGizmoOpen, baseGeometry]);
 
   // Create material (stable reference)
   const material = useMemo(() => createClampSupportMaterial(), []);
