@@ -40,7 +40,10 @@ interface ClampSupportMeshProps {
 
 // Fillet parameters (same as regular supports)
 const FILLET_RADIUS = 2.0;
-const FILLET_SEGMENTS = 24;
+const FILLET_SEGMENTS = 12; // Reduced from 24 for faster CSG
+
+// Extrusion parameters - reduced for faster CSG
+const EXTRUDE_CURVE_SEGMENTS = 16; // Reduced from 64
 
 // Material for clamp supports (slightly different from regular supports to distinguish)
 const createClampSupportMaterial = () =>
@@ -137,7 +140,7 @@ function createSupportGeometryAtOrigin(
   const bodyGeo = new THREE.ExtrudeGeometry(shape, { 
     depth: bodyHeight, 
     bevelEnabled: false, 
-    curveSegments: 64 
+    curveSegments: EXTRUDE_CURVE_SEGMENTS 
   });
   
   // Rotate to make Y the up direction (extrusion is along Z by default)
@@ -766,7 +769,14 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
     return createCutoutsGeometryAtOrigin(fixtureCutoutsGeometry, fixturePointTopCenter);
   }, [fixtureCutoutsGeometry, fixturePointTopCenter]);
 
-  // Apply CSG subtraction - DEFERRED during drag for performance
+  // Pre-compute and cache the cutouts Brush (BVH building is expensive)
+  // This brush is at origin with no Y offset - we'll clone and offset during CSG
+  const cutoutsBrushBase = useMemo(() => {
+    if (!cutoutsAtOrigin) return null;
+    return new Brush(cutoutsAtOrigin);
+  }, [cutoutsAtOrigin]);
+
+  // Apply CSG subtraction - DEFERRED while gizmo is open for performance
   // While gizmo is open, we show base geometry; CSG runs after gizmo closes
   const csgGeometry = useMemo(() => {
     // Skip CSG while gizmo is open - will recalculate when gizmo closes
@@ -777,14 +787,16 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
     if (!baseGeometry) return null;
     
     // If no cutouts, return base geometry
-    if (!cutoutsAtOrigin) {
+    if (!cutoutsBrushBase) {
       return baseGeometry;
     }
 
     try {
       // Clone geometries for CSG (don't mutate originals)
       const supportClone = baseGeometry.clone();
-      const cutoutsClone = cutoutsAtOrigin.clone();
+      
+      // Clone the cutouts geometry and apply Y offset for this support height
+      const cutoutsClone = cutoutsAtOrigin!.clone();
       
       // The support geometry:
       // - XZ: polygon is relative to fixture point (origin)
@@ -829,7 +841,7 @@ const ClampSupportMesh: React.FC<ClampSupportMeshProps> = ({
       console.warn('[ClampSupportMesh] CSG subtraction failed:', error);
       return baseGeometry;
     }
-  }, [baseGeometry, cutoutsAtOrigin, supportHeight, supportInfo.mountSurfaceLocalY, isGizmoOpen]);
+  }, [baseGeometry, cutoutsBrushBase, cutoutsAtOrigin, supportHeight, supportInfo.mountSurfaceLocalY, isGizmoOpen]);
 
   // Cache the last successful CSG geometry and determine what to render
   // While gizmo open: use base geometry (fast)
