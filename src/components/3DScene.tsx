@@ -4348,22 +4348,11 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     // Get debug points from REF (includes silhouette!)
                     const debugPointsFromRef = clampDebugPointsRef.current;
                     
-                    console.log('[2D-DEBUG] onClampDataLoaded fired:', {
-                      clampId,
-                      clampPosition: clamp.position,
-                      supportPolygonLength: supportInfo.polygon.length,
-                      hasDebugPointsRef: !!debugPointsFromRef,
-                      hasSilhouette: debugPointsFromRef?.silhouette?.length || 0,
-                      hasClosestBoundary: !!debugPointsFromRef?.closestBoundaryPoint,
-                    });
-                    
                     // Use 2D silhouette-based collision detection
                     if (debugPointsFromRef && debugPointsFromRef.silhouette && debugPointsFromRef.silhouette.length > 0) {
                       const closestBoundary = debugPointsFromRef.closestBoundaryPoint 
                         ? { x: debugPointsFromRef.closestBoundaryPoint.x, z: debugPointsFromRef.closestBoundaryPoint.z }
                         : null;
-                      
-                      console.log('[2D-DEBUG] Calling adjustClampAfterDataLoad with 2D silhouette');
                       
                       import('./Clamps/clampPlacement').then(({ adjustClampAfterDataLoad }) => {
                         const result = adjustClampAfterDataLoad(
@@ -4375,10 +4364,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                           1 // minimal clearance - just outside boundary
                         );
                         
-                        console.log('[2D-DEBUG] adjustClampAfterDataLoad result:', result);
-                        
                         if (result.adjusted) {
-                          console.log('[2D-DEBUG] Updating clamp position from', clamp.position, 'to', result.position);
                           setPlacedClamps(prev => prev.map(c => {
                             if (c.id === clampId) {
                               return { ...c, position: result.position };
@@ -4386,11 +4372,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                             return c;
                           }));
                         }
-                      });
-                    } else {
-                      console.log('[2D-DEBUG] Cannot use 2D collision - missing silhouette:', {
-                        hasDebugPointsRef: !!debugPointsFromRef,
-                        silhouetteLength: debugPointsFromRef?.silhouette?.length || 0,
                       });
                     }
                   }
@@ -4514,54 +4495,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       {/* Debug: Perimeter visualization (raycast silhouette) - controlled by DEBUG_SHOW_PERIMETER flag */}
       {DEBUG_SHOW_PERIMETER && debugPerimeter && debugPerimeter.length > 2 && (
         <DebugPerimeterLine perimeter={debugPerimeter} y={baseTopY + 0.5} />
-      )}
-
-      {/* Debug: Clamp placement visualization */}
-      {clampDebugPoints && (
-        <>
-          {/* Silhouette outline - RED */}
-          {clampDebugPoints.silhouette && clampDebugPoints.silhouette.length > 2 ? (
-            <Line
-              points={[
-                ...clampDebugPoints.silhouette.map(p => [p.x, baseTopY + 2, p.z] as [number, number, number]),
-                [clampDebugPoints.silhouette[0].x, baseTopY + 2, clampDebugPoints.silhouette[0].z] // Close the loop
-              ]}
-              color="red"
-              lineWidth={3}
-            />
-          ) : (
-            // Debug: show a warning sphere if no silhouette
-            <mesh position={[0, baseTopY + 50, 0]}>
-              <sphereGeometry args={[10, 16, 16]} />
-              <meshBasicMaterial color="orange" />
-            </mesh>
-          )}
-          {/* Fixture point (where user clicked) - GREEN */}
-          <mesh position={[clampDebugPoints.fixturePoint.x, clampDebugPoints.fixturePoint.y + 5, clampDebugPoints.fixturePoint.z]}>
-            <sphereGeometry args={[5, 16, 16]} />
-            <meshBasicMaterial color="green" />
-          </mesh>
-          {/* Closest boundary point - RED */}
-          <mesh position={[clampDebugPoints.closestBoundaryPoint.x, clampDebugPoints.closestBoundaryPoint.y + 5, clampDebugPoints.closestBoundaryPoint.z]}>
-            <sphereGeometry args={[5, 16, 16]} />
-            <meshBasicMaterial color="red" />
-          </mesh>
-          {/* Estimated support center - BLUE */}
-          <mesh position={[clampDebugPoints.estimatedSupportCenter.x, clampDebugPoints.estimatedSupportCenter.y + 5, clampDebugPoints.estimatedSupportCenter.z]}>
-            <sphereGeometry args={[5, 16, 16]} />
-            <meshBasicMaterial color="blue" />
-          </mesh>
-          {/* Line connecting: GREEN (fixture) -> RED (boundary) -> BLUE (support) */}
-          <Line
-            points={[
-              [clampDebugPoints.fixturePoint.x, clampDebugPoints.fixturePoint.y + 5, clampDebugPoints.fixturePoint.z],
-              [clampDebugPoints.closestBoundaryPoint.x, clampDebugPoints.closestBoundaryPoint.y + 5, clampDebugPoints.closestBoundaryPoint.z],
-              [clampDebugPoints.estimatedSupportCenter.x, clampDebugPoints.estimatedSupportCenter.y + 5, clampDebugPoints.estimatedSupportCenter.z],
-            ]}
-            color="yellow"
-            lineWidth={2}
-          />
-        </>
       )}
 
       {/* Support placement controller */}

@@ -15,8 +15,45 @@ import { PlacedClamp } from './types';
 import { AnySupport } from '../Supports/types';
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Maximum distance (mm) to search for a clear clamp position */
+const MAX_ADJUSTMENT_DISTANCE = 200;
+
+/** Step size (mm) for iterative position searching */
+const POSITION_SEARCH_STEP = 1;
+
+/** Resolution for silhouette rendering (pixels) */
+const SILHOUETTE_RESOLUTION = 512;
+
+/** Padding around silhouette bounds (mm) */
+const SILHOUETTE_PADDING = 5;
+
+/** Minimum angle (radians) for a surface to be considered "top-facing" */
+const MIN_TOP_SURFACE_ANGLE = 0.1;
+
+/** Clearance (mm) between support and part boundary */
+const SUPPORT_CLEARANCE = 2;
+
+// ============================================================================
 // Types
 // ============================================================================
+
+/** 2D point on the XZ plane */
+export type Point2D = { x: number; z: number };
+
+/** 3D position */
+export type Position3D = { x: number; y: number; z: number };
+
+/** 3D rotation in degrees */
+export type Rotation3D = { x: number; y: number; z: number };
+
+/** Polygon represented as an array of 2D points */
+export type Polygon2D = Array<Point2D>;
+
+/** Local space polygon coordinates as [x, z] tuples */
+export type LocalPolygon = Array<[number, number]>;
 
 /**
  * Result of clamp placement calculation
@@ -104,7 +141,7 @@ export function calculateVerticalClampPlacement(
     partSilhouette,
     baseTopY,
     minPlacementOffset,
-    silhouetteClearance = 5,
+    silhouetteClearance = SUPPORT_CLEARANCE,
     estimatedSupportOffset = { x: 40, z: 0 }, // Default: support is 40mm to the +X side of fixture point
   } = options;
 
@@ -141,13 +178,6 @@ export function calculateVerticalClampPlacement(
   // But we need to account for THREE.js coordinate system
   const rotationY = Math.atan2(-towardBoundaryDir.y, towardBoundaryDir.x) * (180 / Math.PI);
   
-  console.log('[calculateVerticalClampPlacement] Rotation calculation:', {
-    closestBoundary: { x: closestBoundary.x, z: closestBoundary.z },
-    clickPoint: { x: clickPoint.x, z: clickPoint.z },
-    towardBoundaryDir: { x: towardBoundaryDir.x, y: towardBoundaryDir.y },
-    rotationY
-  });
-  
   // Now we need to push the fixture point along the direction until the support clears the silhouette
   // Calculate where the support center will be in world space
   const rotRad = THREE.MathUtils.degToRad(rotationY);
@@ -162,21 +192,13 @@ export function calculateVerticalClampPlacement(
     z: -estimatedSupportOffset.x * sinR + estimatedSupportOffset.z * cosR
   };
   
-  console.log('[calculateVerticalClampPlacement] Support offset calculation:', {
-    estimatedSupportOffset,
-    rotRad,
-    cosR,
-    sinR,
-    supportOffsetWorld
-  });
-  
   // Start with fixture point at click position
   let fixtureX = clickPoint.x;
   let fixtureZ = clickPoint.z;
   
   // Check if support center would be inside silhouette
   // Move fixture point along towardBoundary direction until support clears
-  const maxPushDistance = 200; // Maximum distance to push (mm)
+  const maxPushDistance = MAX_ADJUSTMENT_DISTANCE;
   const stepSize = 2;
   
   for (let dist = 0; dist <= maxPushDistance; dist += stepSize) {
@@ -254,19 +276,9 @@ export function adjustClampAfterDataLoad(
   supportPolygon: Array<[number, number]>,
   closestBoundaryPoint: { x: number; z: number } | null,
   partSilhouette: Array<{ x: number; z: number }>,
-  silhouetteClearance: number = 1 // Minimal clearance - just outside boundary
+  silhouetteClearance: number = SUPPORT_CLEARANCE
 ): { position: { x: number; y: number; z: number }; adjusted: boolean } {
-  console.log('[2D-ADJUST] Starting adjustClampAfterDataLoad:', {
-    clampPosition,
-    clampRotation,
-    supportPolygonLength: supportPolygon.length,
-    closestBoundaryPoint,
-    silhouetteLength: partSilhouette?.length || 0,
-    silhouetteClearance,
-  });
-  
   if (supportPolygon.length === 0 || !partSilhouette || partSilhouette.length < 3) {
-    console.log('[2D-ADJUST] Early exit - insufficient data');
     return { position: clampPosition, adjusted: false };
   }
   
@@ -282,8 +294,8 @@ export function adjustClampAfterDataLoad(
     }));
   };
   
-  // Function to check if support polygon overlaps with silhouette
-  // Only checks if vertices are INSIDE - no extra clearance requirement
+  // Function to check if support polygon overlaps with silhouette or is too close to boundary
+  // Returns overlaps=true if ANY vertex is inside OR within clearance distance of the boundary
   const checkSupportOverlap = (fixtureX: number, fixtureZ: number): { overlaps: boolean; maxPenetration: number } => {
     const worldSupport = transformSupportToWorld(fixtureX, fixtureZ);
     let maxPenetration = 0;
@@ -291,12 +303,16 @@ export function adjustClampAfterDataLoad(
     
     for (const vertex of worldSupport) {
       const isInside = isPointInsidePolygon(vertex, partSilhouette);
+      const distToEdge = distanceToSilhouetteEdge(vertex, partSilhouette);
       
       if (isInside) {
+        // Vertex is inside silhouette - need to move out by distToEdge + clearance
         overlaps = true;
-        const distToEdge = distanceToSilhouetteEdge(vertex, partSilhouette);
-        // Just need to clear the boundary + minimal clearance
         maxPenetration = Math.max(maxPenetration, distToEdge + silhouetteClearance);
+      } else if (distToEdge < silhouetteClearance) {
+        // Vertex is outside but within clearance zone - need to move out more
+        overlaps = true;
+        maxPenetration = Math.max(maxPenetration, silhouetteClearance - distToEdge);
       }
     }
     
@@ -305,14 +321,8 @@ export function adjustClampAfterDataLoad(
   
   // Check initial overlap
   const initialCheck = checkSupportOverlap(clampPosition.x, clampPosition.z);
-  console.log('[2D-ADJUST] Initial overlap check:', {
-    fixturePos: { x: clampPosition.x, z: clampPosition.z },
-    overlaps: initialCheck.overlaps,
-    maxPenetration: initialCheck.maxPenetration,
-  });
   
   if (!initialCheck.overlaps) {
-    console.log('[2D-ADJUST] No overlap detected, returning original position');
     return { position: clampPosition, adjusted: false };
   }
   
@@ -325,10 +335,6 @@ export function adjustClampAfterDataLoad(
       closestBoundaryPoint.x - clampPosition.x,
       closestBoundaryPoint.z - clampPosition.z
     );
-    console.log('[2D-ADJUST] Using boundary point direction:', {
-      from: { x: clampPosition.x, z: clampPosition.z },
-      to: closestBoundaryPoint,
-    });
   } else {
     // Fallback: use centroid-based outward direction
     const centroid = getSilhouetteCenter(partSilhouette);
@@ -336,7 +342,6 @@ export function adjustClampAfterDataLoad(
       clampPosition.x - centroid.x,
       clampPosition.z - centroid.z
     );
-    console.log('[2D-ADJUST] Fallback: using centroid outward direction');
   }
   
   if (moveDir.length() < 0.01) {
@@ -344,10 +349,8 @@ export function adjustClampAfterDataLoad(
   }
   moveDir.normalize();
   
-  console.log('[2D-ADJUST] Move direction (normalized):', { x: moveDir.x, z: moveDir.y });
-  
   // Iteratively move fixture point along the direction until support clears
-  const maxMoveDistance = 200; // mm
+  const maxMoveDistance = MAX_ADJUSTMENT_DISTANCE;
   const stepSize = 1; // 1mm steps for precision
   
   let newFixtureX = clampPosition.x;
@@ -364,275 +367,15 @@ export function adjustClampAfterDataLoad(
       newFixtureX = testX;
       newFixtureZ = testZ;
       foundClearPosition = true;
-      console.log('[2D-ADJUST] Found clear position at distance:', dist, 'mm');
       break;
     }
   }
   
   if (!foundClearPosition) {
-    // Use the max penetration to estimate required move distance (no extra padding)
+    // Use the max penetration to estimate required move distance
     const estimatedMove = initialCheck.maxPenetration;
     newFixtureX = clampPosition.x + moveDir.x * estimatedMove;
     newFixtureZ = clampPosition.z + moveDir.y * estimatedMove;
-    console.log('[2D-ADJUST] Could not find clear position, using estimated move:', estimatedMove, 'mm');
-  }
-  
-  console.log('[2D-ADJUST] Final position:', {
-    from: { x: clampPosition.x, z: clampPosition.z },
-    to: { x: newFixtureX, z: newFixtureZ },
-    moved: Math.sqrt(Math.pow(newFixtureX - clampPosition.x, 2) + Math.pow(newFixtureZ - clampPosition.z, 2)),
-  });
-  
-  return {
-    position: {
-      x: newFixtureX,
-      y: clampPosition.y,
-      z: newFixtureZ
-    },
-    adjusted: true
-  };
-}
-
-/**
- * Build a support mesh geometry from a 2D polygon (extruded as a prism).
- * The polygon is in local XZ plane, extruded along Y.
- */
-function buildSupportGeometryFromPolygon(
-  polygon: Array<[number, number]>,
-  height: number = 20
-): THREE.BufferGeometry {
-  if (polygon.length < 3) {
-    // Return a tiny box as fallback
-    return new THREE.BoxGeometry(1, 1, 1);
-  }
-  
-  // Create a shape from the polygon
-  const shape = new THREE.Shape();
-  shape.moveTo(polygon[0][0], polygon[0][1]);
-  for (let i = 1; i < polygon.length; i++) {
-    shape.lineTo(polygon[i][0], polygon[i][1]);
-  }
-  shape.closePath();
-  
-  // Extrude the shape along Y
-  const extrudeSettings = {
-    steps: 1,
-    depth: height,
-    bevelEnabled: false
-  };
-  
-  const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-  
-  // ExtrudeGeometry creates shape in XY plane, extruded along Z
-  // We need it in XZ plane, extruded along Y
-  // Rotate -90 degrees around X axis: Y becomes Z, Z becomes -Y
-  geometry.rotateX(-Math.PI / 2);
-  
-  return geometry;
-}
-
-/**
- * Check if the support mesh collides with any part mesh using BVH.
- * Returns true if there's a collision.
- */
-function checkSupportPartCollisionBVH(
-  supportGeometry: THREE.BufferGeometry,
-  supportWorldMatrix: THREE.Matrix4,
-  partMeshes: THREE.Object3D[]
-): boolean {
-  console.log('[BVH-COLLISION] Checking collision against', partMeshes.length, 'part meshes');
-  
-  // For each part mesh, check if support intersects it
-  for (let i = 0; i < partMeshes.length; i++) {
-    const partObj = partMeshes[i];
-    const partMesh = partObj as THREE.Mesh;
-    if (!partMesh.geometry) {
-      console.log('[BVH-COLLISION] Part', i, 'has no geometry, skipping');
-      continue;
-    }
-    
-    const partGeometry = partMesh.geometry as THREE.BufferGeometry;
-    
-    // Ensure part has BVH
-    if (!(partGeometry as any).boundsTree) {
-      console.log('[BVH-COLLISION] Part', i, 'building BVH...');
-      partGeometry.computeBoundsTree();
-    }
-    
-    const bvh = (partGeometry as any).boundsTree;
-    if (!bvh) {
-      console.log('[BVH-COLLISION] Part', i, 'failed to build BVH, skipping');
-      continue;
-    }
-    
-    // Calculate transform: support world -> part local
-    // supportToPart = partWorldInverse * supportWorld
-    const partWorldMatrix = partMesh.matrixWorld.clone();
-    const partWorldInverse = partWorldMatrix.clone().invert();
-    const supportToPartMatrix = partWorldInverse.clone().multiply(supportWorldMatrix);
-    
-    // Check intersection
-    const intersects = bvh.intersectsGeometry(supportGeometry, supportToPartMatrix);
-    
-    console.log('[BVH-COLLISION] Part', i, 'intersection result:', intersects);
-    
-    if (intersects) {
-      return true;
-    }
-  }
-  
-  console.log('[BVH-COLLISION] No collision detected with any part');
-  return false;
-}
-
-/**
- * Adjust clamp position using BVH-based mesh collision detection.
- * Moves fixture point TOWARD the boundary until support clears the part mesh.
- * 
- * @param clampPosition Current clamp position (fixture point)
- * @param clampRotation Current clamp rotation
- * @param supportPolygon Support footprint polygon in local space [x, z] pairs
- * @param supportLocalCenter Center of support in local space
- * @param closestBoundaryPoint Closest point on part silhouette boundary
- * @param partMeshes Array of part meshes to check collision against
- * @param supportHeight Height of support prism for collision geometry
- */
-export function adjustClampWithBVHCollision(
-  clampPosition: { x: number; y: number; z: number },
-  clampRotation: { x: number; y: number; z: number },
-  supportPolygon: Array<[number, number]>,
-  supportLocalCenter: { x: number; y: number },
-  closestBoundaryPoint: { x: number; z: number },
-  partMeshes: THREE.Object3D[],
-  supportHeight: number = 40
-): { position: { x: number; y: number; z: number }; adjusted: boolean } {
-  console.log('[BVH-ADJUST] Starting adjustClampWithBVHCollision:', {
-    clampPosition,
-    clampRotation,
-    supportPolygonLength: supportPolygon.length,
-    supportLocalCenter,
-    closestBoundaryPoint,
-    partMeshCount: partMeshes.length,
-    supportHeight,
-  });
-  
-  if (supportPolygon.length < 3 || partMeshes.length === 0) {
-    console.log('[BVH-ADJUST] Early exit - insufficient data:', {
-      polygonLength: supportPolygon.length,
-      partMeshCount: partMeshes.length,
-    });
-    return { position: clampPosition, adjusted: false };
-  }
-  
-  // Build support geometry from polygon
-  console.log('[BVH-ADJUST] Building support geometry from polygon:', supportPolygon.slice(0, 5), '...');
-  const supportGeometry = buildSupportGeometryFromPolygon(supportPolygon, supportHeight);
-  
-  // Check if geometry was built correctly
-  const posAttr = supportGeometry.getAttribute('position');
-  console.log('[BVH-ADJUST] Support geometry built:', {
-    vertexCount: posAttr ? posAttr.count : 0,
-    hasIndex: !!supportGeometry.index,
-  });
-  
-  // Optionally build BVH for support geometry too (improves performance)
-  supportGeometry.computeBoundsTree();
-  
-  const rotRad = THREE.MathUtils.degToRad(clampRotation.y);
-  
-  // Direction: from fixture point TOWARD boundary point
-  // This is the direction we'll move if support collides
-  const towardBoundaryDir = new THREE.Vector2(
-    closestBoundaryPoint.x - clampPosition.x,
-    closestBoundaryPoint.z - clampPosition.z
-  );
-  
-  const distanceToBoundary = towardBoundaryDir.length();
-  console.log('[BVH-ADJUST] Direction to boundary:', {
-    from: { x: clampPosition.x, z: clampPosition.z },
-    to: closestBoundaryPoint,
-    distance: distanceToBoundary,
-  });
-  
-  if (distanceToBoundary < 0.01) {
-    console.log('[BVH-ADJUST] Already at boundary, no adjustment');
-    supportGeometry.dispose();
-    return { position: clampPosition, adjusted: false };
-  }
-  towardBoundaryDir.normalize();
-  
-  // Check initial collision
-  const buildSupportWorldMatrix = (fixtureX: number, fixtureZ: number): THREE.Matrix4 => {
-    // Support local center offset (in clamp local space)
-    // Transform to world offset
-    const cosR = Math.cos(rotRad);
-    const sinR = Math.sin(rotRad);
-    
-    // The support polygon is already in local space around the support center
-    // We need to position the geometry at: fixture position + rotated support offset
-    // But actually the polygon points are relative to support center (0,0)
-    // So we need to translate by: supportLocalCenter in world space
-    
-    const worldSupportCenterX = fixtureX + supportLocalCenter.x * cosR + supportLocalCenter.y * sinR;
-    const worldSupportCenterZ = fixtureZ - supportLocalCenter.x * sinR + supportLocalCenter.y * cosR;
-    
-    // Build world matrix for support
-    const matrix = new THREE.Matrix4();
-    matrix.makeRotationY(rotRad);
-    matrix.setPosition(worldSupportCenterX, clampPosition.y - supportHeight / 2, worldSupportCenterZ);
-    
-    return matrix;
-  };
-  
-  // Initial check
-  console.log('[BVH-ADJUST] Checking initial collision at fixture position:', { x: clampPosition.x, z: clampPosition.z });
-  let supportWorldMatrix = buildSupportWorldMatrix(clampPosition.x, clampPosition.z);
-  let hasCollision = checkSupportPartCollisionBVH(supportGeometry, supportWorldMatrix, partMeshes);
-  
-  console.log('[BVH-ADJUST] Initial collision result:', hasCollision);
-  
-  if (!hasCollision) {
-    // No collision, no adjustment needed
-    console.log('[BVH-ADJUST] No initial collision, returning original position');
-    supportGeometry.dispose();
-    return { position: clampPosition, adjusted: false };
-  }
-  
-  console.log('[BVH-ADJUST] Initial collision detected! Moving fixture toward boundary...');
-  console.log('[BVH-ADJUST] Move direction:', { x: towardBoundaryDir.x, y: towardBoundaryDir.y });
-  
-  // Move fixture point toward boundary until no collision
-  const maxMoveDistance = distanceToBoundary + 100; // Can move past boundary if needed
-  const stepSize = 2; // mm per step
-  
-  let newFixtureX = clampPosition.x;
-  let newFixtureZ = clampPosition.z;
-  let foundClearPosition = false;
-  
-  for (let dist = stepSize; dist <= maxMoveDistance; dist += stepSize) {
-    const testX = clampPosition.x + towardBoundaryDir.x * dist;
-    const testZ = clampPosition.z + towardBoundaryDir.y * dist;
-    
-    supportWorldMatrix = buildSupportWorldMatrix(testX, testZ);
-    hasCollision = checkSupportPartCollisionBVH(supportGeometry, supportWorldMatrix, partMeshes);
-    
-    if (!hasCollision) {
-      newFixtureX = testX;
-      newFixtureZ = testZ;
-      foundClearPosition = true;
-      console.log(`[adjustClampWithBVHCollision] Found clear position at distance ${dist}mm`);
-      break;
-    }
-    
-    // Update position even if still colliding (in case we reach max distance)
-    newFixtureX = testX;
-    newFixtureZ = testZ;
-  }
-  
-  supportGeometry.dispose();
-  
-  if (!foundClearPosition) {
-    console.warn('[adjustClampWithBVHCollision] Could not find clear position within max distance');
   }
   
   return {
@@ -756,7 +499,7 @@ export function dropClampToPartSurface(
           const worldNormal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
           
           // Only consider top-facing surfaces (normal opposing ray direction)
-          if (worldNormal.y > 0.1 && hit.point.y > highestSurface) {
+          if (worldNormal.y > MIN_TOP_SURFACE_ANGLE && hit.point.y > highestSurface) {
             highestSurface = hit.point.y;
           }
         }
@@ -805,7 +548,7 @@ function findTopSurfaceBelow(
           const worldNormal = firstHit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
           
           // Valid top surface: normal opposes ray direction (normal.y > 0 when ray is -Y)
-          if (worldNormal.y > 0.1) {
+          if (worldNormal.y > MIN_TOP_SURFACE_ANGLE) {
             foundValidSurface = true;
             if (firstHit.point.y > highestValidSurface) {
               highestValidSurface = firstHit.point.y;
@@ -858,11 +601,14 @@ export function computePartSilhouetteForClamps(
 // ============================================================================
 
 /**
- * Check if a point is inside a polygon (2D, XZ plane)
+ * Check if a point is inside a polygon using ray casting algorithm (2D, XZ plane)
+ * @param point - The point to test
+ * @param polygon - Array of polygon vertices
+ * @returns true if point is inside the polygon
  */
 export function isPointInsidePolygon(
-  point: { x: number; z: number },
-  polygon: Array<{ x: number; z: number }>
+  point: Point2D,
+  polygon: Polygon2D
 ): boolean {
   if (polygon.length < 3) return false;
   
@@ -886,10 +632,13 @@ export function isPointInsidePolygon(
 
 /**
  * Calculate distance from a point to the nearest edge of a polygon
+ * @param point - The point to measure from
+ * @param polygon - Array of polygon vertices
+ * @returns Distance in world units to the nearest edge
  */
 function distanceToSilhouetteEdge(
-  point: { x: number; z: number },
-  polygon: Array<{ x: number; z: number }>
+  point: Point2D,
+  polygon: Polygon2D
 ): number {
   if (polygon.length < 2) return Infinity;
   
@@ -922,10 +671,13 @@ function distanceToSilhouetteEdge(
 /**
  * Get the closest point on the silhouette boundary to a given point,
  * along with the outward normal at that point
+ * @param point - The point to find closest boundary point from
+ * @param polygon - The silhouette polygon
+ * @returns Closest point coordinates and the outward normal vector
  */
 function getClosestPointOnSilhouette(
-  point: { x: number; z: number },
-  polygon: Array<{ x: number; z: number }>
+  point: Point2D,
+  polygon: Polygon2D
 ): { x: number; z: number; normalX: number; normalZ: number } {
   if (polygon.length < 2) {
     return { x: point.x, z: point.z, normalX: 1, normalZ: 0 };
@@ -994,9 +746,11 @@ function getClosestPointOnSilhouette(
 // ============================================================================
 
 /**
- * Get the center of a silhouette polygon
+ * Calculate the centroid of a silhouette polygon
+ * @param silhouette - Array of polygon vertices
+ * @returns The center point of the polygon
  */
-function getSilhouetteCenter(silhouette: Array<{ x: number; z: number }>): { x: number; z: number } {
+function getSilhouetteCenter(silhouette: Polygon2D): Point2D {
   if (silhouette.length === 0) {
     return { x: 0, z: 0 };
   }
@@ -1048,7 +802,7 @@ function findExitPointMovingUp(
       const worldNormal = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
       
       // Top-facing surface (we exit through it going up)
-      if (worldNormal.y > 0.1) {
+      if (worldNormal.y > MIN_TOP_SURFACE_ANGLE) {
         return hit.point.y;
       }
     }
@@ -1059,16 +813,27 @@ function findExitPointMovingUp(
 }
 
 /**
- * Compute silhouette by rendering from above and using Moore Neighborhood tracing
- * This is the same algorithm used in overhangAnalysis.ts for accurate part outline
+ * Compute silhouette by rendering the part from above onto an orthographic view
+ * and tracing the boundary using Moore Neighborhood algorithm.
+ * 
+ * Algorithm:
+ * 1. Render meshes from top view with black material on white background
+ * 2. Read pixels to create a binary occupancy grid
+ * 3. Trace the contour using Moore Neighborhood algorithm
+ * 4. Simplify the contour using Douglas-Peucker algorithm
+ * 
+ * @param meshes - The part meshes to compute silhouette for
+ * @param baseTopY - Y position of the baseplate top
+ * @param bounds - Bounding box of the part in XZ plane
+ * @returns Array of points forming the silhouette boundary
  */
 function computeRenderSilhouette(
   meshes: THREE.Object3D[],
   baseTopY: number,
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
 ): Array<{ x: number; z: number }> {
-  const RESOLUTION = 512; // Higher resolution for better accuracy
-  const PADDING = 5;
+  const RESOLUTION = SILHOUETTE_RESOLUTION;
+  const PADDING = SILHOUETTE_PADDING;
   
   const minX = bounds.minX - PADDING;
   const maxX = bounds.maxX + PADDING;
@@ -1169,10 +934,7 @@ function computeRenderSilhouette(
     }
   }
   
-  console.log('[computeRenderSilhouette] Grid filled pixels:', filledCount, 'of', RESOLUTION * RESOLUTION);
-  
   if (filledCount === 0) {
-    console.warn('[computeRenderSilhouette] No part pixels found');
     return [];
   }
   
@@ -1189,10 +951,7 @@ function computeRenderSilhouette(
   // Use Moore Neighborhood tracing (same as overhangAnalysis.ts)
   const contour = mooreNeighborhoodTrace(grid, RESOLUTION, pixelToWorld);
   
-  console.log('[computeRenderSilhouette] Moore trace contour:', contour.length, 'points');
-  
   if (contour.length < 3) {
-    console.warn('[computeRenderSilhouette] Moore trace produced insufficient points');
     return [];
   }
   
@@ -1200,20 +959,23 @@ function computeRenderSilhouette(
   const cellSize = maxDim / RESOLUTION;
   const simplified = douglasPeuckerSimplify(contour, cellSize * 1.5);
   
-  console.log('[computeRenderSilhouette] Simplified to:', simplified.length, 'points');
-  
   return simplified;
 }
 
 /**
  * Moore Neighborhood Contour Tracing Algorithm
- * Same algorithm used in overhangAnalysis.ts - traces the exact boundary of a binary image
+ * Traces the boundary of a binary image by following the edge pixels.
+ * 
+ * @param grid - 2D boolean array representing pixel occupancy
+ * @param resolution - Width/height of the grid
+ * @param pixelToWorld - Function to convert pixel coordinates to world coordinates
+ * @returns Array of world-space points forming the contour
  */
 function mooreNeighborhoodTrace(
   grid: boolean[][],
   resolution: number,
-  pixelToWorld: (row: number, col: number) => { x: number; z: number }
-): Array<{ x: number; z: number }> {
+  pixelToWorld: (row: number, col: number) => Point2D
+): Polygon2D {
   // Helper to check if pixel is part
   const isPartPixel = (row: number, col: number): boolean => {
     if (row < 0 || row >= resolution || col < 0 || col >= resolution) return false;
@@ -1233,11 +995,8 @@ function mooreNeighborhoodTrace(
   }
   
   if (startRow < 0) {
-    console.log('[MooreTrace] No start pixel found');
     return [];
   }
-  
-  console.log('[MooreTrace] Start pixel: row=' + startRow + ', col=' + startCol);
   
   // Moore neighborhood: 8 directions, clockwise starting from the pixel to the left
   const directions = [
@@ -1300,13 +1059,11 @@ function mooreNeighborhoodTrace(
     }
     
     if (!found) {
-      console.log('[MooreTrace] No neighbor found at (' + currentRow + ', ' + currentCol + ')');
       break;
     }
     
     iterations++;
     if (iterations > maxIterations) {
-      console.log('[MooreTrace] Max iterations reached');
       break;
     }
     
@@ -1317,11 +1074,16 @@ function mooreNeighborhoodTrace(
 
 /**
  * Douglas-Peucker line simplification algorithm
+ * Reduces the number of points in a polyline while preserving shape.
+ * 
+ * @param points - Array of points to simplify
+ * @param tolerance - Maximum allowed perpendicular distance from the simplified line
+ * @returns Simplified array of points
  */
 function douglasPeuckerSimplify(
-  points: Array<{ x: number; z: number }>,
+  points: Polygon2D,
   tolerance: number
-): Array<{ x: number; z: number }> {
+): Polygon2D {
   if (points.length <= 2) return points;
   
   let maxDist = 0;
@@ -1348,12 +1110,18 @@ function douglasPeuckerSimplify(
 }
 
 /**
- * Calculate perpendicular distance from point to line segment
+ * Calculate perpendicular distance from a point to a line segment.
+ * Used by Douglas-Peucker algorithm for line simplification.
+ * 
+ * @param point - The point to measure distance from
+ * @param lineStart - Start point of the line segment
+ * @param lineEnd - End point of the line segment
+ * @returns Perpendicular distance from point to the line segment
  */
 function perpendicularDistanceDP(
-  point: { x: number; z: number },
-  lineStart: { x: number; z: number },
-  lineEnd: { x: number; z: number }
+  point: Point2D,
+  lineStart: Point2D,
+  lineEnd: Point2D
 ): number {
   const dx = lineEnd.x - lineStart.x;
   const dz = lineEnd.z - lineStart.z;
