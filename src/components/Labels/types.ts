@@ -39,7 +39,7 @@ export const getFontFile = (font: LabelFont): string => {
 /** Label size constraints (in mm) */
 export const MIN_FONT_SIZE = 5;
 export const MAX_FONT_SIZE = 50;
-export const MIN_DEPTH = 0.3;
+export const MIN_DEPTH = 0.6;
 export const MAX_DEPTH = 5;
 export const DEFAULT_DEPTH = 1;
 export const DEFAULT_FONT_SIZE = 8;

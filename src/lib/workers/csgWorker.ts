@@ -290,6 +290,8 @@ function processBatchMerge(
   }>,
   progressCallback: (current: number, total: number, stage: string) => void
 ): CSGWorkerOutput['data'] | null {
+  console.log('[processBatchMerge] Starting merge of', geometries.length, 'geometries');
+  
   if (!geometries || geometries.length === 0) {
     console.error('[CSGWorker] No geometries provided for merge');
     return null;
@@ -306,10 +308,13 @@ function processBatchMerge(
   let totalIndices = 0;
   
   for (const geom of geometries) {
+    console.log(`[processBatchMerge] Geometry ${geom.id}: positions=${geom.positions.length}, normals=${geom.normals?.length || 0}, indices=${geom.indices?.length || 0}`);
     totalPositions += geom.positions.length;
     totalNormals += (geom.normals?.length || 0);
     totalIndices += (geom.indices?.length || geom.positions.length / 3);
   }
+  
+  console.log(`[processBatchMerge] Total sizes: positions=${totalPositions}, normals=${totalNormals}, indices=${totalIndices}`);
   
   // Allocate output arrays
   const mergedPositions = new Float32Array(totalPositions);
@@ -324,6 +329,8 @@ function processBatchMerge(
   for (let i = 0; i < geometries.length; i++) {
     const geom = geometries[i];
     progressCallback(i + 1, geometries.length, `Merging geometry ${i + 1}/${geometries.length}`);
+    
+    console.log(`[processBatchMerge] Merging ${geom.id} at posOffset=${posOffset}, vertexOffset=${vertexOffset}`);
     
     // Copy positions
     mergedPositions.set(geom.positions, posOffset);
@@ -451,6 +458,7 @@ self.onmessage = (e: MessageEvent<CSGWorkerInput>) => {
       } as CSGWorkerOutput);
     }
   } else if (type === 'union-batch') {
+    console.log('[CSGWorker] Received union-batch request');
     try {
       const progressCallback = (current: number, total: number, stage: string) => {
         (self as unknown as Worker).postMessage({
@@ -465,15 +473,25 @@ self.onmessage = (e: MessageEvent<CSGWorkerInput>) => {
       };
       
       // Extract geometries from supports array
-      const geometries = data.supports?.map(s => ({
-        id: s.id,
-        positions: s.positions,
-        normals: s.normals,
-        indices: s.indices
-      })) || [];
+      const geometries = data.supports?.map(s => {
+        console.log(`[CSGWorker] Processing geometry ${s.id}:`, {
+          positionsLength: s.positions?.length || 0,
+          normalsLength: s.normals?.length || 0,
+          indicesLength: s.indices?.length || 0
+        });
+        return {
+          id: s.id,
+          positions: s.positions,
+          normals: s.normals,
+          indices: s.indices
+        };
+      }) || [];
+      
+      console.log(`[CSGWorker] Total geometries to merge: ${geometries.length}`);
       
       // Add baseplate/cutter if provided (it will be the first geometry to merge)
       if (data.cutter) {
+        console.log('[CSGWorker] Adding baseplate geometry');
         geometries.unshift({
           id: 'baseplate',
           positions: data.cutter.positions,
@@ -482,7 +500,17 @@ self.onmessage = (e: MessageEvent<CSGWorkerInput>) => {
         });
       }
       
+      console.log(`[CSGWorker] Final geometries count (with baseplate): ${geometries.length}`);
+      
       const result = processBatchMerge(geometries, progressCallback);
+      
+      console.log('[CSGWorker] Merge result:', result ? {
+        positionsLength: result.positions?.length || 0,
+        normalsLength: result.normals?.length || 0,
+        indicesLength: result.indices?.length || 0,
+        vertexCount: result.vertexCount,
+        triangleCount: result.triangleCount
+      } : 'null');
       
       if (result) {
         const transferables: Transferable[] = [

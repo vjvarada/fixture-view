@@ -13,6 +13,16 @@ const finalizeGeometry = (geometry: THREE.BufferGeometry) => {
 
 // Create a rounded rectangle shape
 const createRoundedRectShape = (width: number, height: number, cornerRadiusFactor: number = 0.08): THREE.Shape => {
+  // Validate inputs to prevent memory allocation errors
+  if (!Number.isFinite(width) || width <= 0 || width > 10000) {
+    console.warn('[BasePlate] Invalid width value:', width, '- using fallback');
+    width = 100; // Fallback to default
+  }
+  if (!Number.isFinite(height) || height <= 0 || height > 10000) {
+    console.warn('[BasePlate] Invalid height value:', height, '- using fallback');
+    height = 100; // Fallback to default
+  }
+  
   const cornerRadius = Math.min(width, height) * cornerRadiusFactor;
   const shape = new THREE.Shape();
   const hw = width / 2;
@@ -34,6 +44,12 @@ const createRoundedRectShape = (width: number, height: number, cornerRadiusFacto
 
 // Create an extruded geometry with 45-degree chamfers, rotated for Y-up baseplate
 const createExtrudedBaseplate = (shape: THREE.Shape, depth: number, chamferSizeFactor: number = 0.15): THREE.BufferGeometry => {
+  // Validate inputs to prevent memory allocation errors
+  if (!Number.isFinite(depth) || depth <= 0 || depth > 10000) {
+    console.warn('[BasePlate] Invalid depth value:', depth, '- using fallback');
+    depth = 10; // Fallback to default
+  }
+  
   // For a 45-degree chamfer, bevelThickness must equal bevelSize
   const chamferSize = Math.min(1.0, depth * chamferSizeFactor);
   const extrudeDepth = Math.max(0.1, depth - 2 * chamferSize);
@@ -222,6 +238,15 @@ const BasePlate: React.FC<BasePlateProps> = ({
 
   // Create geometry based on type
   const geometry = useMemo(() => {
+    // Validate dimensions before creating any geometry
+    const safeWidth = (Number.isFinite(width) && width > 0 && width < 10000) ? width : 100;
+    const safeHeight = (Number.isFinite(height) && height > 0 && height < 10000) ? height : 100;
+    const safeDepth = (Number.isFinite(depth) && depth > 0 && depth < 10000) ? depth : 10;
+    
+    if (width !== safeWidth || height !== safeHeight || depth !== safeDepth) {
+      console.warn('[BasePlate] Invalid dimensions detected:', { width, height, depth }, '- using safe values:', { safeWidth, safeHeight, safeDepth });
+    }
+    
     switch (type) {
       case 'convex-hull':
         // Sample model geometry and optionally apply live position delta
@@ -369,9 +394,9 @@ const BasePlate: React.FC<BasePlateProps> = ({
 
             // === STEP 5: Extrude and position with 45-degree chamfer ===
             // For a 45-degree chamfer, bevelThickness must equal bevelSize
-            const chamferSize = Math.min(1.0, depth * 0.15);
+            const chamferSize = Math.min(1.0, safeDepth * 0.15);
             // Reduce extrusion depth so total height (including chamfers) equals specified depth
-            const extrudeDepth = Math.max(0.1, depth - 2 * chamferSize);
+            const extrudeDepth = Math.max(0.1, safeDepth - 2 * chamferSize);
             
             const g = new THREE.ExtrudeGeometry(shape, { 
               depth: extrudeDepth, 
@@ -394,11 +419,9 @@ const BasePlate: React.FC<BasePlateProps> = ({
         }
         // Fallback to simple rounded rectangle if no model geometry or error
         {
-          const fallbackWidth = width || 100;
-          const fallbackHeight = height || 100;
-          const fallbackShape = createRoundedRectShape(fallbackWidth, fallbackHeight, 0.1);
+          const fallbackShape = createRoundedRectShape(safeWidth, safeHeight, 0.1);
           const g = new THREE.ExtrudeGeometry(fallbackShape, {
-            depth: depth,
+            depth: safeDepth,
             bevelEnabled: false
           });
           g.rotateX(-Math.PI / 2);
@@ -407,15 +430,15 @@ const BasePlate: React.FC<BasePlateProps> = ({
 
       case 'perforated-panel':
         // Rounded rectangle with slight bevel for soft edges
-        return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.08), depth);
+        return createExtrudedBaseplate(createRoundedRectShape(safeWidth, safeHeight, 0.08), safeDepth);
 
       case 'metal-wooden-plate':
         // Slightly smaller corner radius for metal/wooden plates
-        return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.06), depth, 0.2);
+        return createExtrudedBaseplate(createRoundedRectShape(safeWidth, safeHeight, 0.06), safeDepth, 0.2);
 
       case 'rectangular':
       default:
-        return createExtrudedBaseplate(createRoundedRectShape(width, height, 0.08), depth);
+        return createExtrudedBaseplate(createRoundedRectShape(safeWidth, safeHeight, 0.08), safeDepth);
     }
   }, [type, width, height, depth, radius, modelGeometry, modelMatrixWorld, modelOrigin, oversizeXY, additionalHullPoints, livePositionDelta, cornerRadius]);
 

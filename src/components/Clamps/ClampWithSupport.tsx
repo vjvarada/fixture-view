@@ -87,12 +87,20 @@ const ClampWithSupport: React.FC<ClampWithSupportProps> = ({
           setSupportInfo(info);
           onClampDataLoaded?.(placedClamp.id, info);
           
-          // Emit event with clamp placement constraints
+          // Emit event with clamp placement constraints AND full clamp data for CSG operations
           window.dispatchEvent(new CustomEvent('clamp-data-loaded', {
             detail: {
               clampId: placedClamp.id,
               minPlacementOffset,
               fixturePointY: fixturePointTopCenter.y,
+              // Include full data needed for cavity CSG operations
+              fixtureCutoutsGeometry: result.data.fixtureCutoutsGeometry,
+              fixturePointTopCenter: fixturePointTopCenter,
+              supportInfo: info ? {
+                polygon: info.polygon,
+                mountSurfaceLocalY: info.mountSurfaceLocalY,
+                fixturePointY: info.fixturePointY,
+              } : null,
             }
           }));
         } else {

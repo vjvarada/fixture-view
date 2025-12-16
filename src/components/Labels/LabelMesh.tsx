@@ -92,6 +92,33 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
 
   const [textOffset, setTextOffset] = useState(() => new THREE.Vector3(0, 0, 0));
 
+  // Validate and sanitize label parameters to prevent memory allocation errors
+  const safeFontSize = useMemo(() => {
+    const size = label.fontSize;
+    if (!Number.isFinite(size) || size <= 0 || size > 1000) {
+      console.warn('[LabelMesh] Invalid fontSize:', size, '- using fallback');
+      return 8; // Default font size
+    }
+    return size;
+  }, [label.fontSize]);
+
+  const safeDepth = useMemo(() => {
+    const depth = label.depth;
+    if (!Number.isFinite(depth) || depth <= 0 || depth > 100) {
+      console.warn('[LabelMesh] Invalid depth:', depth, '- using fallback');
+      return 1; // Default depth
+    }
+    return depth;
+  }, [label.depth]);
+
+  const safeText = useMemo(() => {
+    if (!label.text || typeof label.text !== 'string' || label.text.length === 0) {
+      return 'Label';
+    }
+    // Limit text length to prevent extremely large geometries
+    return label.text.substring(0, 100);
+  }, [label.text]);
+
   // Memoized values
   const material = useMemo(() => createLabelMaterial(preview, selected), [preview, selected]);
   const position = useMemo(() => toVector3(label.position), [label.position]);
@@ -135,7 +162,7 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
     const width = box.max.x - box.min.x;
     const height = box.max.y - box.min.y;
 
-    if (!isValidBounds(width, height, label.text.length, label.fontSize)) {
+    if (!isValidBounds(width, height, safeText.length, safeFontSize)) {
       return;
     }
 
@@ -166,12 +193,12 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
         <Text3D
           ref={textRef}
           font={fontFile}
-          size={label.fontSize}
-          height={label.depth}
+          size={safeFontSize}
+          height={safeDepth}
           curveSegments={4}
           bevelEnabled={false}
         >
-          {label.text}
+          {safeText}
           <primitive object={material} attach="material" />
         </Text3D>
       </group>

@@ -268,16 +268,48 @@ export async function performBatchCSGUnionInWorker(
   baseplateGeometry?: THREE.BufferGeometry,
   onProgress?: (current: number, total: number, stage: string) => void
 ): Promise<THREE.BufferGeometry | null> {
+  console.log('[performBatchCSGUnionInWorker] Starting union with', geometries.length, 'geometries');
+  
+  // Log each geometry being sent
+  geometries.forEach((g, i) => {
+    const pos = g.geometry.getAttribute('position');
+    const norm = g.geometry.getAttribute('normal');
+    const idx = g.geometry.index;
+    console.log(`[performBatchCSGUnionInWorker] Geometry ${i} (${g.id}):`, {
+      hasPosition: !!pos,
+      positionCount: pos?.count || 0,
+      hasNormal: !!norm,
+      normalCount: norm?.count || 0,
+      hasIndex: !!idx,
+      indexCount: idx?.count || 0
+    });
+  });
+  
   const worker = getCSGWorker();
   const id = generateId();
   
   // Prepare geometries for transfer
-  const geometriesData = geometries.map(g => ({
-    id: g.id,
-    ...extractGeometryForWorker(g.geometry)
-  }));
+  const geometriesData = geometries.map(g => {
+    const extracted = extractGeometryForWorker(g.geometry);
+    console.log(`[performBatchCSGUnionInWorker] Extracted ${g.id}:`, {
+      positionsLength: extracted.positions.length,
+      normalsLength: extracted.normals.length,
+      indicesLength: extracted.indices.length
+    });
+    return {
+      id: g.id,
+      ...extracted
+    };
+  });
   
   const baseplateData = baseplateGeometry ? extractGeometryForWorker(baseplateGeometry) : undefined;
+  if (baseplateData) {
+    console.log('[performBatchCSGUnionInWorker] Baseplate data:', {
+      positionsLength: baseplateData.positions.length,
+      normalsLength: baseplateData.normals.length,
+      indicesLength: baseplateData.indices.length
+    });
+  }
   
   // Set up progress handler
   const progressHandler = (e: MessageEvent<CSGWorkerOutput>) => {

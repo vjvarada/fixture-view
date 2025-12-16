@@ -216,6 +216,232 @@ function getModelColor(modelId: string, colorsMap: Map<string, string>): string 
   return newColor;
 }
 
+/**
+ * Build a clamp support geometry at origin for CSG operations.
+ * This is a simplified version of the ClampSupportMesh geometry creation.
+ */
+function buildClampSupportGeometryAtOrigin(
+  polygon: Array<[number, number]>,
+  height: number,
+  cornerRadius: number = 2
+): THREE.BufferGeometry | null {
+  if (!polygon || polygon.length < 3 || height <= 0) {
+    return null;
+  }
+
+  // Mirror the Y (which is actually Z in our polygon) coordinates to match the rotation direction
+  const workingPolygon: [number, number][] = polygon.map(([x, z]) => [x, -z]);
+  const safeCornerRadius = Math.max(0, cornerRadius);
+  const shape = new THREE.Shape();
+  let started = false;
+
+  for (let idx = 0; idx < workingPolygon.length; idx++) {
+    const curr = workingPolygon[idx];
+    const prev = workingPolygon[(idx - 1 + workingPolygon.length) % workingPolygon.length];
+    const next = workingPolygon[(idx + 1) % workingPolygon.length];
+
+    const toPrev = [prev[0] - curr[0], prev[1] - curr[1]];
+    const toNext = [next[0] - curr[0], next[1] - curr[1]];
+    const lenPrev = Math.sqrt(toPrev[0] ** 2 + toPrev[1] ** 2);
+    const lenNext = Math.sqrt(toNext[0] ** 2 + toNext[1] ** 2);
+
+    if (lenPrev < 0.01 || lenNext < 0.01 || safeCornerRadius < 0.01) {
+      if (!started) {
+        shape.moveTo(curr[0], curr[1]);
+        started = true;
+      } else {
+        shape.lineTo(curr[0], curr[1]);
+      }
+      continue;
+    }
+
+    const r = Math.min(safeCornerRadius, lenPrev / 2, lenNext / 2);
+    const dirPrev = [toPrev[0] / lenPrev, toPrev[1] / lenPrev];
+    const dirNext = [toNext[0] / lenNext, toNext[1] / lenNext];
+
+    if (r > 0.01) {
+      const insetStart: [number, number] = [curr[0] + dirPrev[0] * r, curr[1] + dirPrev[1] * r];
+      const insetEnd: [number, number] = [curr[0] + dirNext[0] * r, curr[1] + dirNext[1] * r];
+
+      if (!started) {
+        shape.moveTo(insetStart[0], insetStart[1]);
+        started = true;
+      } else {
+        shape.lineTo(insetStart[0], insetStart[1]);
+      }
+      shape.quadraticCurveTo(curr[0], curr[1], insetEnd[0], insetEnd[1]);
+    } else {
+      if (!started) {
+        shape.moveTo(curr[0], curr[1]);
+        started = true;
+      } else {
+        shape.lineTo(curr[0], curr[1]);
+      }
+    }
+  }
+  shape.closePath();
+
+  // Create the extruded body geometry
+  const bodyGeo = new THREE.ExtrudeGeometry(shape, { 
+    depth: height, 
+    bevelEnabled: false, 
+    curveSegments: 16 
+  });
+  
+  // Rotate to make Y the up direction (extrusion is along Z by default)
+  bodyGeo.rotateX(-Math.PI / 2);
+  bodyGeo.computeVertexNormals();
+  
+  return bodyGeo;
+}
+
+/**
+ * Build a label geometry for CSG operations.
+ * Creates a 3D text geometry positioned and rotated according to the label config.
+ */
+async function buildLabelGeometry(label: LabelConfig): Promise<THREE.BufferGeometry | null> {
+  console.log('[buildLabelGeometry] ========================================');
+  console.log('[buildLabelGeometry] Starting for label:', {
+    id: label.id,
+    text: label.text, 
+    fontSize: label.fontSize, 
+    depth: label.depth,
+    font: label.font,
+    position: label.position,
+    rotation: label.rotation
+  });
+  
+  try {
+    const { FontLoader } = await import('three/addons/loaders/FontLoader.js');
+    const { TextGeometry } = await import('three/addons/geometries/TextGeometry.js');
+    console.log('[buildLabelGeometry] FontLoader and TextGeometry imported successfully');
+    
+    const fontLoader = new FontLoader();
+    const fontFile = label.font === 'roboto' 
+      ? '/fonts/roboto_bold.typeface.json'
+      : label.font === 'arial'
+      ? '/fonts/arial_bold.typeface.json'
+      : '/fonts/helvetiker_bold.typeface.json';
+    
+    console.log('[buildLabelGeometry] Loading font from:', fontFile);
+    
+    return new Promise((resolve) => {
+      fontLoader.load(
+        fontFile, 
+        (font) => {
+          console.log('[buildLabelGeometry] Font loaded successfully, font object:', !!font);
+          try {
+            console.log('[buildLabelGeometry] Creating TextGeometry with params:', {
+              text: label.text,
+              size: label.fontSize,
+              height: label.depth,
+              curveSegments: 4,
+              bevelEnabled: false
+            });
+            
+            const textGeometry = new TextGeometry(label.text, {
+              font: font,
+              size: label.fontSize,
+              height: label.depth,
+              curveSegments: 4,
+              bevelEnabled: false,
+            });
+            
+            const posAttr = textGeometry.getAttribute('position');
+            console.log('[buildLabelGeometry] TextGeometry created:', {
+              hasPosition: !!posAttr,
+              vertexCount: posAttr?.count || 0,
+              itemSize: posAttr?.itemSize || 0
+            });
+            
+            if (!posAttr || posAttr.count === 0) {
+              console.error('[buildLabelGeometry] TextGeometry has no vertices! Label text:', label.text);
+              resolve(null);
+              return;
+            }
+            
+            // Center the text
+            textGeometry.computeBoundingBox();
+            const bbox = textGeometry.boundingBox;
+            console.log('[buildLabelGeometry] Bounding box:', bbox ? {
+              min: bbox.min.toArray(),
+              max: bbox.max.toArray(),
+              size: [bbox.max.x - bbox.min.x, bbox.max.y - bbox.min.y, bbox.max.z - bbox.min.z]
+            } : 'null');
+            
+            if (bbox) {
+              const centerX = (bbox.min.x + bbox.max.x) / 2;
+              const centerY = (bbox.min.y + bbox.max.y) / 2;
+              console.log('[buildLabelGeometry] Centering by:', { centerX, centerY });
+              textGeometry.translate(-centerX, -centerY, 0);
+            }
+            
+            // Apply label position and rotation
+            const position = label.position instanceof THREE.Vector3 
+              ? label.position 
+              : new THREE.Vector3(label.position.x, label.position.y, label.position.z);
+            const rotation = label.rotation instanceof THREE.Euler 
+              ? label.rotation 
+              : new THREE.Euler(label.rotation.x, label.rotation.y, label.rotation.z);
+            
+            console.log('[buildLabelGeometry] Applying transform:', {
+              position: position.toArray(),
+              rotation: [rotation.x, rotation.y, rotation.z, rotation.order]
+            });
+            
+            const matrix = new THREE.Matrix4()
+              .makeRotationFromEuler(rotation)
+              .setPosition(position);
+            textGeometry.applyMatrix4(matrix);
+            
+            textGeometry.computeVertexNormals();
+            
+            // Final verification
+            const finalPosAttr = textGeometry.getAttribute('position');
+            const finalNormAttr = textGeometry.getAttribute('normal');
+            console.log('[buildLabelGeometry] Final geometry stats:', {
+              vertexCount: finalPosAttr?.count || 0,
+              hasNormals: !!finalNormAttr,
+              normalCount: finalNormAttr?.count || 0,
+              hasIndex: !!textGeometry.index,
+              indexCount: textGeometry.index?.count || 0
+            });
+            
+            // Sample some vertices to verify geometry is valid
+            if (finalPosAttr && finalPosAttr.count > 0) {
+              const sampleVerts = [];
+              for (let i = 0; i < Math.min(3, finalPosAttr.count); i++) {
+                sampleVerts.push([
+                  finalPosAttr.getX(i),
+                  finalPosAttr.getY(i),
+                  finalPosAttr.getZ(i)
+                ]);
+              }
+              console.log('[buildLabelGeometry] Sample vertices:', sampleVerts);
+            }
+            
+            console.log('[buildLabelGeometry] ✓ Label geometry ready for:', label.text);
+            resolve(textGeometry);
+          } catch (err) {
+            console.error('[buildLabelGeometry] Error creating TextGeometry:', err);
+            resolve(null);
+          }
+        }, 
+        (progress) => {
+          console.log('[buildLabelGeometry] Font loading progress:', progress);
+        },
+        (err) => {
+          console.error('[buildLabelGeometry] Failed to load font:', fontFile, err);
+          resolve(null);
+        }
+      );
+    });
+  } catch (err) {
+    console.error('[buildLabelGeometry] Top-level error:', err);
+    return null;
+  }
+}
+
 const ORIENTATION_CONFIG: Record<ViewOrientation, { direction: THREE.Vector3; up: THREE.Vector3 }> = {
   front: { direction: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) },
   back: { direction: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, 1, 0) },
@@ -790,6 +1016,12 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   // Labels state
   const [labels, setLabels] = useState<LabelConfig[]>([]);
   const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
+  const labelsRef = useRef<LabelConfig[]>([]); // Ref to track latest labels for async operations
+  
+  // Keep labelsRef in sync with labels state
+  useEffect(() => {
+    labelsRef.current = labels;
+  }, [labels]);
   
   // Clamps state
   const [placedClamps, setPlacedClamps] = useState<PlacedClamp[]>([]);
@@ -802,6 +1034,13 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     polygon: Array<[number, number]>; 
     localCenter: { x: number; y: number };
     fixturePointY?: number;
+    mountSurfaceLocalY?: number;
+  }>>(new Map());
+  // Track loaded clamp data for CSG operations (fixture cutouts and support geometry)
+  const loadedClampDataRef = useRef<Map<string, {
+    fixtureCutoutsGeometry: THREE.BufferGeometry | null;
+    fixturePointTopCenter: THREE.Vector3;
+    supportInfo: { polygon: Array<[number, number]>; mountSurfaceLocalY: number; fixturePointY: number; } | null;
   }>>(new Map());
   
   // Debug: clamp placement debug points (closest boundary point, fixture point, support center)
@@ -2454,18 +2693,34 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
     };
     
-    // Handle clamp data loaded events (update minimum placement offset)
+    // Handle clamp data loaded events (update minimum placement offset and store CSG data)
     const onClampDataLoaded = (e: CustomEvent) => {
-      const { clampId, minPlacementOffset } = e.detail as { 
+      const { 
+        clampId, 
+        minPlacementOffset,
+        fixtureCutoutsGeometry,
+        fixturePointTopCenter,
+        supportInfo,
+      } = e.detail as { 
         clampId: string; 
         minPlacementOffset: number;
         fixturePointY: number;
+        fixtureCutoutsGeometry: THREE.BufferGeometry | null;
+        fixturePointTopCenter: THREE.Vector3;
+        supportInfo: { polygon: Array<[number, number]>; mountSurfaceLocalY: number; fixturePointY: number; } | null;
       };
       
       console.log('[3DScene] Clamp data loaded:', { clampId, minPlacementOffset });
       
       // Store the minimum offset for this clamp
       setClampMinOffsets(prev => new Map(prev).set(clampId, minPlacementOffset));
+      
+      // Store full clamp data for CSG operations (cavity creation)
+      loadedClampDataRef.current.set(clampId, {
+        fixtureCutoutsGeometry,
+        fixturePointTopCenter,
+        supportInfo,
+      });
       
       // Update clamp position if it's below the minimum
       const minY = baseTopY + minPlacementOffset;
@@ -2771,8 +3026,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => window.removeEventListener('supports-trim-request', handler as EventListener);
   }, [supports, baseTopY, buildSupportMesh]);
 
-  // Handle cavity subtraction - cut supports with ALL offset meshes using web worker
+  // Handle cavity subtraction - cut supports (including clamp supports) with ALL offset meshes using web worker
   // Strategy: Cut each support individually against all offset meshes (for all parts)
+  // Then add labels and subtract fixture_cutouts at the end
   React.useEffect(() => {
     const handleExecuteCavitySubtraction = async (e: CustomEvent) => {
       const { settings } = e.detail || {};
@@ -2781,8 +3037,16 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // Extract CSG cleanup settings from cavity settings
       const csgMinVolume = settings?.csgMinVolume ?? 1.0;
       const csgMinThickness = settings?.csgMinThickness ?? 0.5;
-      const csgMinTriangles = settings?.csgMinTriangles ?? 10;
+      const csgMinTriangles = settings?.csgMinTriangles ?? 5;
       const csgEnableLocalThickness = settings?.csgEnableLocalThickness ?? true;
+      
+      console.log('[3DScene] CSG Cleanup settings:', {
+        csgMinVolume,
+        csgMinThickness,
+        csgMinTriangles,
+        csgEnableLocalThickness,
+        settingsProvided: !!settings
+      });
       
       if (offsetMeshPreviews.size === 0) {
         console.warn('[3DScene] No offset mesh previews available for cavity subtraction');
@@ -2793,9 +3057,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
 
       const hasSupports = supports && supports.length > 0;
+      const hasClampSupports = placedClamps && placedClamps.length > 0;
       
-      if (!hasSupports) {
-        console.warn('[3DScene] No supports available for cavity subtraction');
+      if (!hasSupports && !hasClampSupports) {
+        console.warn('[3DScene] No supports (regular or clamp) available for cavity subtraction');
         window.dispatchEvent(new CustomEvent('cavity-subtraction-complete', {
           detail: { success: false, error: 'No supports available' }
         }));
@@ -2834,8 +3099,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         
         console.log(`[3DScene] Prepared ${cutterGeometries.length} cutter geometries for ${offsetMeshPreviews.size} parts`);
 
-        // Prepare support geometries for batch processing
-        const supportsToProcess: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
+        // Prepare regular support geometries for batch processing
+        const supportsToProcess: Array<{ id: string; geometry: THREE.BufferGeometry; isClampSupport?: boolean }> = [];
         
         for (const support of supports) {
           const supportGeometry = buildFullSupportGeometry(support, baseTopY, false);
@@ -2856,7 +3121,62 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           }
           supportGeometry.computeVertexNormals();
           
-          supportsToProcess.push({ id: support.id, geometry: supportGeometry });
+          supportsToProcess.push({ id: support.id, geometry: supportGeometry, isClampSupport: false });
+        }
+
+        // === ADD CLAMP SUPPORTS ===
+        // Build clamp support geometries and add them to the processing list
+        for (const clamp of placedClamps) {
+          const clampData = loadedClampDataRef.current.get(clamp.id);
+          const supportInfo = clampSupportInfos.get(clamp.id);
+          
+          if (!clampData?.supportInfo || !supportInfo) {
+            console.log(`[3DScene] Skipping clamp ${clamp.id} - no support info`);
+            continue;
+          }
+          
+          // Build clamp support geometry using the same logic as ClampSupportMesh
+          const polygon = clampData.supportInfo.polygon;
+          const mountSurfaceLocalY = clampData.supportInfo.mountSurfaceLocalY;
+          const fixturePointY = clampData.supportInfo.fixturePointY;
+          
+          // Calculate support height
+          const mountSurfaceWorldY = clamp.position.y + (mountSurfaceLocalY - fixturePointY);
+          const supportHeight = Math.max(1.0, mountSurfaceWorldY - baseTopY);
+          
+          // Build geometry at origin
+          const clampSupportGeometry = buildClampSupportGeometryAtOrigin(polygon, supportHeight, 2);
+          if (!clampSupportGeometry) continue;
+          
+          // Transform to world position (same logic as ClampSupportMesh)
+          const worldRotationY = THREE.MathUtils.degToRad(clamp.rotation.y);
+          const transformMatrix = new THREE.Matrix4()
+            .makeRotationY(worldRotationY)
+            .setPosition(clamp.position.x, baseTopY, clamp.position.z);
+          clampSupportGeometry.applyMatrix4(transformMatrix);
+          
+          // Prepare for CSG
+          if (!clampSupportGeometry.index) {
+            const posAttr = clampSupportGeometry.getAttribute('position');
+            const vertexCount = posAttr.count;
+            const indices = new Uint32Array(vertexCount);
+            for (let i = 0; i < vertexCount; i++) indices[i] = i;
+            clampSupportGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+          }
+          if (!clampSupportGeometry.getAttribute('uv')) {
+            const position = clampSupportGeometry.getAttribute('position');
+            const uvArray = new Float32Array(position.count * 2);
+            clampSupportGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+          }
+          clampSupportGeometry.computeVertexNormals();
+          
+          supportsToProcess.push({ 
+            id: `clamp-support-${clamp.id}`, 
+            geometry: clampSupportGeometry, 
+            isClampSupport: true 
+          });
+          
+          console.log(`[3DScene] Added clamp support for ${clamp.id}, height: ${supportHeight.toFixed(2)}mm`);
         }
 
         if (supportsToProcess.length === 0) {
@@ -2868,7 +3188,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
         // For each support, we need to subtract ALL cutter geometries (all part cavities)
         // Process supports sequentially, and for each support, subtract all cutters
-        console.log(`[3DScene] Starting batch CSG subtraction for ${supportsToProcess.length} supports against ${cutterGeometries.length} cutters...`);
+        console.log(`[3DScene] Starting batch CSG subtraction for ${supportsToProcess.length} supports (${supports.length} regular + ${placedClamps.length} clamp) against ${cutterGeometries.length} cutters...`);
         
         const allResultGeometries = new Map<string, THREE.BufferGeometry>();
         const totalOperations = supportsToProcess.length * cutterGeometries.length;
@@ -2886,7 +3206,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 current: completedOperations + 1, 
                 total: totalOperations, 
                 supportId: supportItem.id, 
-                stage: `Cutting support ${supportItem.id} with part ${cutterIdx + 1}/${cutterGeometries.length}`
+                stage: `Cutting ${supportItem.isClampSupport ? 'clamp ' : ''}support with part ${cutterIdx + 1}/${cutterGeometries.length}`
               }
             }));
             
@@ -2919,13 +3239,15 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           // Store the final result for this support
           allResultGeometries.set(supportItem.id, currentSupportGeometry);
           
-          // INCREMENTAL UPDATE: Show this cut support immediately as it's ready
+          // INCREMENTAL UPDATE: Show this cut support immediately as it's ready (only for regular supports)
           // This provides visual feedback while other supports are still being processed
-          setModifiedSupportGeometries(prev => {
-            const updated = new Map(prev);
-            updated.set(supportItem.id, currentSupportGeometry);
-            return updated;
-          });
+          if (!supportItem.isClampSupport) {
+            setModifiedSupportGeometries(prev => {
+              const updated = new Map(prev);
+              updated.set(supportItem.id, currentSupportGeometry);
+              return updated;
+            });
+          }
           
           console.log(`[3DScene] Support ${supportItem.id} cut complete (${allResultGeometries.size}/${supportsToProcess.length})`);
         }
@@ -2958,8 +3280,14 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           }
         }
         
-        // Update state with cleaned geometries
-        setModifiedSupportGeometries(cleanedGeometries);
+        // Update state with cleaned geometries (only for regular supports)
+        const regularSupportGeometries = new Map<string, THREE.BufferGeometry>();
+        cleanedGeometries.forEach((geom, id) => {
+          if (!id.startsWith('clamp-support-')) {
+            regularSupportGeometries.set(id, geom);
+          }
+        });
+        setModifiedSupportGeometries(regularSupportGeometries);
 
         if (successCount > 0) {
           // Clear all offset mesh previews
@@ -2976,12 +3304,12 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           setOffsetMeshPreviews(new Map());
           
           // === STEP 2: Union all cut supports with baseplate ===
-          console.log(`[3DScene] Starting CSG union of ${allResultGeometries.size} supports with baseplate...`);
+          console.log(`[3DScene] Starting CSG union of ${cleanedGeometries.size} supports with baseplate...`);
           
           window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
             detail: { 
               current: 0, 
-              total: allResultGeometries.size + 1, 
+              total: cleanedGeometries.size + 1, 
               stage: 'Merging supports with baseplate...'
             }
           }));
@@ -3009,9 +3337,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             baseplateGeometry.computeVertexNormals();
           }
           
-          // Prepare geometries for union
+          // Prepare geometries for union (including all cut supports - regular and clamp)
           const geometriesForUnion: Array<{ id: string; geometry: THREE.BufferGeometry }> = [];
-          allResultGeometries.forEach((geom, supportId) => {
+          cleanedGeometries.forEach((geom, supportId) => {
             // Ensure geometry has proper attributes for CSG
             if (!geom.index) {
               const posAttr = geom.getAttribute('position');
@@ -3028,6 +3356,55 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             geometriesForUnion.push({ id: supportId, geometry: geom });
           });
           
+          // === ADD LABELS TO UNION ===
+          // Use labelsRef.current to get the latest labels (avoid stale closure)
+          const currentLabels = labelsRef.current;
+          console.log(`[3DScene] Labels ref:`, currentLabels, `Count: ${currentLabels?.length ?? 0}`);
+          if (currentLabels && currentLabels.length > 0) {
+            console.log(`[3DScene] Adding ${currentLabels.length} labels to union...`);
+            window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+              detail: { current: 0, total: currentLabels.length, stage: 'Building label geometries...' }
+            }));
+            
+            for (let i = 0; i < currentLabels.length; i++) {
+              const label = currentLabels[i];
+              console.log(`[3DScene] Building geometry for label ${i + 1}/${currentLabels.length}: "${label.text}" at`, label.position);
+              try {
+                const labelGeometry = await buildLabelGeometry(label);
+                console.log(`[3DScene] Label geometry result for "${label.text}":`, labelGeometry ? 'SUCCESS' : 'NULL');
+                if (labelGeometry) {
+                  // Prepare label geometry for CSG
+                  if (!labelGeometry.index) {
+                    const posAttr = labelGeometry.getAttribute('position');
+                    const vertexCount = posAttr.count;
+                    const indices = new Uint32Array(vertexCount);
+                    for (let j = 0; j < vertexCount; j++) indices[j] = j;
+                    labelGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                  }
+                  if (!labelGeometry.getAttribute('uv')) {
+                    const position = labelGeometry.getAttribute('position');
+                    const uvArray = new Float32Array(position.count * 2);
+                    labelGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+                  }
+                  labelGeometry.computeVertexNormals();
+                  
+                  console.log(`[3DScene] Label geometry stats - vertices: ${labelGeometry.getAttribute('position').count}, hasIndex: ${!!labelGeometry.index}`);
+                  geometriesForUnion.push({ id: `label-${label.id}`, geometry: labelGeometry });
+                  console.log(`[3DScene] Added label: ${label.text}, total geometries for union: ${geometriesForUnion.length}`);
+                }
+              } catch (err) {
+                console.warn(`[3DScene] Failed to build label geometry for "${label.text}":`, err);
+              }
+            }
+          } else {
+            console.log(`[3DScene] No labels to add to union`);
+          }
+          
+          // Log final geometries being sent to union
+          console.log(`[3DScene] Sending ${geometriesForUnion.length} geometries to union worker:`, 
+            geometriesForUnion.map(g => ({ id: g.id, vertices: g.geometry.getAttribute('position')?.count }))
+          );
+          
           try {
             const mergedGeometry = await performBatchCSGUnionInWorker(
               geometriesForUnion,
@@ -3041,9 +3418,86 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             );
             
             if (mergedGeometry) {
-              // STEP 1: Display the raw merged geometry IMMEDIATELY
+              // === STEP 3: SUBTRACT FIXTURE CUTOUTS FROM ALL CLAMPS ===
+              // This ensures any clamp cutouts that overlap with supports are properly cut
+              let finalGeometry = mergedGeometry;
+              
+              if (placedClamps.length > 0) {
+                console.log(`[3DScene] Subtracting fixture cutouts from ${placedClamps.length} clamps...`);
+                window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                  detail: { current: 0, total: placedClamps.length, stage: 'Subtracting clamp fixture cutouts...' }
+                }));
+                
+                for (let i = 0; i < placedClamps.length; i++) {
+                  const clamp = placedClamps[i];
+                  const clampData = loadedClampDataRef.current.get(clamp.id);
+                  
+                  if (!clampData?.fixtureCutoutsGeometry) {
+                    console.log(`[3DScene] No fixture cutouts for clamp ${clamp.id}`);
+                    continue;
+                  }
+                  
+                  window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                    detail: { 
+                      current: i + 1, 
+                      total: placedClamps.length, 
+                      stage: `Cutting fixture cutouts ${i + 1}/${placedClamps.length}...` 
+                    }
+                  }));
+                  
+                  try {
+                    // Clone and transform cutouts to world space
+                    const cutoutsGeometry = clampData.fixtureCutoutsGeometry.clone();
+                    
+                    // Transform cutouts: first offset from fixture point, then rotate and position
+                    const fpCenter = clampData.fixturePointTopCenter;
+                    cutoutsGeometry.translate(-fpCenter.x, -fpCenter.y, -fpCenter.z);
+                    
+                    // Apply clamp world transform
+                    const worldRotationY = THREE.MathUtils.degToRad(clamp.rotation.y);
+                    const transformMatrix = new THREE.Matrix4()
+                      .makeRotationY(worldRotationY)
+                      .setPosition(clamp.position.x, clamp.position.y, clamp.position.z);
+                    cutoutsGeometry.applyMatrix4(transformMatrix);
+                    
+                    // Prepare for CSG
+                    if (!cutoutsGeometry.index) {
+                      const posAttr = cutoutsGeometry.getAttribute('position');
+                      const vertexCount = posAttr.count;
+                      const indices = new Uint32Array(vertexCount);
+                      for (let j = 0; j < vertexCount; j++) indices[j] = j;
+                      cutoutsGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                    }
+                    if (!cutoutsGeometry.getAttribute('uv')) {
+                      const position = cutoutsGeometry.getAttribute('position');
+                      const uvArray = new Float32Array(position.count * 2);
+                      cutoutsGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+                    }
+                    cutoutsGeometry.computeVertexNormals();
+                    
+                    // Perform CSG subtraction
+                    const subtractionResult = await performBatchCSGSubtractionInWorker(
+                      [{ id: 'fixture', geometry: finalGeometry }],
+                      cutoutsGeometry,
+                      () => {}
+                    );
+                    
+                    if (subtractionResult.has('fixture')) {
+                      finalGeometry.dispose();
+                      finalGeometry = subtractionResult.get('fixture')!;
+                      console.log(`[3DScene] Subtracted fixture cutouts for clamp ${clamp.id}`);
+                    }
+                    
+                    cutoutsGeometry.dispose();
+                  } catch (err) {
+                    console.warn(`[3DScene] Failed to subtract fixture cutouts for clamp ${clamp.id}:`, err);
+                  }
+                }
+              }
+              
+              // STEP 4: Display the final merged geometry IMMEDIATELY
               // This gives instant visual feedback while cleanup runs in background
-              console.log('[3DScene] Displaying raw merged geometry...');
+              console.log('[3DScene] Displaying final merged geometry...');
               
               // Create merged fixture mesh with amber color
               const amberMaterial = new THREE.MeshStandardMaterial({
@@ -3065,27 +3519,29 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 }
               }
               
-              const rawFixtureMesh = new THREE.Mesh(mergedGeometry.clone(), amberMaterial);
+              const rawFixtureMesh = new THREE.Mesh(finalGeometry.clone(), amberMaterial);
               rawFixtureMesh.name = 'merged-fixture';
               rawFixtureMesh.castShadow = true;
               rawFixtureMesh.receiveShadow = true;
               
               setMergedFixtureMesh(rawFixtureMesh);
-              console.log(`[3DScene] Raw merged fixture displayed with ${mergedGeometry.getAttribute('position').count / 3} vertices`);
+              console.log(`[3DScene] Final merged fixture displayed with ${finalGeometry.getAttribute('position').count / 3} vertices`);
               
-              // STEP 2: Run manifold analysis, repair, and cleanup in background
+              // STEP 5: Run manifold analysis, repair, and cleanup in background
               // This happens asynchronously and updates the mesh when complete
               window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
                 detail: { current: 90, total: 100, stage: 'Starting background cleanup...' }
               }));
               
               // Run cleanup in a setTimeout to allow the UI to update first
+              // Capture finalGeometry for the async closure
+              const geometryToClean = finalGeometry;
               setTimeout(async () => {
                 try {
                   console.log('[3DScene] Starting background manifold analysis and cleanup...');
                   
-                  // Step 2a: Analyze the mesh for manifold issues
-                  const analysisResult = await analyzeMesh(mergedGeometry);
+                  // Step 5a: Analyze the mesh for manifold issues
+                  const analysisResult = await analyzeMesh(geometryToClean);
                   console.log('[3DScene] Mesh analysis:', {
                     isManifold: analysisResult.isManifold,
                     hasDegenerateFaces: analysisResult.hasDegenerateFaces,
@@ -3094,9 +3550,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     triangleCount: analysisResult.triangleCount,
                   });
                   
-                  let workingGeometry = mergedGeometry;
+                  let workingGeometry = geometryToClean;
                   
-                  // Step 2b: Repair if needed
+                  // Step 5b: Repair if needed
                   if (analysisResult.hasDegenerateFaces || !analysisResult.isManifold || analysisResult.hasNonManifoldEdges) {
                     console.log('[3DScene] Repairing mesh...');
                     window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
@@ -3110,7 +3566,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     }
                   }
                   
-                  // Step 2c: CSG Cleanup - remove small components and degenerate triangles
+                  // Step 5c: CSG Cleanup - remove small components and degenerate triangles
                   console.log('[3DScene] Running CSG cleanup...');
                   window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
                     detail: { current: 96, total: 100, stage: 'Cleaning up artifacts...' }
@@ -3125,10 +3581,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     vertexMergeTolerance: 0.001, // Tighter tolerance for better component detection
                   });
                   
-                  let finalGeometry = workingGeometry;
+                  let cleanedGeometry = workingGeometry;
                   
                   if (cleanupResult.success && cleanupResult.geometry) {
-                    finalGeometry = cleanupResult.geometry;
+                    cleanedGeometry = cleanupResult.geometry;
                     console.log('[3DScene] CSG cleanup result:', {
                       originalTriangles: cleanupResult.originalTriangles,
                       finalTriangles: cleanupResult.finalTriangles,
@@ -3139,8 +3595,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     });
                   }
                   
-                  // Step 2d: Update the displayed mesh with cleaned geometry
-                  if (finalGeometry !== mergedGeometry) {
+                  // Step 5d: Update the displayed mesh with cleaned geometry
+                  if (cleanedGeometry !== geometryToClean) {
                     console.log('[3DScene] Updating fixture with cleaned geometry...');
                     
                     const cleanedMaterial = new THREE.MeshStandardMaterial({
@@ -3150,7 +3606,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                       side: THREE.DoubleSide,
                     });
                     
-                    const cleanedFixtureMesh = new THREE.Mesh(finalGeometry, cleanedMaterial);
+                    const cleanedFixtureMesh = new THREE.Mesh(cleanedGeometry, cleanedMaterial);
                     cleanedFixtureMesh.name = 'merged-fixture';
                     cleanedFixtureMesh.castShadow = true;
                     cleanedFixtureMesh.receiveShadow = true;
@@ -3170,7 +3626,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                       return cleanedFixtureMesh;
                     });
                     
-                    console.log(`[3DScene] Cleaned fixture updated with ${finalGeometry.getAttribute('position').count / 3} vertices`);
+                    console.log(`[3DScene] Cleaned fixture updated with ${cleanedGeometry.getAttribute('position').count / 3} vertices`);
                   }
                   
                   window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
@@ -3203,7 +3659,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             success: successCount > 0, 
             successCount, 
             errorCount,
-            totalSupports: supports.length,
+            totalSupports: supports.length + placedClamps.length,
+            totalClampSupports: placedClamps.length,
+            totalLabels: labelsRef.current?.length || 0,
             totalParts: offsetMeshPreviews.size
           }
         }));
@@ -3220,7 +3678,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => {
       window.removeEventListener('execute-cavity-subtraction', handleExecuteCavitySubtraction as EventListener);
     };
-  }, [offsetMeshPreviews, supports, basePlate, baseTopY]);
+  }, [offsetMeshPreviews, supports, basePlate, baseTopY, placedClamps, clampSupportInfos, labels]);
 
   // Handle reset cavity event
   React.useEffect(() => {
@@ -4262,32 +4720,34 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         })()
       )}
 
-      {/* Labels rendering - on top of baseplate */}
-      <Suspense fallback={null}>
-        {labels.map((label) => (
-          <LabelMesh
-            key={label.id}
-            label={label}
-            selected={selectedLabelId === label.id}
-            onSelect={(id) => {
-              setSelectedLabelId(id);
-              window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
-            }}
-            onDoubleClick={(id) => {
-              // Activate pivot controls for this label
-              window.dispatchEvent(new CustomEvent('pivot-control-activated', { detail: { labelId: id } }));
-              setSelectedLabelId(id);
-              window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
-            }}
-            onBoundsComputed={(id, width, height) => {
-              // Update label with computed bounds from actual geometry
-              setLabels(prev => prev.map(l => 
-                l.id === id ? { ...l, computedWidth: width, computedHeight: height } : l
-              ));
-            }}
-          />
-        ))}
-      </Suspense>
+      {/* Labels rendering - on top of baseplate, hide when merged fixture is shown */}
+      {!mergedFixtureMesh && (
+        <Suspense fallback={null}>
+          {labels.map((label) => (
+            <LabelMesh
+              key={label.id}
+              label={label}
+              selected={selectedLabelId === label.id}
+              onSelect={(id) => {
+                setSelectedLabelId(id);
+                window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
+              }}
+              onDoubleClick={(id) => {
+                // Activate pivot controls for this label
+                window.dispatchEvent(new CustomEvent('pivot-control-activated', { detail: { labelId: id } }));
+                setSelectedLabelId(id);
+                window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
+              }}
+              onBoundsComputed={(id, width, height) => {
+                // Update label with computed bounds from actual geometry
+                setLabels(prev => prev.map(l => 
+                  l.id === id ? { ...l, computedWidth: width, computedHeight: height } : l
+                ));
+              }}
+            />
+          ))}
+        </Suspense>
+      )}
 
       {/* Label transform controls - activated on double-click */}
       {selectedLabelId && (
@@ -4335,7 +4795,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         })()
       )}
 
-      {/* Clamps rendering */}
+      {/* Clamps rendering - hide clamp supports when merged fixture is shown */}
       <Suspense fallback={null}>
         {placedClamps.map((placedClamp) => {
           const clampModel = getClampById(placedClamp.clampModelId);
@@ -4349,7 +4809,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
               selected={selectedClampId === placedClamp.id}
               showDebug={showClampDebug}
               baseTopY={baseTopY}
-              showSupport={true}
+              showSupport={!mergedFixtureMesh}
               showClampBody={placedClamp.visible !== false}
               onClick={(id) => {
                 setSelectedClampId(id);
@@ -4368,7 +4828,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     updated.set(clampId, {
                       polygon: supportInfo.polygon,
                       localCenter: { x: supportInfo.localCenter.x, y: supportInfo.localCenter.y },
-                      fixturePointY: supportInfo.fixturePointY
+                      fixturePointY: supportInfo.fixturePointY,
+                      mountSurfaceLocalY: supportInfo.mountSurfaceLocalY,
                     });
                     return updated;
                   });

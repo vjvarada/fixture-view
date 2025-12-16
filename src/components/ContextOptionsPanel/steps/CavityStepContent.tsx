@@ -423,6 +423,51 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
             )}
           </div>
 
+          {/* CSG Cleanup Options */}
+          <div className="space-y-3 pt-2 border-t border-border/30">
+            <Label className="text-[10px] font-tech text-muted-foreground uppercase tracking-wider">
+              CSG Cleanup (Fragment Removal)
+            </Label>
+            <p className="text-[9px] text-muted-foreground">
+              Remove small fragments after CSG operations. Lower values keep more geometry (including labels).
+            </p>
+
+            <SliderSetting
+              label="Min Volume"
+              value={settings.csgMinVolume ?? 1.0}
+              onChange={(v) => handleSettingChange('csgMinVolume', v)}
+              min={0}
+              max={50}
+              step={0.5}
+              disabled={isProcessing}
+              unit=" mm³"
+              hint="Fragments smaller than this are removed (0 = keep all)"
+            />
+
+            <SliderSetting
+              label="Min Thickness"
+              value={settings.csgMinThickness ?? 0.5}
+              onChange={(v) => handleSettingChange('csgMinThickness', v)}
+              min={0}
+              max={10}
+              step={0.1}
+              disabled={isProcessing}
+              unit=" mm"
+              hint="Fragments thinner than this are removed (0 = keep all)"
+            />
+
+            <SliderSetting
+              label="Min Triangles"
+              value={settings.csgMinTriangles ?? 5}
+              onChange={(v) => handleSettingChange('csgMinTriangles', v)}
+              min={0}
+              max={100}
+              step={1}
+              disabled={isProcessing}
+              hint="Fragments with fewer triangles are removed (0 = keep all)"
+            />
+          </div>
+
           {/* Reset Button */}
           <Button
             variant="outline"

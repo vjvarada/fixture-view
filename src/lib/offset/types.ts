@@ -164,7 +164,7 @@ export const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
   smoothingIterations: 10, // Default iterations
   smoothingQuality: true, // Quality mode always on
   debugSmoothingColors: false, // Debug colors off by default
-  csgMinVolume: 5.0,
-  csgMinThickness: 2.0,
-  csgMinTriangles: 10,
+  csgMinVolume: 1.0,
+  csgMinThickness: 0.5,
+  csgMinTriangles: 5,
 };
