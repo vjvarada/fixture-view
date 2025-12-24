@@ -21,6 +21,8 @@ import CavityAccordion from './CavityAccordion';
 import { LabelsAccordion, LabelConfig } from './Labels';
 import { ClampsAccordion, PlacedClamp } from './Clamps';
 import PartItemAccordion from './PartItemAccordion';
+import MountingHolesAccordion from './MountingHolesAccordion';
+import { PlacedHole } from '@/components/MountingHoles/types';
 import { AnySupport } from './Supports/types';
 import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@/lib/offset/types';
 import {
@@ -75,6 +77,12 @@ interface PartPropertiesAccordionProps {
   onClampSelect?: (id: string | null) => void;
   onClampUpdate?: (id: string, updates: Partial<PlacedClamp>) => void;
   onClampDelete?: (id: string) => void;
+  // Mounting holes
+  holes?: PlacedHole[];
+  selectedHoleId?: string | null;
+  onHoleSelect?: (id: string | null) => void;
+  onHoleUpdate?: (hole: PlacedHole) => void;
+  onHoleDelete?: (id: string) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +226,11 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
   onClampSelect,
   onClampUpdate,
   onClampDelete,
+  holes = [],
+  selectedHoleId = null,
+  onHoleSelect,
+  onHoleUpdate,
+  onHoleDelete,
 }) => {
   // Get all parts to display
   const allParts = useMemo(
@@ -390,6 +403,16 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
         onLabelSelect={onLabelSelect || (() => {})}
         onLabelUpdate={onLabelUpdate || (() => {})}
         onLabelDelete={onLabelDelete || (() => {})}
+      />
+
+      {/* Mounting Holes Accordion */}
+      <MountingHolesAccordion
+        holes={holes || []}
+        hasBaseplate={!!baseplate}
+        selectedHoleId={selectedHoleId}
+        onSelectHole={onHoleSelect || (() => {})}
+        onUpdateHole={onHoleUpdate || (() => {})}
+        onRemoveHole={onHoleDelete || (() => {})}
       />
 
       {/* Cavity Accordion */}

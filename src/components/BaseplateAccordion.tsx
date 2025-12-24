@@ -47,7 +47,7 @@ interface BaseplateAccordionProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_PADDING = 10;
-const DEFAULT_HEIGHT = 4;
+const DEFAULT_HEIGHT = 5;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility Functions
@@ -266,7 +266,7 @@ const BaseplateAccordion: React.FC<BaseplateAccordionProps> = ({
                 onChange={(value) => handlePropertyChange('height', value)}
                 icon={<Maximize2 className="w-2.5 h-2.5" />}
                 description="Thickness of the baseplate"
-                min={1}
+                min={4}
                 max={100}
               />
             </div>

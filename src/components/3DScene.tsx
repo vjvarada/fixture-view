@@ -15,12 +15,13 @@ import { getSupportFootprintBounds, getSupportFootprintPoints } from './Supports
 import { autoPlaceSupports } from './Supports/autoPlacement';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
-import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
+import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker, performHoleCSGInWorker } from '@/lib/workers';
 import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResult } from '@/modules/FileImport/services/meshAnalysisService';
 import SupportTransformControls from './Supports/SupportTransformControls';
 import { LabelMesh, LabelTransformControls } from './Labels';
 import { LabelConfig } from './Labels/types';
 import { ClampMesh, ClampTransformControls, ClampWithSupport, PlacedClamp, ClampModel, getClampById } from './Clamps';
+import { HoleMesh, HolePlacement, HoleTransformControls, PlacedHole, HoleConfig, createMergedHolesGeometry } from './MountingHoles';
 
 /** Target triangle count for offset mesh decimation */
 const OFFSET_MESH_DECIMATION_TARGET = 50_000;
@@ -1116,6 +1117,17 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const DEBUG_SHOW_CLAMP_SILHOUETTE = false;
   const [debugClampSilhouette, setDebugClampSilhouette] = useState<Array<{ x: number; z: number }> | null>(null);
   
+  // Mounting holes state
+  const [mountingHoles, setMountingHoles] = useState<PlacedHole[]>([]);
+  const [selectedHoleId, setSelectedHoleId] = useState<string | null>(null);
+  const [editingHoleId, setEditingHoleId] = useState<string | null>(null);
+  const isDraggingHoleRef = useRef(false); // Track if hole gizmo is being dragged
+  const [holePlacementMode, setHolePlacementMode] = useState<{
+    active: boolean;
+    config: HoleConfig | null;
+    depth: number;
+  }>({ active: false, config: null, depth: 20 });
+  
   // Cavity operations preview (for CSG operations)
   const [cavityPreview, setCavityPreview] = useState<THREE.Mesh | null>(null);
   
@@ -1132,6 +1144,17 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   
   // Merged fixture mesh (baseplate + cut supports combined via CSG union)
   const [mergedFixtureMesh, setMergedFixtureMesh] = useState<THREE.Mesh | null>(null);
+  
+  // Modified baseplate geometry with holes cut out (for immediate visual feedback)
+  const [baseplateWithHoles, setBaseplateWithHoles] = useState<THREE.BufferGeometry | null>(null);
+  const [holeCSGProcessing, setHoleCSGProcessing] = useState(false);
+  // Store original baseplate geometry to re-apply holes when baseplate changes
+  const originalBaseplateGeoRef = useRef<THREE.BufferGeometry | null>(null);
+  // Flag to trigger CSG update (only when hole editing ends or hole is placed)
+  const [holeCSGTrigger, setHoleCSGTrigger] = useState(0);
+  // Ref to track latest mountingHoles for CSG effect (avoids stale closure)
+  const mountingHolesRef = useRef(mountingHoles);
+  mountingHolesRef.current = mountingHoles;
   
   // Support editing ref (kept for cleanup in event handlers)
   const editingSupportRef = useRef<AnySupport | null>(null);
@@ -1292,10 +1315,50 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return points;
   }, [placedClamps, clampSupportInfos]);
 
-  // Combined hull points for baseplate (supports + labels + clamp supports)
+  // Calculate mounting hole footprint points for baseplate expansion
+  // Holes need the baseplate to extend underneath them
+  const prevHoleHullPointsRef = useRef<Array<{x: number; z: number}>>([]);
+  const holeHullPoints = useMemo(() => {
+    const points: Array<{x: number; z: number}> = [];
+    // Add margin around each hole for baseplate coverage
+    const HOLE_MARGIN = 3.0; // 3mm margin around hole edge
+    
+    for (const hole of mountingHoles) {
+      const holeX = Number(hole.position?.x) || 0;
+      const holeZ = Number(hole.position?.y) || 0; // position.y is Z in world coords
+      const radius = (Number(hole.diameter) || 6) / 2;
+      const outerRadius = radius + HOLE_MARGIN;
+      
+      // Add 8 points around the hole perimeter for hull calculation
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        points.push({
+          x: holeX + Math.cos(angle) * outerRadius,
+          z: holeZ + Math.sin(angle) * outerRadius
+        });
+      }
+    }
+    
+    // Check if points are the same as before to avoid unnecessary updates
+    const prev = prevHoleHullPointsRef.current;
+    if (prev.length === points.length) {
+      let same = true;
+      for (let i = 0; i < points.length && same; i++) {
+        if (Math.abs(prev[i].x - points[i].x) > 0.001 || Math.abs(prev[i].z - points[i].z) > 0.001) {
+          same = false;
+        }
+      }
+      if (same) return prev; // Return the cached array to avoid triggering downstream updates
+    }
+    
+    prevHoleHullPointsRef.current = points;
+    return points;
+  }, [mountingHoles]);
+
+  // Combined hull points for baseplate (supports + labels + clamp supports + holes)
   const combinedHullPoints = useMemo(() => {
-    return [...supportHullPoints, ...labelHullPoints, ...clampSupportHullPoints];
-  }, [supportHullPoints, labelHullPoints, clampSupportHullPoints]);
+    return [...supportHullPoints, ...labelHullPoints, ...clampSupportHullPoints, ...holeHullPoints];
+  }, [supportHullPoints, labelHullPoints, clampSupportHullPoints, holeHullPoints]);
 
   const csgEngineRef = useRef<CSGEngine | null>(null);
   if (!csgEngineRef.current) {
@@ -1308,7 +1371,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     const updateTopY = () => {
       const mesh = basePlateMeshRef.current;
       // Fallback to basePlate.depth when mesh is not visible
-      const fallbackTopY = basePlate?.depth ?? 4;
+      const fallbackTopY = basePlate?.depth ?? 5;
       
       if (!mesh) { 
         setBaseTopY(prev => Math.abs(prev - fallbackTopY) < 0.001 ? prev : fallbackTopY); 
@@ -2083,6 +2146,307 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     };
   }, [currentOrientation, updateCamera, modelBounds]);
 
+  // Listen for mounting hole placement start/cancel
+  React.useEffect(() => {
+    const handleStartHolePlacement = (e: CustomEvent) => {
+      const { config, depth } = e.detail as { config: HoleConfig; depth: number };
+      
+      // Disable orbit controls during placement
+      setOrbitControlsEnabled(false);
+      
+      // Switch to top view for placement
+      prevOrientationRef.current = currentOrientation;
+      setCurrentOrientation('top');
+      updateCamera('top', modelBounds);
+      
+      // Use depth from event (baseplate thickness) or fallback to basePlate state
+      const holeDepth = depth ?? basePlate?.depth ?? 20;
+      setHolePlacementMode({ active: true, config, depth: holeDepth });
+    };
+    
+    const handleCancelHolePlacement = () => {
+      setHolePlacementMode({ active: false, config: null, depth: 20 });
+      setOrbitControlsEnabled(true);
+      // restore previous view
+      setCurrentOrientation(prevOrientationRef.current);
+      updateCamera(prevOrientationRef.current, modelBounds);
+    };
+    
+    window.addEventListener('hole-start-placement', handleStartHolePlacement as EventListener);
+    window.addEventListener('hole-cancel-placement', handleCancelHolePlacement as EventListener);
+    
+    return () => {
+      window.removeEventListener('hole-start-placement', handleStartHolePlacement as EventListener);
+      window.removeEventListener('hole-cancel-placement', handleCancelHolePlacement as EventListener);
+    };
+  }, [currentOrientation, updateCamera, modelBounds, basePlate?.depth]);
+
+  // Handle hole creation
+  const handleHoleCreate = useCallback((hole: PlacedHole) => {
+    // Emit event to AppShell
+    window.dispatchEvent(new CustomEvent('hole-placed', { detail: hole }));
+    
+    // Exit placement mode
+    setHolePlacementMode({ active: false, config: null, depth: 20 });
+    setOrbitControlsEnabled(true);
+    
+    // Restore previous view
+    setCurrentOrientation(prevOrientationRef.current);
+    updateCamera(prevOrientationRef.current, modelBounds);
+    
+    // Note: CSG is triggered by handleHolesUpdated when AppShell sends back the updated holes array
+  }, [modelBounds, updateCamera]);
+
+  // Sync holes from AppShell
+  React.useEffect(() => {
+    const handleHolesUpdated = (e: CustomEvent) => {
+      const holes = e.detail as PlacedHole[];
+      
+      setMountingHoles(prev => {
+        // Trigger CSG if hole count changed (added or deleted) and not currently editing
+        // The editing case is handled by onDeselect/onTransformEnd
+        if (holes.length !== prev.length && !editingHoleId) {
+          // Use setTimeout to ensure state update completes first
+          setTimeout(() => {
+            setHoleCSGTrigger(t => t + 1);
+          }, 0);
+        }
+        return holes;
+      });
+    };
+    
+    window.addEventListener('holes-updated', handleHolesUpdated as EventListener);
+    return () => {
+      window.removeEventListener('holes-updated', handleHolesUpdated as EventListener);
+    };
+  }, [editingHoleId]);
+
+  // Sync selected hole ID from AppShell
+  React.useEffect(() => {
+    const handleHoleSelected = (e: CustomEvent) => {
+      const holeId = e.detail as string | null;
+      setSelectedHoleId(holeId);
+    };
+    
+    window.addEventListener('hole-selected', handleHoleSelected as EventListener);
+    return () => {
+      window.removeEventListener('hole-selected', handleHoleSelected as EventListener);
+    };
+  }, []);
+
+  // Handle hole edit request (double-click or button click to show transform controls)
+  React.useEffect(() => {
+    const handleHoleEditRequest = (e: CustomEvent) => {
+      const holeId = e.detail as string;
+      setSelectedHoleId(holeId);
+      setEditingHoleId(holeId);
+    };
+    
+    window.addEventListener('hole-edit-request', handleHoleEditRequest as EventListener);
+    return () => {
+      window.removeEventListener('hole-edit-request', handleHoleEditRequest as EventListener);
+    };
+  }, []);
+
+  // Listen for hole updates from properties panel
+  React.useEffect(() => {
+    let debounceTimer: number | null = null;
+    
+    const handleHoleUpdated = (e: CustomEvent) => {
+      const updatedHole = e.detail as PlacedHole;
+      setMountingHoles(prev => prev.map(h => h.id === updatedHole.id ? updatedHole : h));
+      
+      // Debounce CSG update for property panel changes (not from transform controls)
+      // Transform controls handle their own CSG trigger on drag end
+      if (!editingHoleId) {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        debounceTimer = window.setTimeout(() => {
+          setHoleCSGTrigger(prev => prev + 1);
+        }, 500); // 500ms debounce for property panel edits
+      }
+    };
+    
+    window.addEventListener('hole-updated', handleHoleUpdated as EventListener);
+    return () => {
+      window.removeEventListener('hole-updated', handleHoleUpdated as EventListener);
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+    };
+  }, [editingHoleId]);
+
+  // Capture original baseplate geometry once when baseplate is first rendered
+  // This ref tracks if we've already captured to prevent re-captures
+  const hasCaputuredOriginalBaseplate = React.useRef(false);
+  
+  React.useEffect(() => {
+    // Don't recapture during hole drag - wait for drag to complete
+    if (isDraggingHoleRef.current) {
+      return;
+    }
+    
+    // Reset capture flag when baseplate changes
+    hasCaputuredOriginalBaseplate.current = false;
+    
+    // Try to capture after a short delay to ensure mesh is rendered
+    const timer = setTimeout(() => {
+      if (basePlateMeshRef.current?.geometry && !hasCaputuredOriginalBaseplate.current) {
+        console.log('[HoleCSG] Capturing original baseplate geometry');
+        originalBaseplateGeoRef.current = basePlateMeshRef.current.geometry.clone();
+        hasCaputuredOriginalBaseplate.current = true;
+      }
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [basePlate?.type, basePlate?.width, basePlate?.height, basePlate?.depth, combinedHullPoints]);
+
+  // Immediate hole CSG - cut holes into baseplate when triggered (not during live editing)
+  React.useEffect(() => {
+    const performHoleCSG = async () => {
+      // Use ref to get latest holes (avoids stale closure)
+      const currentHoles = mountingHolesRef.current;
+      
+      // No holes - clear any modified geometry
+      if (currentHoles.length === 0) {
+        setBaseplateWithHoles(null);
+        return;
+      }
+      
+      // Skip if trigger is 0 (initial state) - wait for explicit trigger
+      if (holeCSGTrigger === 0) {
+        return;
+      }
+      
+      // Need original baseplate geometry
+      if (!originalBaseplateGeoRef.current) {
+        console.log('[HoleCSG] No original baseplate geometry cached - will retry');
+        // Give BasePlate a frame to render and capture
+        setTimeout(() => {
+          if (basePlateMeshRef.current?.geometry && !originalBaseplateGeoRef.current) {
+            originalBaseplateGeoRef.current = basePlateMeshRef.current.geometry.clone();
+            // Re-trigger CSG
+            setHoleCSGTrigger(prev => prev + 1);
+          }
+        }, 100);
+        return;
+      }
+      
+      // Create merged holes geometry
+      // Hole positions are in world space, but baseplate geometry is in local space
+      // We need to transform hole positions by subtracting the baseplate world position
+      const baseplateOffset = basePlate?.position 
+        ? { x: basePlate.position.x, z: basePlate.position.z }
+        : undefined;
+      
+      // baseTopY is the world Y of the baseplate top surface
+      // For local space geometry, we need the local Y which is just the depth
+      const localBaseTopY = basePlate?.depth ?? 5;
+      
+      // Ensure all holes have correct depth (use baseplate depth for through holes)
+      const holesWithCorrectDepth = currentHoles.map(hole => ({
+        ...hole,
+        depth: hole.depth || localBaseTopY
+      }));
+      
+      console.log(`[HoleCSG] Baseplate depth: ${localBaseTopY}mm, holes:`, holesWithCorrectDepth.map(h => ({
+        id: h.id,
+        type: h.type,
+        diameter: h.diameter,
+        depth: h.depth,
+        position: { x: h.position.x, z: h.position.y }
+      })));
+      
+      const holesGeo = createMergedHolesGeometry(holesWithCorrectDepth, localBaseTopY, baseplateOffset);
+      
+      if (!holesGeo) {
+        console.log('[HoleCSG] Failed to create merged holes geometry');
+        return;
+      }
+      
+      setHoleCSGProcessing(true);
+      console.log(`[HoleCSG] Cutting ${currentHoles.length} hole(s) into baseplate with depth ${localBaseTopY}...`);
+      
+      try {
+        // Use original baseplate geometry (not already-modified one)
+        const sourceGeo = originalBaseplateGeoRef.current.clone();
+        
+        const result = await performHoleCSGInWorker(
+          sourceGeo,
+          holesGeo,
+          (progress) => {
+            console.log(`[HoleCSG] Progress: ${Math.round(progress * 100)}%`);
+          }
+        );
+        
+        if (result) {
+          console.log('[HoleCSG] Successfully cut holes into baseplate');
+          setBaseplateWithHoles(result);
+        } else {
+          console.error('[HoleCSG] Worker returned null result');
+        }
+      } catch (error) {
+        console.error('[HoleCSG] Error during CSG operation:', error);
+      } finally {
+        setHoleCSGProcessing(false);
+      }
+    };
+    
+    performHoleCSG();
+    // Only trigger CSG when holeCSGTrigger changes (explicit trigger on drag end, hole placed, etc.)
+    // Do NOT watch mountingHoles directly - that would cause CSG during drag
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holeCSGTrigger]);
+
+  // Reset hole CSG when baseplate changes significantly (including position or hull points for convex-hull)
+  // Skip during hole gizmo drag to prevent unnecessary recalculations
+  React.useEffect(() => {
+    // Don't reset during hole drag - wait for drag to complete
+    if (isDraggingHoleRef.current) {
+      return;
+    }
+    
+    // When baseplate type, dimensions, position, or hull points change, clear the cached original and result
+    console.log('[HoleCSG] Baseplate changed, clearing cached geometry');
+    originalBaseplateGeoRef.current = null;
+    hasCaputuredOriginalBaseplate.current = false;
+    setBaseplateWithHoles(null);
+    
+    // If there are existing holes, trigger CSG after a short delay to re-cut them
+    // The delay allows the new baseplate geometry to be captured first
+    if (mountingHoles.length > 0) {
+      setTimeout(() => {
+        setHoleCSGTrigger(prev => prev + 1);
+      }, 200);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basePlate?.type, basePlate?.width, basePlate?.height, basePlate?.depth, basePlate?.position?.x, basePlate?.position?.z, combinedHullPoints]);
+  
+  // Track previous baseplate depth to detect changes
+  const prevBaseplateDepthRef = React.useRef(basePlate?.depth);
+  
+  // Update hole depths when baseplate depth changes (for through-holes)
+  React.useEffect(() => {
+    const newDepth = basePlate?.depth ?? 20;
+    const prevDepth = prevBaseplateDepthRef.current;
+    
+    // Only update if depth actually changed
+    if (prevDepth === newDepth) return;
+    prevBaseplateDepthRef.current = newDepth;
+    
+    // Update all holes to use new baseplate depth
+    setMountingHoles(prev => {
+      if (prev.length === 0) return prev;
+      
+      console.log(`[HoleCSG] Updating hole depths from ${prevDepth} to ${newDepth}`);
+      return prev.map(hole => ({
+        ...hole,
+        depth: newDepth
+      }));
+    });
+  }, [basePlate?.depth]);
+
   const handleSupportCreate = useCallback((support: AnySupport) => {
     // For new supports created via placement, just emit event as-is
     window.dispatchEvent(new CustomEvent('support-created', { detail: support }));
@@ -2221,7 +2585,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         return;
       }
 
-      const baseTopY = basePlate.depth ?? 4;
+      const baseTopY = basePlate.depth ?? 5;
 
       console.log('[3DScene] Auto-placing supports - type:', supportType, 
         `(angle: ${overhangAngle ?? 45}°, aspectRatio: ${aspectRatioThreshold ?? 1.2})`);
@@ -3546,6 +3910,58 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                 }
               }
               
+              // === STEP 3.5: SUBTRACT MOUNTING HOLES ===
+              if (mountingHoles.length > 0) {
+                console.log(`[3DScene] Subtracting ${mountingHoles.length} mounting holes from fixture...`);
+                window.dispatchEvent(new CustomEvent('cavity-subtraction-progress', {
+                  detail: { current: 85, total: 100, stage: 'Cutting mounting holes...' }
+                }));
+                
+                try {
+                  // Create merged holes geometry
+                  // Note: For final export, we need holes in local space since finalGeometry is already in local baseplate space
+                  const localBaseTopY = basePlate?.depth ?? baseTopY;
+                  const baseplateOffset = basePlate?.position 
+                    ? { x: basePlate.position.x, z: basePlate.position.z }
+                    : undefined;
+                  const holesGeometry = createMergedHolesGeometry(mountingHoles, localBaseTopY, baseplateOffset);
+                  
+                  if (holesGeometry) {
+                    // Ensure proper geometry attributes for CSG
+                    if (!holesGeometry.index) {
+                      const posAttr = holesGeometry.getAttribute('position');
+                      const vertexCount = posAttr.count;
+                      const indices = new Uint32Array(vertexCount);
+                      for (let i = 0; i < vertexCount; i++) indices[i] = i;
+                      holesGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+                    }
+                    if (!holesGeometry.getAttribute('uv')) {
+                      const position = holesGeometry.getAttribute('position');
+                      const uvArray = new Float32Array(position.count * 2);
+                      holesGeometry.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+                    }
+                    holesGeometry.computeVertexNormals();
+                    
+                    // Perform CSG subtraction
+                    const subtractionResult = await performBatchCSGSubtractionInWorker(
+                      [{ id: 'fixture', geometry: finalGeometry }],
+                      holesGeometry,
+                      () => {}
+                    );
+                    
+                    if (subtractionResult.has('fixture')) {
+                      finalGeometry.dispose();
+                      finalGeometry = subtractionResult.get('fixture')!;
+                      console.log(`[3DScene] Subtracted ${mountingHoles.length} mounting holes`);
+                    }
+                    
+                    holesGeometry.dispose();
+                  }
+                } catch (err) {
+                  console.warn('[3DScene] Failed to subtract mounting holes:', err);
+                }
+              }
+              
               // STEP 4: Display the final merged geometry IMMEDIATELY
               // This gives instant visual feedback while cleanup runs in background
               console.log('[3DScene] Displaying final merged geometry...');
@@ -3729,7 +4145,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     return () => {
       window.removeEventListener('execute-cavity-subtraction', handleExecuteCavitySubtraction as EventListener);
     };
-  }, [offsetMeshPreviews, supports, basePlate, baseTopY, placedClamps, clampSupportInfos, labels]);
+  }, [offsetMeshPreviews, supports, basePlate, baseTopY, placedClamps, clampSupportInfos, labels, mountingHoles]);
 
   // Handle reset cavity event
   React.useEffect(() => {
@@ -3812,8 +4228,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       // Helper to coerce dimension
       const clampPos = (v: any, min: number, fallback: number) => Math.max(Number(v) || fallback, min);
 
-      // Default baseplate thickness (4mm)
-      const DEFAULT_THICKNESS = 4;
+      // Default baseplate thickness (5mm)
+      const DEFAULT_THICKNESS = 5;
 
       let cfg: NonNullable<typeof basePlate> = {
         type: (option as any),
@@ -3967,7 +4383,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       }
       
       // Get new baseplate top Y position
-      const baseplateTopY = updatedBaseplate.depth ?? 4;
+      const baseplateTopY = updatedBaseplate.depth ?? 5;
       
       // Lift parts that would collide with the new baseplate height
       importedParts.forEach(part => {
@@ -4047,8 +4463,14 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     // Convex-hull recalculates its geometry from modelGeometry/modelMatrixWorld props automatically
     if (basePlate.type === 'convex-hull') return;
     
+    // Skip during hole drag to prevent updates during gizmo manipulation
+    if (isDraggingHoleRef.current) return;
+    
     // Debounce the expensive calculation
     const timeoutId = setTimeout(() => {
+      // Skip if we started dragging during debounce
+      if (isDraggingHoleRef.current) return;
+      
       // Compute combined bounding box of all parts
       // NOTE: The mesh's matrixWorld already includes the live pivot transform since the mesh
       // is a child of the PivotControls group, so setFromObject gives us the correct live bounds.
@@ -4097,6 +4519,21 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         box.min.z = Math.min(box.min.z, worldZ);
         box.max.z = Math.max(box.max.z, worldZ);
       }
+    }
+    
+    // Expand the bounding box to include mounting hole footprints
+    // Holes stay fixed, so use their actual positions
+    const HOLE_MARGIN = 3.0; // Same margin as used for hull points
+    for (const hole of mountingHoles) {
+      const holeX = Number(hole.position?.x) || 0;
+      const holeZ = Number(hole.position?.y) || 0; // position.y is Z in world coords
+      const radius = (Number(hole.diameter) || 6) / 2;
+      const outerRadius = radius + HOLE_MARGIN;
+      
+      box.min.x = Math.min(box.min.x, holeX - outerRadius);
+      box.max.x = Math.max(box.max.x, holeX + outerRadius);
+      box.min.z = Math.min(box.min.z, holeZ - outerRadius);
+      box.max.z = Math.max(box.max.z, holeZ + outerRadius);
     }
     
     // Expand the bounding box to include label footprints
@@ -4171,7 +4608,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     }, 100); // 100ms debounce to avoid lag during drag
 
     return () => clearTimeout(timeoutId);
-  }, [modelTransform.position, modelTransform.rotation, basePlate?.type, supports, labels, livePositionDelta, placedClamps, clampSupportInfos]);
+  }, [modelTransform.position, modelTransform.rotation, basePlate?.type, supports, labels, livePositionDelta, placedClamps, clampSupportInfos, mountingHoles]);
 
   // Handle check-baseplate-collision event (triggered when position is reset from Properties panel)
   // This lifts the part above the baseplate if there's a collision
@@ -4186,7 +4623,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const partRef = modelMeshRefs.current.get(partId);
       if (!partRef?.current) return;
       
-      const baseplateTopY = basePlate.depth ?? 4;
+      const baseplateTopY = basePlate.depth ?? 5;
       
       partRef.current.updateMatrixWorld(true);
       // Use actual mesh vertices for accurate collision detection
@@ -4227,7 +4664,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const partRef = modelMeshRefs.current.get(partId);
       if (!partRef?.current) return;
       
-      const baseplateTopY = basePlate.depth ?? 4;
+      const baseplateTopY = basePlate.depth ?? 5;
       
       // Force update world matrix to get accurate vertex positions
       partRef.current.updateMatrixWorld(true);
@@ -4269,7 +4706,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       const partRef = modelMeshRefs.current.get(partId);
       if (!partRef?.current) return;
       
-      const baseplateTopY = basePlate.depth ?? 4;
+      const baseplateTopY = basePlate.depth ?? 5;
       
       partRef.current.updateMatrixWorld(true);
       // Use actual mesh vertices for accurate positioning
@@ -4519,8 +4956,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       {/* Scalable grid - sized based on combined model bounds (includes world positions) */}
       <ScalableGrid modelBounds={modelBounds} isDarkMode={isDarkMode} />
 
-      {/* Base plate - hide when merged fixture is shown */}
-      {basePlate && baseplateVisible && !mergedFixtureMesh && (
+      {/* Base plate - hide when merged fixture is shown OR when we have baseplateWithHoles */}
+      {basePlate && baseplateVisible && !mergedFixtureMesh && !baseplateWithHoles && (
         <BasePlate
           key={`baseplate-${basePlate.id}`}
           type={basePlate.type}
@@ -4578,6 +5015,45 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             }));
           }}
         />
+      )}
+
+      {/* Base plate with holes cut (CSG result) - show when baseplateWithHoles exists */}
+      {basePlate && baseplateVisible && !mergedFixtureMesh && baseplateWithHoles && (
+        <mesh
+          ref={basePlateMeshRef}
+          geometry={baseplateWithHoles}
+          position={basePlate.position}
+          receiveShadow
+          castShadow
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('baseplate-selected', {
+              detail: { basePlateId: basePlate.id }
+            }));
+          }}
+        >
+          {/* Use same colors as BasePlate component */}
+          <meshStandardMaterial 
+            color={basePlate.material === 'wood' ? 0x8B4513 : basePlate.material === 'plastic' ? 0x333333 : 0x888888} 
+            roughness={basePlate.material === 'wood' ? 0.8 : basePlate.material === 'plastic' ? 0.3 : 0.7}
+            metalness={basePlate.material === 'wood' ? 0.1 : 0.0}
+          />
+        </mesh>
+      )}
+
+      {/* Processing indicator for hole CSG */}
+      {holeCSGProcessing && (
+        <Html center position={[0, 50, 0]}>
+          <div style={{
+            background: 'rgba(0,0,0,0.7)',
+            color: 'white',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            fontSize: '14px',
+            whiteSpace: 'nowrap'
+          }}>
+            Cutting holes...
+          </div>
+        </Html>
       )}
 
       {/* Render all imported parts with transform controls */}
@@ -5086,6 +5562,89 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           maxRayHeight={2000}
           modelBounds={modelBounds ? { min: modelBounds.min, max: modelBounds.max } : null}
         />
+      )}
+
+      {/* Mounting hole placement controller */}
+      {holePlacementMode.active && holePlacementMode.config && basePlateMeshRef.current && (
+        <HolePlacement
+          active={holePlacementMode.active}
+          holeConfig={holePlacementMode.config}
+          baseTarget={basePlateMeshRef.current}
+          baseTopY={baseTopY}
+          depth={holePlacementMode.depth}
+          onPlace={handleHoleCreate}
+          onCancel={() => {
+            setHolePlacementMode({ active: false, config: null, depth: 20 });
+            setOrbitControlsEnabled(true);
+            // Restore previous view
+            setCurrentOrientation(prevOrientationRef.current);
+            updateCamera(prevOrientationRef.current, modelBounds);
+            // Dispatch cancellation event
+            window.dispatchEvent(new CustomEvent('hole-placement-cancelled'));
+          }}
+        />
+      )}
+
+      {/* Render placed mounting holes */}
+      {mountingHoles.map(hole => (
+        <HoleMesh
+          key={hole.id}
+          hole={hole}
+          baseTopY={baseTopY}
+          isSelected={selectedHoleId === hole.id}
+          onClick={() => {
+            // Single click just selects the hole (no gizmo)
+            setSelectedHoleId(hole.id);
+            window.dispatchEvent(new CustomEvent('hole-select-request', { detail: hole.id }));
+          }}
+          onDoubleClick={() => {
+            // Double-click enters edit/move mode with gizmo
+            setSelectedHoleId(hole.id);
+            setEditingHoleId(hole.id);
+            window.dispatchEvent(new CustomEvent('hole-edit-request', { detail: hole.id }));
+          }}
+        />
+      ))}
+
+      {/* Hole transform controls - XZ plane only */}
+      {editingHoleId && !holePlacementMode.active && (
+        (() => {
+          const editingHole = mountingHoles.find(h => h.id === editingHoleId);
+          if (!editingHole) return null;
+          return (
+            <HoleTransformControls
+              hole={editingHole}
+              baseTopY={baseTopY}
+              onDragStart={() => {
+                isDraggingHoleRef.current = true;
+              }}
+              onTransformChange={(newPosition) => {
+                // Live update hole position (visual only, no CSG during drag)
+                setMountingHoles(prev => prev.map(h => {
+                  if (h.id === editingHoleId) {
+                    return { ...h, position: newPosition };
+                  }
+                  return h;
+                }));
+              }}
+              onTransformEnd={(newPosition) => {
+                isDraggingHoleRef.current = false;
+                // Dispatch event for AppShell to update its state
+                const updatedHole = { ...editingHole, position: newPosition };
+                window.dispatchEvent(new CustomEvent('hole-updated', { detail: updatedHole }));
+                // Trigger CSG update after drag ends
+                setHoleCSGTrigger(prev => prev + 1);
+              }}
+              onDeselect={() => {
+                isDraggingHoleRef.current = false;
+                setEditingHoleId(null);
+                setSelectedHoleId(null);
+                // Trigger CSG update when closing gizmo
+                setHoleCSGTrigger(prev => prev + 1);
+              }}
+            />
+          );
+        })()
       )}
 
       {/* Event handlers - use a ref to disable raycasting so it doesn't block model clicks */}

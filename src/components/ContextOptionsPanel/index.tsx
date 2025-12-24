@@ -16,7 +16,9 @@ import {
   ChevronRight,
   CheckCircle2,
   Circle,
-  Loader2
+  Loader2,
+  SkipForward,
+  MinusCircle
 } from 'lucide-react';
 import { ProcessedFile } from '@/modules/FileImport/types';
 
@@ -29,7 +31,6 @@ export type WorkflowStep =
   | 'clamps'
   | 'labels'
   | 'drill'
-  | 'optimize'
   | 'export';
 
 interface StepConfig {
@@ -38,6 +39,7 @@ interface StepConfig {
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   helpText: string[];
+  isOptional?: boolean;
 }
 
 const WORKFLOW_STEPS: StepConfig[] = [
@@ -83,7 +85,8 @@ const WORKFLOW_STEPS: StepConfig[] = [
       'Select from standard clamp components',
       'Position clamps around your workpiece',
       'Ensure adequate clamping force distribution'
-    ]
+    ],
+    isOptional: true
   },
   {
     id: 'labels',
@@ -94,18 +97,8 @@ const WORKFLOW_STEPS: StepConfig[] = [
       'Add version numbers and identifiers',
       'Position labels on visible surfaces',
       'Emboss or deboss text as needed'
-    ]
-  },
-  {
-    id: 'cavity',
-    label: 'Cavity',
-    description: 'Subtract workpiece geometry',
-    icon: SquaresSubtract,
-    helpText: [
-      'Select the fixture component as base',
-      'Choose workpieces to subtract',
-      'Adjust clearance for fit tolerance'
-    ]
+    ],
+    isOptional: true
   },
   {
     id: 'drill',
@@ -116,17 +109,18 @@ const WORKFLOW_STEPS: StepConfig[] = [
       'Select standard hole sizes (M3-M12)',
       'Choose through hole, countersink, or counterbore',
       'Click on fixture to place mounting holes'
-    ]
+    ],
+    isOptional: true
   },
   {
-    id: 'optimize',
-    label: 'Optimize',
-    description: 'Save material and print time',
-    icon: Scissors,
+    id: 'cavity',
+    label: 'Cavity',
+    description: 'Subtract workpiece geometry',
+    icon: SquaresSubtract,
     helpText: [
-      'Analyze material usage',
-      'Generate infill patterns',
-      'Reduce print time with hollowing'
+      'Select the fixture component as base',
+      'Choose workpieces to subtract',
+      'Adjust clearance for fit tolerance'
     ]
   },
   {
@@ -147,6 +141,8 @@ interface ContextOptionsPanelProps {
   activeStep: WorkflowStep;
   onStepChange?: (step: WorkflowStep) => void;
   completedSteps?: WorkflowStep[];
+  skippedSteps?: WorkflowStep[];
+  onSkipStep?: (step: WorkflowStep) => void;
   isProcessing?: boolean;
   children?: React.ReactNode;
 }
@@ -156,19 +152,43 @@ const ContextOptionsPanel: React.FC<ContextOptionsPanelProps> = ({
   activeStep,
   onStepChange,
   completedSteps = [],
+  skippedSteps = [],
+  onSkipStep,
   isProcessing = false,
   children
 }) => {
   const currentStepConfig = WORKFLOW_STEPS.find(s => s.id === activeStep);
   const currentStepIndex = WORKFLOW_STEPS.findIndex(s => s.id === activeStep);
   
-  // Calculate progress percentage
-  const progressPercent = ((currentStepIndex + 1) / WORKFLOW_STEPS.length) * 100;
+  // Calculate progress percentage (completed + skipped count toward progress)
+  const processedSteps = [...new Set([...completedSteps, ...skippedSteps])];
+  const progressPercent = ((processedSteps.length) / WORKFLOW_STEPS.length) * 100;
 
-  const getStepStatus = (stepId: WorkflowStep): 'completed' | 'current' | 'upcoming' => {
+  const getStepStatus = (stepId: WorkflowStep): 'completed' | 'skipped' | 'current' | 'upcoming' => {
+    if (skippedSteps.includes(stepId)) return 'skipped';
     if (completedSteps.includes(stepId)) return 'completed';
     if (stepId === activeStep) return 'current';
     return 'upcoming';
+  };
+
+  // Get the next step in the workflow
+  const getNextStep = (): WorkflowStep | null => {
+    const nextIndex = currentStepIndex + 1;
+    if (nextIndex < WORKFLOW_STEPS.length) {
+      return WORKFLOW_STEPS[nextIndex].id;
+    }
+    return null;
+  };
+
+  // Handle skip action
+  const handleSkip = () => {
+    if (currentStepConfig?.isOptional && onSkipStep) {
+      onSkipStep(activeStep);
+      const nextStep = getNextStep();
+      if (nextStep && onStepChange) {
+        onStepChange(nextStep);
+      }
+    }
   };
 
   const StepIcon = currentStepConfig?.icon || Upload;
@@ -201,6 +221,24 @@ const ContextOptionsPanel: React.FC<ContextOptionsPanelProps> = ({
             Step {currentStepIndex + 1}/{WORKFLOW_STEPS.length}
           </span>
         </div>
+
+        {/* Skip button for optional steps */}
+        {currentStepConfig?.isOptional && onSkipStep && (
+          <div className="mt-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleSkip}
+              className="w-full text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-500/20 gap-2 font-medium"
+            >
+              <SkipForward className="w-4 h-4" />
+              Skip this step
+              <Badge className="ml-auto text-[10px] px-1.5 py-0 bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/40 pointer-events-none">
+                Optional
+              </Badge>
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Step Content - This is where step-specific UI goes */}
@@ -225,13 +263,17 @@ const ContextOptionsPanel: React.FC<ContextOptionsPanelProps> = ({
                     ? 'bg-primary text-primary-foreground' 
                     : status === 'completed'
                     ? 'bg-primary/20 text-primary hover:bg-primary/30'
+                    : status === 'skipped'
+                    ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30'
                     : 'bg-muted/50 text-muted-foreground hover:bg-muted'
                   }
                 `}
-                title={step.label}
+                title={`${step.label}${status === 'skipped' ? ' (Skipped)' : ''}${step.isOptional ? ' (Optional)' : ''}`}
               >
                 {status === 'completed' ? (
                   <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : status === 'skipped' ? (
+                  <MinusCircle className="w-3.5 h-3.5" />
                 ) : (
                   <IconComponent className="w-3.5 h-3.5" />
                 )}

@@ -5,16 +5,20 @@ import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AlertCircle, Circle, Plus, RotateCcw } from 'lucide-react';
+import { AlertCircle, Circle, Plus, RotateCcw, MousePointer, X } from 'lucide-react';
 import { ThroughHoleIcon, CounterSinkIcon, CounterBoreIcon } from './HoleTypeIcons';
+import { PlacedHole } from '@/components/MountingHoles/types';
 
 type HoleType = 'through' | 'countersink' | 'counterbore';
 
 interface DrillStepContentProps {
   hasWorkpiece?: boolean;
   onAddHole?: (config: HoleConfig) => void;
-  holes?: HoleConfig[];
+  holes?: PlacedHole[];
   baseplateHeight?: number;
+  isPlacementMode?: boolean;
+  onStartPlacement?: (config: HoleConfig) => void;
+  onCancelPlacement?: () => void;
 }
 
 export interface HoleConfig {
@@ -79,7 +83,10 @@ const DrillStepContent: React.FC<DrillStepContentProps> = ({
   hasWorkpiece = false,
   onAddHole,
   holes = [],
-  baseplateHeight = 20
+  baseplateHeight = 20,
+  isPlacementMode = false,
+  onStartPlacement,
+  onCancelPlacement,
 }) => {
   const [holeType, setHoleType] = useState<HoleType>('through');
   const [diameter, setDiameter] = useState(5);
@@ -156,8 +163,25 @@ const DrillStepContent: React.FC<DrillStepContentProps> = ({
       config.counterboreDepth = counterboreDepth;
     }
 
-    onAddHole?.(config);
+    // Start placement mode instead of directly adding
+    if (onStartPlacement) {
+      onStartPlacement(config);
+    } else {
+      onAddHole?.(config);
+    }
   };
+
+  // Listen for hole placement cancellation
+  useEffect(() => {
+    const handlePlacementCancelled = () => {
+      // Placement was cancelled (e.g., Escape key pressed)
+    };
+    
+    window.addEventListener('hole-placement-cancelled', handlePlacementCancelled);
+    return () => {
+      window.removeEventListener('hole-placement-cancelled', handlePlacementCancelled);
+    };
+  }, []);
 
   return (
     <div className="p-4 space-y-4">
@@ -360,16 +384,42 @@ const DrillStepContent: React.FC<DrillStepContentProps> = ({
         </>
       )}
 
-      {/* Add Hole Button */}
-      <Button
-        variant="default"
-        size="sm"
-        className="w-full font-tech"
-        onClick={handleAddHole}
-      >
-        <Plus className="w-4 h-4 mr-2" />
-        Add Hole (click to place)
-      </Button>
+      {/* Add Hole Button / Placement Mode Indicator */}
+      {isPlacementMode ? (
+        <Card className="tech-glass p-3 bg-primary/10 border-primary/30">
+          <div className="flex items-center gap-3">
+            <div className="relative w-8 h-8 flex-shrink-0">
+              <MousePointer className="w-8 h-8 text-primary animate-pulse" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-tech font-medium text-primary">
+                Click on baseplate to place hole
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                Press Escape to cancel
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCancelPlacement}
+              className="h-7 px-2"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Button
+          variant="default"
+          size="sm"
+          className="w-full font-tech"
+          onClick={handleAddHole}
+        >
+          <Plus className="w-4 h-4 mr-2" />
+          Add Hole (click to place)
+        </Button>
+      )}
 
       {/* Existing Holes */}
       {holes.length > 0 && (

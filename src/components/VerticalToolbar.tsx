@@ -33,7 +33,6 @@ export type ToolId =
   | 'labels'
   | 'cavity'
   | 'drill'
-  | 'optimize'
   | 'export';
 
 interface ToolConfig {
@@ -62,9 +61,8 @@ const TOOLS: readonly ToolConfig[] = [
   { id: 'supports', icon: Cuboid, label: 'Supports', tooltip: 'Create Supports by Extruding a Sketch' },
   { id: 'clamps', icon: Pin, label: 'Clamps', tooltip: 'Clamp Workpieces with Standard Components' },
   { id: 'labels', icon: Type, label: 'Labels', tooltip: 'Set Labels (e.g., Version Numbers)' },
-  { id: 'cavity', icon: SquaresSubtract, label: 'Cavity', tooltip: 'Subtract Workpieces From Fixture Geometry' },
   { id: 'drill', icon: CircleDashed, label: 'Mounting Holes', tooltip: 'Add Mounting Holes to Fixture' },
-  { id: 'optimize', icon: Scissors, label: 'Optimize', tooltip: 'Save Material and Print Faster' },
+  { id: 'cavity', icon: SquaresSubtract, label: 'Cavity', tooltip: 'Subtract Workpieces From Fixture Geometry' },
   { id: 'export', icon: DownloadCloud, label: 'Export', tooltip: 'Export Fixture for 3D Printing' },
 ] as const;
 

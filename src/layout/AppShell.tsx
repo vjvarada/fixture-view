@@ -17,12 +17,12 @@ import {
   ClampsStepContent,
   LabelsStepContent,
   DrillStepContent,
-  OptimizeStepContent,
   ExportStepContent
 } from "@/components/ContextOptionsPanel/steps";
 import { SupportType } from "@/components/ContextOptionsPanel/steps/SupportsStepContent";
 import { AnySupport } from "@/components/Supports/types";
 import { PlacedClamp } from "@/components/Clamps/types";
+import { PlacedHole, HoleConfig } from "@/components/MountingHoles/types";
 import { autoPlaceSupports, AutoPlacementStrategy } from "@/components/Supports/autoPlacement";
 import { CavitySettings, DEFAULT_CAVITY_SETTINGS, getAdaptivePixelsPerUnit } from "@/lib/offset/types";
 import UnitsDialog from "@/modules/FileImport/components/UnitsDialog";
@@ -144,6 +144,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     // Workflow State
     const [activeStep, setActiveStep] = useState<WorkflowStep>('import');
     const [completedSteps, setCompletedSteps] = useState<WorkflowStep[]>([]);
+    const [skippedSteps, setSkippedSteps] = useState<WorkflowStep[]>([]);
 
     // File Processing State (moved from FileImport)
     const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
@@ -210,6 +211,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [clamps, setClamps] = useState<PlacedClamp[]>([]);
     const [selectedClampId, setSelectedClampId] = useState<string | null>(null);
 
+    // Mounting holes state
+    const [mountingHoles, setMountingHoles] = useState<PlacedHole[]>([]);
+    const [selectedHoleId, setSelectedHoleId] = useState<string | null>(null);
+    const [isHolePlacementMode, setIsHolePlacementMode] = useState(false);
+    const [pendingHoleConfig, setPendingHoleConfig] = useState<HoleConfig | null>(null);
+
     // Model colors state - tracks colors assigned to models in 3D scene
     const [modelColors, setModelColors] = useState<Map<string, string>>(new Map());
 
@@ -274,6 +281,99 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       setHasCavityPreview(false);
       window.dispatchEvent(new CustomEvent('reset-cavity'));
     }, []);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mounting Holes Handlers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const handleStartHolePlacement = useCallback((config: HoleConfig) => {
+      setPendingHoleConfig(config);
+      setIsHolePlacementMode(true);
+      // Dispatch event to 3D scene to start placement mode
+      // Use depth (thickness in Y) not height (length in Z)
+      window.dispatchEvent(new CustomEvent('hole-start-placement', { 
+        detail: { config, depth: currentBaseplate?.depth ?? 20 } 
+      }));
+    }, [currentBaseplate?.depth]);
+
+    const handleCancelHolePlacement = useCallback(() => {
+      setPendingHoleConfig(null);
+      setIsHolePlacementMode(false);
+      window.dispatchEvent(new CustomEvent('hole-cancel-placement'));
+    }, []);
+
+    const handleHolePlaced = useCallback((hole: PlacedHole) => {
+      setMountingHoles(prev => [...prev, hole]);
+      setPendingHoleConfig(null);
+      setIsHolePlacementMode(false);
+      
+      // Mark drill step as completed if not already
+      if (!completedSteps.includes('drill')) {
+        setCompletedSteps(prev => [...prev, 'drill']);
+      }
+    }, [completedSteps]);
+
+    const handleHoleUpdate = useCallback((updatedHole: PlacedHole) => {
+      setMountingHoles(prev => prev.map(h => h.id === updatedHole.id ? updatedHole : h));
+    }, []);
+
+    const handleHoleDelete = useCallback((holeId: string) => {
+      setMountingHoles(prev => prev.filter(h => h.id !== holeId));
+      if (selectedHoleId === holeId) {
+        setSelectedHoleId(null);
+      }
+      
+      // If no holes left, remove drill from completed steps
+      setMountingHoles(currentHoles => {
+        if (currentHoles.length === 0) {
+          setCompletedSteps(prev => prev.filter(s => s !== 'drill'));
+        }
+        return currentHoles;
+      });
+    }, [selectedHoleId]);
+
+    // Listen for hole placement events from 3D scene
+    useEffect(() => {
+      const handleHoleCreated = (e: CustomEvent<PlacedHole>) => {
+        handleHolePlaced(e.detail);
+      };
+      
+      const handlePlacementCancelled = () => {
+        setPendingHoleConfig(null);
+        setIsHolePlacementMode(false);
+      };
+
+      const handleHoleSelectRequest = (e: CustomEvent<string>) => {
+        setSelectedHoleId(e.detail);
+      };
+
+      // Handle hole updates from 3D scene transform controls
+      const handleHoleUpdatedFrom3D = (e: CustomEvent<PlacedHole>) => {
+        handleHoleUpdate(e.detail);
+      };
+      
+      window.addEventListener('hole-placed', handleHoleCreated as EventListener);
+      window.addEventListener('hole-placement-cancelled', handlePlacementCancelled);
+      window.addEventListener('hole-select-request', handleHoleSelectRequest as EventListener);
+      window.addEventListener('hole-updated', handleHoleUpdatedFrom3D as EventListener);
+      
+      return () => {
+        window.removeEventListener('hole-placed', handleHoleCreated as EventListener);
+        window.removeEventListener('hole-placement-cancelled', handlePlacementCancelled);
+        window.removeEventListener('hole-select-request', handleHoleSelectRequest as EventListener);
+        window.removeEventListener('hole-updated', handleHoleUpdatedFrom3D as EventListener);
+      };
+    }, [handleHolePlaced, handleHoleUpdate]);
+
+    // Sync mounting holes with 3DScene
+    useEffect(() => {
+      window.dispatchEvent(new CustomEvent('holes-updated', { detail: mountingHoles }));
+    }, [mountingHoles]);
+
+    // Sync selected hole ID with 3DScene
+    useEffect(() => {
+      window.dispatchEvent(new CustomEvent('hole-selected', { detail: selectedHoleId }));
+    }, [selectedHoleId]);
 
     const handleOpenFilePicker = () => {
       const input = document.createElement('input');
@@ -703,9 +803,15 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       setFileError(null);
       setActiveStep('import');
       setCompletedSteps([]);
+      setSkippedSteps([]);
       setSupports([]);
       setIsPlacementMode(false);
       setSelectedSupportId(null);
+      // Reset mounting holes
+      setMountingHoles([]);
+      setSelectedHoleId(null);
+      setIsHolePlacementMode(false);
+      setPendingHoleConfig(null);
       
       // Dispatch events to reset the 3D scene and clear the file
       window.dispatchEvent(new CustomEvent('viewer-reset'));
@@ -793,7 +899,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     // Handle tool selection - now also updates active step
     const handleToolSelect = (toolId: string) => {
       // Update the active step in the context panel
-      if (['import', 'baseplates', 'supports', 'cavity', 'clamps', 'labels', 'drill', 'optimize', 'export'].includes(toolId)) {
+      if (['import', 'baseplates', 'supports', 'cavity', 'clamps', 'labels', 'drill', 'export'].includes(toolId)) {
         setActiveStep(toolId as WorkflowStep);
       }
 
@@ -823,9 +929,6 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           return;
         case 'drill':
           window.dispatchEvent(new CustomEvent('open-drill-dialog'));
-          return;
-        case 'optimize':
-          window.dispatchEvent(new CustomEvent('optimize-material'));
           return;
         case 'export':
           window.dispatchEvent(new CustomEvent('open-export-dialog'));
@@ -1276,6 +1379,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                   activeStep={activeStep}
                   onStepChange={handleStepChange}
                   completedSteps={completedSteps}
+                  skippedSteps={skippedSteps}
+                  onSkipStep={(step) => {
+                    setSkippedSteps(prev => 
+                      prev.includes(step) ? prev : [...prev, step]
+                    );
+                  }}
                   isProcessing={actualProcessing}
                 >
                   {/* Render step-specific content */}
@@ -1375,12 +1484,11 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                   {activeStep === 'drill' && (
                     <DrillStepContent
                       hasWorkpiece={!!actualFile || !!currentBaseplate}
-                      baseplateHeight={currentBaseplate?.height ?? 20}
-                    />
-                  )}
-                  {activeStep === 'optimize' && (
-                    <OptimizeStepContent
-                      hasFixture={!!currentBaseplate}
+                      baseplateHeight={currentBaseplate?.depth ?? 20}
+                      holes={mountingHoles}
+                      isPlacementMode={isHolePlacementMode}
+                      onStartPlacement={handleStartHolePlacement}
+                      onCancelPlacement={handleCancelHolePlacement}
                     />
                   )}
                   {activeStep === 'export' && (
@@ -1559,6 +1667,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
                   onClampSelect={setSelectedClampId}
                   onClampUpdate={handleClampUpdate}
                   onClampDelete={handleClampDelete}
+                  // Mounting holes props
+                  holes={mountingHoles}
+                  selectedHoleId={selectedHoleId}
+                  onHoleSelect={setSelectedHoleId}
+                  onHoleUpdate={handleHoleUpdate}
+                  onHoleDelete={handleHoleDelete}
                 />
               </div>
             )}

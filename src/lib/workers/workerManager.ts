@@ -550,5 +550,166 @@ export async function performClampCSGInWorker(
   });
 }
 
+// ============================================
+// Hole CSG Worker
+// For subtracting mounting holes from baseplate
+// ============================================
+
+let holeCSGWorker: Worker | null = null;
+let holeCSGWorkerPromises: Map<string, {
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+  onProgress?: (progress: number) => void;
+}> = new Map();
+
+/**
+ * Get or create the hole CSG worker
+ */
+function getHoleCSGWorker(): Worker {
+  if (!holeCSGWorker) {
+    holeCSGWorker = new Worker(
+      new URL('./holeCSGWorker.ts', import.meta.url),
+      { type: 'module' }
+    );
+    
+    holeCSGWorker.onmessage = (e: MessageEvent) => {
+      const { type, id, payload, progress, error } = e.data;
+      const promise = holeCSGWorkerPromises.get(id);
+      
+      if (!promise) return;
+      
+      if (type === 'hole-csg-error') {
+        promise.reject(new Error(error));
+        holeCSGWorkerPromises.delete(id);
+      } else if (type === 'hole-csg-progress') {
+        promise.onProgress?.(progress);
+      } else if (type === 'hole-csg-result') {
+        // Reconstruct geometry from result
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(payload.positions, 3));
+        if (payload.indices) {
+          geometry.setIndex(new THREE.BufferAttribute(payload.indices, 1));
+        }
+        if (payload.normals) {
+          geometry.setAttribute('normal', new THREE.BufferAttribute(payload.normals, 3));
+        } else {
+          geometry.computeVertexNormals();
+        }
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        
+        promise.resolve(geometry);
+        holeCSGWorkerPromises.delete(id);
+      }
+    };
+    
+    holeCSGWorker.onerror = (error) => {
+      console.error('[HoleCSGWorker] Error:', error);
+      holeCSGWorkerPromises.forEach((promise) => {
+        promise.reject(error);
+      });
+      holeCSGWorkerPromises.clear();
+    };
+  }
+  
+  return holeCSGWorker;
+}
+
+/**
+ * Serialize geometry for hole CSG worker
+ */
+function serializeGeometryForHoleWorker(geometry: THREE.BufferGeometry): {
+  positions: Float32Array;
+  indices?: Uint32Array;
+  normals?: Float32Array;
+} {
+  const positions = geometry.getAttribute('position').array as Float32Array;
+  const result: {
+    positions: Float32Array;
+    indices?: Uint32Array;
+    normals?: Float32Array;
+  } = {
+    positions: new Float32Array(positions),
+  };
+  
+  if (geometry.index) {
+    result.indices = new Uint32Array(geometry.index.array);
+  }
+  
+  const normals = geometry.getAttribute('normal');
+  if (normals) {
+    result.normals = new Float32Array(normals.array as Float32Array);
+  }
+  
+  return result;
+}
+
+/**
+ * Perform hole CSG subtraction in a web worker
+ * Subtracts hole geometry from baseplate geometry
+ */
+export async function performHoleCSGInWorker(
+  baseplateGeometry: THREE.BufferGeometry,
+  holesGeometry: THREE.BufferGeometry,
+  onProgress?: (progress: number) => void
+): Promise<THREE.BufferGeometry | null> {
+  const worker = getHoleCSGWorker();
+  const id = generateId();
+  
+  const baseplateData = serializeGeometryForHoleWorker(baseplateGeometry);
+  const holesData = serializeGeometryForHoleWorker(holesGeometry);
+  
+  return new Promise((resolve, reject) => {
+    holeCSGWorkerPromises.set(id, {
+      resolve,
+      reject,
+      onProgress,
+    });
+    
+    // Collect transferable buffers
+    const transferables: Transferable[] = [
+      baseplateData.positions.buffer,
+    ];
+    if (baseplateData.indices) {
+      transferables.push(baseplateData.indices.buffer);
+    }
+    if (baseplateData.normals) {
+      transferables.push(baseplateData.normals.buffer);
+    }
+    
+    transferables.push(holesData.positions.buffer);
+    if (holesData.indices) {
+      transferables.push(holesData.indices.buffer);
+    }
+    if (holesData.normals) {
+      transferables.push(holesData.normals.buffer);
+    }
+    
+    // Send message to worker
+    worker.postMessage(
+      {
+        type: 'subtract-holes',
+        id,
+        payload: {
+          baseplateGeometryData: baseplateData,
+          holesGeometryData: holesData,
+        },
+      },
+      transferables
+    );
+  });
+}
+
+/**
+ * Terminate the hole CSG worker (cleanup)
+ */
+export function terminateHoleCSGWorker(): void {
+  if (holeCSGWorker) {
+    holeCSGWorker.terminate();
+    holeCSGWorker = null;
+    holeCSGWorkerPromises.clear();
+  }
+}
+
 // Need to import THREE for type definitions
 import * as THREE from 'three';
