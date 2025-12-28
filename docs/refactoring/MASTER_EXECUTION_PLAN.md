@@ -116,7 +116,55 @@ npm run build
 
 ---
 
-### Phase 4-6: Advanced (Future)
+### Phase 4: Transform System Unification 🔴
+
+**Branch:** `phase-4-transform`
+
+**⚠️ HIGH RISK PHASE - Read `09_CRITICAL_SYSTEMS.md` before starting!**
+
+| Order | Directive | Time | Checkpoint |
+|-------|-----------|------|------------|
+| 4.1 | `11-create-transform-core.md` | 2 hr | Core system in `src/core/transform/` |
+| 4.2 | `12-create-transform-hooks.md` | 2 hr | Hooks created, build passes |
+| 4.3 | `13-migrate-transform-controls.md` | 3 hr | All 6 controls migrated, manual tests pass |
+
+**Critical Files Being Replaced:**
+- `SupportTransformControls.tsx` (~227 lines)
+- `ClampTransformControls.tsx` (~206 lines)
+- `HoleTransformControls.tsx` (~247 lines)
+- `LabelTransformControls.tsx` (~180 lines)
+- `BasePlateTransformControls.tsx` (~320 lines)
+- `SelectableTransformControls.tsx` (~448 lines)
+
+**Migration Order (Safest First):**
+1. HoleTransformControls (XZ only)
+2. BasePlateTransformControls (XZ only)
+3. SupportTransformControls (Y rotation)
+4. LabelTransformControls (Y rotation + depth)
+5. ClampTransformControls (rotation in degrees)
+6. SelectableTransformControls (full transform + baking)
+
+**Phase 4 Gate:**
+```bash
+npm run build
+# PLUS manual testing of ALL transform controls:
+# - Gizmo position correct
+# - Correct axes enabled
+# - Transform applies correctly
+# - UI values update
+# - Deselection works
+# - No jittering
+```
+
+**Commit:**
+```bash
+git add -A
+git commit -m "refactor(phase-4): unified transform system"
+```
+
+---
+
+### Phase 5-6: Advanced (Future)
 
 These phases require the foundation from Phases 1-3 and are more complex. Detailed directives will be created after Phase 3 completion.
 
@@ -253,6 +301,19 @@ git checkout -b refactor/phase-N-name  # Start fresh
 - [x] Migrate holes module (`@/features/holes`)
 - [x] Migrate labels module (`@/features/labels`)
 - [x] Migrate baseplate module (`@/features/baseplate`)
+
+**Phase 4:** ⏳ Not Started
+- [ ] 11-create-transform-core (`src/core/transform/`)
+- [ ] 12-create-transform-hooks (`src/core/transform/hooks/`)
+- [ ] 13-migrate-transform-controls (6 components)
+
+**Phase 5:** ⏳ Planned
+- [ ] 14-decompose-3dscene (TBD)
+- [ ] 15-create-scene-modules (TBD)
+
+**Phase 6:** ⏳ Planned
+- [ ] 16-extract-cad-core-package (TBD)
+- [ ] 17-extract-cad-ui-package (TBD)
 
 ---
 
