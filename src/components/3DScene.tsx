@@ -4663,11 +4663,80 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           }));
           
           // Get baseplate geometry if available
-          // Use baseplateWithHoles if it exists (holes already cut), otherwise use original baseplate
+          // For regular baseplates: use baseplateWithHoles if it exists (holes already cut), otherwise use original baseplate
+          // For multi-section baseplates: collect all section geometries (which already have holes from useSectionHoleCSG)
           let baseplateGeometry: THREE.BufferGeometry | undefined;
-          const useBaseplateWithHoles = baseplateWithHoles !== null;
+          let useBaseplateWithHoles = baseplateWithHoles !== null;
+          const isMultiSection = basePlate?.type === 'multi-section';
           
-          if (useBaseplateWithHoles && baseplateWithHoles) {
+          if (isMultiSection && multiSectionBasePlateGroupRef.current) {
+            // === MULTI-SECTION BASEPLATE ===
+            // Collect all section geometries from the group
+            // These already have holes cut via useSectionHoleCSG
+            console.log('[3DScene] Collecting multi-section baseplate geometries...');
+            
+            const sectionGeometries: THREE.BufferGeometry[] = [];
+            multiSectionBasePlateGroupRef.current.updateMatrixWorld(true);
+            
+            multiSectionBasePlateGroupRef.current.traverse((child) => {
+              if (child instanceof THREE.Mesh && child.geometry) {
+                // Clone and transform to world space
+                const sectionGeo = child.geometry.clone();
+                child.updateMatrixWorld(true);
+                sectionGeo.applyMatrix4(child.matrixWorld);
+                sectionGeometries.push(sectionGeo);
+              }
+            });
+            
+            if (sectionGeometries.length > 0) {
+              console.log(`[3DScene] Found ${sectionGeometries.length} multi-section baseplate sections`);
+              
+              // Union all sections together into one geometry
+              if (sectionGeometries.length === 1) {
+                baseplateGeometry = sectionGeometries[0];
+              } else {
+                // Merge all section geometries using BufferGeometryUtils
+                const { mergeGeometries } = await import('three/examples/jsm/utils/BufferGeometryUtils.js');
+                
+                // Prepare each geometry for merging
+                for (const geo of sectionGeometries) {
+                  if (!geo.index) {
+                    const posAttr = geo.getAttribute('position');
+                    const vertexCount = posAttr.count;
+                    const indices = new Uint32Array(vertexCount);
+                    for (let i = 0; i < vertexCount; i++) indices[i] = i;
+                    geo.setIndex(new THREE.BufferAttribute(indices, 1));
+                  }
+                  if (!geo.getAttribute('uv')) {
+                    const position = geo.getAttribute('position');
+                    const uvArray = new Float32Array(position.count * 2);
+                    geo.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2));
+                  }
+                  geo.computeVertexNormals();
+                }
+                
+                const mergedGeo = mergeGeometries(sectionGeometries, false);
+                if (mergedGeo) {
+                  baseplateGeometry = mergedGeo;
+                  // Dispose individual section geometries after merging
+                  sectionGeometries.forEach(geo => geo.dispose());
+                  console.log('[3DScene] Merged multi-section baseplate geometries');
+                } else {
+                  // Fallback: use just the first section
+                  baseplateGeometry = sectionGeometries[0];
+                  for (let i = 1; i < sectionGeometries.length; i++) {
+                    sectionGeometries[i].dispose();
+                  }
+                  console.warn('[3DScene] Failed to merge multi-section geometries, using first section only');
+                }
+              }
+              
+              // Multi-section baseplates already have holes cut, so skip hole subtraction later
+              useBaseplateWithHoles = true;
+              console.log('[3DScene] Using multi-section baseplate (holes already cut per section)');
+            }
+          } else if (useBaseplateWithHoles && baseplateWithHoles) {
+            // === REGULAR BASEPLATE WITH HOLES ===
             // Use the baseplate geometry that already has holes cut
             // This geometry is already in local space, need to transform to world space
             baseplateGeometry = baseplateWithHoles.clone();
@@ -4677,6 +4746,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             }
             console.log('[3DScene] Using baseplateWithHoles (holes already cut)');
           } else if (basePlateMeshRef.current) {
+            // === REGULAR BASEPLATE WITHOUT HOLES ===
             basePlateMeshRef.current.updateMatrixWorld(true);
             baseplateGeometry = basePlateMeshRef.current.geometry.clone();
             baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
@@ -6238,10 +6308,10 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                     : l
                 ));
                 
-                // Move holes (check for position existence)
+                // Move holes (position is Vector2 where x=X and y=Z in world coords)
                 setMountingHoles(prev => prev.map(h =>
                   h.sectionId === sectionId && h.position
-                    ? { ...h, position: { ...h.position, x: h.position.x + deltaX, z: h.position.z + deltaZ } }
+                    ? { ...h, position: new THREE.Vector2(h.position.x + deltaX, h.position.y + deltaZ) }
                     : h
                 ));
                 
