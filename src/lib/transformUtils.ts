@@ -3,9 +3,13 @@
  *
  * Shared utilities for position/rotation transformations between
  * UI (CAD convention) and Three.js coordinate systems.
+ * 
+ * ⚠️ CRITICAL: Do not modify coordinate conversion functions without
+ * reading docs/refactoring/09_CRITICAL_SYSTEMS.md
  */
 
 import * as THREE from 'three';
+import { EVENTS } from '@/core/events';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -14,6 +18,89 @@ import * as THREE from 'three';
 export interface Transform3D {
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reusable THREE Objects (avoid allocations in render loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const tempPosition = new THREE.Vector3();
+export const tempQuaternion = new THREE.Quaternion();
+export const tempEuler = new THREE.Euler();
+export const tempBox = new THREE.Box3();
+export const tempCenter = new THREE.Vector3();
+export const tempSize = new THREE.Vector3();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safe Number Parsing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Safely parses a number with a fallback default.
+ * Used throughout transform controls to handle undefined values.
+ */
+export function safeNum(value: number | undefined | null, defaultValue: number): number {
+  const num = Number(value);
+  return Number.isNaN(num) ? defaultValue : num;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Orbit Control Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Dispatches event to enable/disable orbit controls.
+ * Use during drag operations to prevent camera movement.
+ */
+export function setOrbitControlsEnabled(enabled: boolean): void {
+  window.dispatchEvent(
+    new CustomEvent(EVENTS.DISABLE_ORBIT_CONTROLS, { 
+      detail: { disabled: !enabled } 
+    })
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pivot/Group Transform Reset
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Resets a THREE.js group's transform to identity.
+ * CRITICAL: Must be called after drag ends to prevent accumulated transforms.
+ * This is the anti-jitter pattern used in all transform controls.
+ */
+export function resetGroupTransform(group: THREE.Group | null): void {
+  if (!group) return;
+  group.matrix.identity();
+  group.position.set(0, 0, 0);
+  group.rotation.set(0, 0, 0);
+  group.scale.set(1, 1, 1);
+  group.updateMatrix();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// World Transform Extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extracts world position and rotation from a mesh.
+ * Uses YXZ Euler order for clean Y-axis rotation extraction.
+ */
+export function getWorldTransform(mesh: THREE.Object3D): {
+  position: THREE.Vector3;
+  rotation: THREE.Euler;
+  quaternion: THREE.Quaternion;
+} {
+  mesh.updateMatrixWorld(true);
+  mesh.getWorldPosition(tempPosition);
+  mesh.getWorldQuaternion(tempQuaternion);
+  tempEuler.setFromQuaternion(tempQuaternion, 'YXZ');
+  
+  return {
+    position: tempPosition.clone(),
+    rotation: tempEuler.clone(),
+    quaternion: tempQuaternion.clone(),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -81,7 +168,7 @@ export const dispatchTransformChange = (
   transform: Transform3D
 ): void => {
   window.dispatchEvent(
-    new CustomEvent('set-model-transform', {
+    new CustomEvent(EVENTS.SET_MODEL_TRANSFORM, {
       detail: {
         partId,
         position: new THREE.Vector3(
@@ -103,7 +190,7 @@ export const dispatchTransformChange = (
 /** Requests transform data from 3D scene for a part */
 export const requestPartTransform = (partId: string): void => {
   window.dispatchEvent(
-    new CustomEvent('request-model-transform', {
+    new CustomEvent(EVENTS.REQUEST_MODEL_TRANSFORM, {
       detail: { partId },
     })
   );
@@ -112,7 +199,7 @@ export const requestPartTransform = (partId: string): void => {
 /** Dispatches event to set part on baseplate */
 export const dispatchSetToBaseplate = (partId: string): void => {
   window.dispatchEvent(
-    new CustomEvent('set-part-to-baseplate', {
+    new CustomEvent(EVENTS.SET_PART_TO_BASEPLATE, {
       detail: { partId },
     })
   );
