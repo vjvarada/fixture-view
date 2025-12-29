@@ -17,3 +17,6 @@ export type {
   DebugSilhouetteLineProps, 
   FixtureComponentProps 
 } from './DebugVisualization';
+
+export { LabelsRenderer } from './LabelsRenderer';
+export type { LabelsRendererProps } from './LabelsRenderer';

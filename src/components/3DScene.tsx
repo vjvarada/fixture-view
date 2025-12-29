@@ -50,6 +50,7 @@ import {
   DebugPerimeterLine as ExtractedDebugPerimeterLine,
   DebugSilhouetteLine as ExtractedDebugSilhouetteLine,
   FixtureComponent as ExtractedFixtureComponent,
+  LabelsRenderer,
   // State Hooks (for future use)
   useSupportState,
   useClampState,
@@ -5860,92 +5861,25 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         })()
       )}
 
-      {/* Labels rendering - on top of baseplate, hide when merged fixture is shown */}
-      {!mergedFixtureMesh && (
-        <Suspense fallback={null}>
-          {labels.map((label) => (
-            <LabelMesh
-              key={label.id}
-              label={label}
-              selected={selectedLabelId === label.id}
-              onSelect={(id) => {
-                setSelectedLabelId(id);
-                window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
-              }}
-              onDoubleClick={(id) => {
-                // Activate pivot controls for this label
-                window.dispatchEvent(new CustomEvent('pivot-control-activated', { detail: { labelId: id } }));
-                setSelectedLabelId(id);
-                window.dispatchEvent(new CustomEvent('label-selected', { detail: id }));
-              }}
-              onBoundsComputed={(id, width, height) => {
-                // Update label with computed bounds from actual geometry
-                setLabels(prev => prev.map(l => 
-                  l.id === id ? { ...l, computedWidth: width, computedHeight: height } : l
-                ));
-              }}
-            />
-          ))}
-        </Suspense>
-      )}
-
-      {/* Label transform controls - activated on double-click */}
-      {selectedLabelId && (
-        (() => {
-          const selectedLabel = labels.find(l => l.id === selectedLabelId);
-          if (!selectedLabel) return null;
-          return (
-            <LabelTransformControls
-              label={selectedLabel}
-              onDragStart={() => {
-                isDraggingLabelRef.current = true;
-                setIsDraggingAnyItem(true);
-              }}
-              onDragEnd={() => {
-                isDraggingLabelRef.current = false;
-                setIsDraggingAnyItem(false);
-                // Trigger CSG after label drag ends if we have holes
-                if (basePlate?.type === 'multi-section' && mountingHoles.length > 0) {
-                  setHoleCSGTrigger(t => t + 1);
-                }
-              }}
-              onTransformChange={(position, rotation, depth) => {
-                // Live update label position, rotation, and depth
-                setLabels(prev => prev.map(l => {
-                  if (l.id === selectedLabelId) {
-                    return {
-                      ...l,
-                      position,
-                      rotation,
-                      depth: depth ?? l.depth,
-                    };
-                  }
-                  return l;
-                }));
-                // Also dispatch event for AppShell to update Properties panel live
-                const updates = { position, rotation, depth: depth ?? selectedLabel.depth };
-                window.dispatchEvent(new CustomEvent('label-update', { 
-                  detail: { labelId: selectedLabelId, updates } 
-                }));
-              }}
-              onTransformEnd={(position, rotation, depth) => {
-                // Dispatch event for AppShell to update its state
-                const finalLabel = labels.find(l => l.id === selectedLabelId);
-                if (finalLabel) {
-                  const updates = { position, rotation, depth: depth ?? finalLabel.depth };
-                  window.dispatchEvent(new CustomEvent('label-update', { 
-                    detail: { labelId: selectedLabelId, updates } 
-                  }));
-                }
-              }}
-              onDeselect={() => {
-                setSelectedLabelId(null);
-                window.dispatchEvent(new CustomEvent('label-selected', { detail: null }));
-              }}
-            />
-          );
-        })()
-      )}
+      {/* Labels rendering - extracted to LabelsRenderer */}
+      <LabelsRenderer
+        labels={labels}
+        selectedLabelId={selectedLabelId}
+        mergedFixtureMesh={mergedFixtureMesh}
+        basePlate={basePlate}
+        mountingHolesCount={mountingHoles.length}
+        setSelectedLabelId={setSelectedLabelId}
+        setLabels={setLabels}
+        onDragStart={() => {
+          isDraggingLabelRef.current = true;
+          setIsDraggingAnyItem(true);
+        }}
+        onDragEnd={() => {
+          isDraggingLabelRef.current = false;
+          setIsDraggingAnyItem(false);
+        }}
+        triggerHoleCSG={() => setHoleCSGTrigger(t => t + 1)}
+      />
 
       {/* Clamps rendering - hide clamp supports when merged fixture is shown */}
       <Suspense fallback={null}>
