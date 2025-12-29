@@ -21,11 +21,11 @@ import {
 } from '@/features/supports';
 import { CSGEngine } from '@/lib/csgEngine';
 import { createOffsetMesh, extractVertices, csgSubtract, initManifold } from '@/lib/offset';
-import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker, performHoleCSGInWorker } from '@/lib/workers';
+import { performBatchCSGSubtractionInWorker, performBatchCSGUnionInWorker } from '@/lib/workers';
 import { decimateMesh, repairMesh, analyzeMesh, laplacianSmooth, cleanupCSGResult } from '@/modules/FileImport/services/meshAnalysisService';
 import { LabelMesh, LabelTransformControls, LabelConfig } from '@/features/labels';
 import { ClampMesh, ClampTransformControls, ClampWithSupport, PlacedClamp, ClampModel, getClampById } from '@/features/clamps';
-import { HoleMesh, HolePlacement, HoleTransformControls, PlacedHole, HoleConfig, createMergedHolesGeometry } from '@/features/holes';
+import { HoleMesh, HolePlacement, HoleTransformControls, PlacedHole, HoleConfig } from '@/features/holes';
 
 // ============================================================================
 // Extracted 3DScene Modules (available for progressive migration)
@@ -75,6 +75,7 @@ import {
   useOffsetMeshPreview,
   useSupportTrimPreview,
   useBaseplateOperations,
+  useHoleCSG,
   // Container
   Scene3DProvider,
   useScene3DContext,
@@ -743,6 +744,24 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     modelMeshRefs,
   });
 
+  // Hole CSG operations from hook (trigger, cache, execute, sync depths)
+  const { hullPointsKey } = useHoleCSG({
+    basePlate,
+    mountingHoles,
+    setMountingHoles,
+    baseplateWithHoles,
+    setBaseplateWithHoles,
+    holeCSGProcessing,
+    setHoleCSGProcessing,
+    holeCSGTrigger,
+    setHoleCSGTrigger,
+    isDraggingHoleRef,
+    mountingHolesRef,
+    originalBaseplateGeoRef,
+    basePlateMeshRef,
+    combinedHullPoints,
+  });
+
   // Track previous orientation to detect explicit orientation changes
   const lastOrientationRef = useRef<ViewOrientation>(currentOrientation);
 
@@ -809,193 +828,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
   // Note: Support placement start/cancel listeners moved to useSupportHandlers hook
   // Note: Hole placement start/cancel listeners and hole event handlers moved to useHoleHandlers hook
-
-  // =============================================================================
-  // HOLE CSG SYSTEM
-  // =============================================================================
-
-  /** Waits for React render cycle to complete. */
-  const waitForRenderCycle = useCallback((): Promise<void> => {
-    return new Promise((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(resolve);
-      });
-    });
-  }, []);
-
-  /** Triggers CSG recalculation with delay. */
-  const scheduleCSGTrigger = useCallback((delay = 150) => {
-    const timer = setTimeout(() => {
-      if (!isDraggingHoleRef.current) {
-        setHoleCSGTrigger((prev) => prev + 1);
-      }
-    }, delay);
-    return () => clearTimeout(timer);
-  }, []);
-
-  // Handle CSG updates when baseplate or holes change (skip during drag)
-  React.useEffect(() => {
-    if (basePlate?.type === 'multi-section' || isDraggingHoleRef.current) {
-      return;
-    }
-
-    // No holes - clear CSG result
-    if (mountingHoles.length === 0) {
-      if (baseplateWithHoles !== null) {
-        setBaseplateWithHoles(null);
-      }
-      return;
-    }
-
-    // We have holes - trigger CSG recalculation
-    // Clear existing CSG first so BasePlate renders with correct size
-    if (baseplateWithHoles !== null) {
-      setBaseplateWithHoles(null);
-    }
-    
-    // Schedule CSG trigger
-    return scheduleCSGTrigger();
-  }, [
-    basePlate?.type,
-    basePlate?.width,
-    basePlate?.height,
-    basePlate?.depth,
-    combinedHullPoints,
-    mountingHoles.length,
-    scheduleCSGTrigger,
-  ]);
-
-  // Serialize hull points for stable dependency comparison
-  const hullPointsKey = React.useMemo(() => {
-    return JSON.stringify(combinedHullPoints.map(p => ({ x: Math.round(p.x * 100), z: Math.round(p.z * 100) })));
-  }, [combinedHullPoints]);
-
-  // Clear cached original geometry when baseplate configuration changes
-  // This forces re-capture of the geometry on next CSG trigger
-  React.useEffect(() => {
-    originalBaseplateGeoRef.current = null;
-    setBaseplateWithHoles(null);
-  }, [basePlate?.type, basePlate?.width, basePlate?.height, basePlate?.depth, hullPointsKey]);
-
-  // Execute CSG operation
-  React.useEffect(() => {
-    const performHoleCSG = async () => {
-      // Skip conditions
-      if (
-        basePlate?.type === 'multi-section' ||
-        isDraggingHoleRef.current ||
-        holeCSGTrigger === 0
-      ) {
-        return;
-      }
-
-      const currentHoles = mountingHolesRef.current;
-      if (currentHoles.length === 0) {
-        setBaseplateWithHoles(null);
-        return;
-      }
-
-      // Wait for geometry to be ready
-      await waitForRenderCycle();
-
-      if (isDraggingHoleRef.current) return;
-
-      // Get source geometry - prefer cached original, fallback to mesh
-      let sourceGeo: THREE.BufferGeometry | null = null;
-      
-      if (originalBaseplateGeoRef.current) {
-        // Use cached original geometry
-        sourceGeo = originalBaseplateGeoRef.current.clone();
-        console.log('[HoleCSG] Using cached original geometry');
-      } else {
-        // No cache - capture from mesh (must be original BasePlate since baseplateWithHoles is null)
-        const meshGeometry = basePlateMeshRef.current?.geometry;
-        if (!meshGeometry) {
-          scheduleCSGTrigger(100);
-          return;
-        }
-        // Cache the original geometry for future CSG operations
-        originalBaseplateGeoRef.current = meshGeometry.clone();
-        sourceGeo = meshGeometry.clone();
-        console.log('[HoleCSG] Captured and cached original geometry');
-      }
-
-      const baseplateOffset = basePlate?.position
-        ? { x: basePlate.position.x, z: basePlate.position.z }
-        : undefined;
-      const depth = basePlate?.depth ?? 5;
-
-      // Calculate geometry offset - accounts for asymmetric expansion when hull points
-      // cause the baseplate to expand in one direction more than the other.
-      // 
-      // IMPORTANT: This only applies to RECTANGULAR baseplates where geometry is in local space
-      // and gets translated by (geometryOffsetX, geometryOffsetZ) when hull points cause asymmetric expansion.
-      //
-      // For CONVEX-HULL baseplates, the geometry is created directly in WORLD space (vertices have
-      // actual world coordinates) and the mesh position is (0,0,0). No geometry offset is needed.
-      let geometryOffset: { x: number; z: number } | undefined;
-      
-      if (basePlate?.type !== 'convex-hull') {
-        // Only calculate geometry offset for non-convex-hull types
-        sourceGeo.computeBoundingBox();
-        if (sourceGeo.boundingBox) {
-          const box = sourceGeo.boundingBox;
-          const geoCenterX = (box.min.x + box.max.x) / 2;
-          const geoCenterZ = (box.min.z + box.max.z) / 2;
-          // Only apply offset if significant (> 0.1mm)
-          if (Math.abs(geoCenterX) > 0.1 || Math.abs(geoCenterZ) > 0.1) {
-            geometryOffset = { x: geoCenterX, z: geoCenterZ };
-            console.log('[HoleCSG] Geometry offset detected (rectangular):', geometryOffset);
-          }
-        }
-      } else {
-        console.log('[HoleCSG] Convex-hull baseplate - no geometry offset needed');
-      }
-
-      const holesWithDepth = currentHoles.map((hole) => ({
-        ...hole,
-        depth: hole.depth || depth,
-      }));
-
-      const holesGeo = createMergedHolesGeometry(holesWithDepth, depth, baseplateOffset, geometryOffset);
-      if (!holesGeo) return;
-
-      setHoleCSGProcessing(true);
-
-      try {
-        const result = await performHoleCSGInWorker(sourceGeo, holesGeo);
-
-        if (isDraggingHoleRef.current) return;
-
-        if (result) {
-          setBaseplateWithHoles(result);
-        }
-      } catch (error) {
-        console.error('[HoleCSG] Error:', error);
-      } finally {
-        setHoleCSGProcessing(false);
-      }
-    };
-
-    performHoleCSG();
-  }, [holeCSGTrigger, basePlate?.type, basePlate?.position, basePlate?.depth, waitForRenderCycle, scheduleCSGTrigger]);
-
-  // Track previous baseplate depth
-  const prevBaseplateDepthRef = React.useRef(basePlate?.depth);
-
-  // Sync hole depths with baseplate depth changes
-  React.useEffect(() => {
-    const newDepth = basePlate?.depth ?? 20;
-    const prevDepth = prevBaseplateDepthRef.current;
-
-    if (prevDepth === newDepth) return;
-    prevBaseplateDepthRef.current = newDepth;
-
-    setMountingHoles((prev) => {
-      if (prev.length === 0) return prev;
-      return prev.map((hole) => ({ ...hole, depth: newDepth }));
-    });
-  }, [basePlate?.depth]);
+  // Note: Hole CSG System (waitForRenderCycle, scheduleCSGTrigger, performHoleCSG, depth sync) moved to useHoleCSG hook
 
   // Note: getClampFootprintBounds, calculateOptimalSectionBounds, expandSectionForSupport 
   // are now provided by useBaseplateHandlers hook

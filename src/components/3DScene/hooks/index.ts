@@ -76,3 +76,6 @@ export type { UseSupportTrimPreviewParams, UseSupportTrimPreviewReturn } from '.
 
 export { useBaseplateOperations } from './useBaseplateOperations';
 export type { UseBaseplateOperationsProps, UseBaseplateOperationsReturn } from './useBaseplateOperations';
+
+export { useHoleCSG } from './useHoleCSG';
+export type { UseHoleCSGProps, UseHoleCSGReturn } from './useHoleCSG';
