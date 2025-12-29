@@ -18,7 +18,6 @@ export interface ModelMeshProps {
   setColorsMap?: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   onBoundsChange?: (bounds: BoundsSummary) => void;
   disableDoubleClick?: boolean;
-  onClick?: (e: ThreeEvent<MouseEvent>) => void;
   onDoubleClick?: () => void;
   initialOffset?: THREE.Vector3;
 }
@@ -38,7 +37,6 @@ const ModelMesh = React.memo(function ModelMesh({
   setColorsMap, 
   onBoundsChange,
   disableDoubleClick = false,
-  onClick,
   onDoubleClick,
   initialOffset
 }: ModelMeshProps) {
@@ -180,10 +178,6 @@ const ModelMesh = React.memo(function ModelMesh({
   // Click handler with double-click detection
   const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
-    
-    // Always call onClick if provided (e.g., for clamp placement)
-    onClick?.(e);
-    
     if (disableDoubleClick) return;
     
     const now = Date.now();
@@ -193,7 +187,7 @@ const ModelMesh = React.memo(function ModelMesh({
     } else {
       lastClickTimeRef.current = now;
     }
-  }, [disableDoubleClick, onClick, onDoubleClick]);
+  }, [disableDoubleClick, onDoubleClick]);
 
   return (
     <mesh 

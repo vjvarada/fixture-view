@@ -5716,23 +5716,6 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
                   setPartBounds(prev => new Map(prev).set(part.id, bounds));
                 }}
                 disableDoubleClick={placing.active || !isVisible || clampPlacementMode.active}
-                onClick={(e) => {
-                  console.log('[ClampPlacement] ModelMesh onClick triggered', {
-                    placementModeActive: clampPlacementMode.active,
-                    isVisible,
-                    hasPartMesh: !!partMeshRef.current
-                  });
-                  // Handle clamp placement click if in placement mode
-                  if (clampPlacementMode.active && isVisible) {
-                    const mesh = partMeshRef.current;
-                    if (mesh) {
-                      console.log('[ClampPlacement] Calling handleClampPlacementClick from ModelMesh');
-                      handleClampPlacementClick(e as any, mesh);
-                    } else {
-                      console.log('[ClampPlacement] No mesh ref available');
-                    }
-                  }
-                }}
                 onDoubleClick={() => {
                   if (isVisible && !clampPlacementMode.active) {
                     // Clear baseplate section selection when selecting a part
