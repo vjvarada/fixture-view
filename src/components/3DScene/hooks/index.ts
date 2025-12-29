@@ -64,3 +64,15 @@ export type { UseLabelHandlersParams } from './useLabelHandlers';
 
 export { useClampPlacement } from './useClampPlacement';
 export type { UseClampPlacementParams, UseClampPlacementReturn } from './useClampPlacement';
+
+export { useCavityOperations } from './useCavityOperations';
+export type { UseCavityOperationsParams, UseCavityOperationsReturn } from './useCavityOperations';
+
+export { useOffsetMeshPreview } from './useOffsetMeshPreview';
+export type { UseOffsetMeshPreviewParams, UseOffsetMeshPreviewReturn } from './useOffsetMeshPreview';
+
+export { useSupportTrimPreview } from './useSupportTrimPreview';
+export type { UseSupportTrimPreviewParams, UseSupportTrimPreviewReturn } from './useSupportTrimPreview';
+
+export { useBaseplateOperations } from './useBaseplateOperations';
+export type { UseBaseplateOperationsProps, UseBaseplateOperationsReturn } from './useBaseplateOperations';
