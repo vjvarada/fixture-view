@@ -106,14 +106,8 @@ const FixtureComponent = ExtractedFixtureComponent;
 // Use extracted utility (see src/components/3DScene/utils/geometryUtils.ts)
 const getFootprintMetrics = extractedGetFootprintMetrics;
 
-interface BoundsSummary {
-  min: THREE.Vector3;
-  max: THREE.Vector3;
-  center: THREE.Vector3;
-  size: THREE.Vector3;
-  radius: number;
-  unitsScale?: number;
-}
+// Use extracted type (see src/components/3DScene/types.ts)
+type BoundsSummary = ExtractedBoundsSummary;
 
 // Component for the main 3D model
 const ModelMesh = React.memo(function ModelMesh({ 
