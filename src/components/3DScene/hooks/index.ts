@@ -61,3 +61,6 @@ export type { UseClampHandlersParams } from './useClampHandlers';
 
 export { useLabelHandlers } from './useLabelHandlers';
 export type { UseLabelHandlersParams } from './useLabelHandlers';
+
+export { useClampPlacement } from './useClampPlacement';
+export type { UseClampPlacementParams, UseClampPlacementReturn } from './useClampPlacement';
