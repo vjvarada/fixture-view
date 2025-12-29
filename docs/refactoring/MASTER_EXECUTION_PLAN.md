@@ -303,7 +303,7 @@ git checkout -b refactor/phase-N-name  # Start fresh
 | 2 | ✅ Complete | Dec 29, 2025 | Dec 29, 2025 | Commit `ebfd88d` |
 | 3 | ✅ Complete | Dec 29, 2025 | Dec 29, 2025 | Commit `24e501a` |
 | 4 | ✅ Complete | Dec 29, 2025 | Dec 30, 2025 | Commits `4abeb1e`, `842bbb2`, `91e80c7` |
-| 5 | 🔄 In Progress | Dec 30, 2025 | - | Foundation extracted, wiring pending |
+| 5 | 🔄 In Progress | Dec 30, 2025 | - | Granular plan created, imports added (9b12540) |
 | 6 | ⏳ Not Started | - | - | - |
 
 ### Directive Checklist
@@ -331,12 +331,22 @@ git checkout -b refactor/phase-N-name  # Start fresh
 - [x] 12-create-transform-hooks (`src/core/transform/hooks/`)
 - [x] 13-migrate-transform-controls (all 6 components migrated)
 
-**Phase 5:** 🔄 In Progress
+**Phase 5:** 🔄 In Progress (Granular Plan)
 - [x] 14-extract-scene-types-utils (Commits `7fe8c3f`, `36a44bf`)
 - [x] 15-extract-scene-renderers (Commit `d295736`)
 - [x] 16-extract-state-hooks (Commit `d295736`)
-- [ ] Wire extracted components into 3DScene.tsx
-- [ ] Test all features work correctly
+- [x] 17-add-imports-to-3DScene (Commit `9b12540`)
+- [ ] 5.5: Verify hook signatures match
+- [ ] 5.6: Wire utility functions
+- [ ] 5.7: Wire renderer components
+- [ ] 5.8.1: Wire useBaseplateState
+- [ ] 5.8.2: Wire useHoleState
+- [ ] 5.8.3: Wire useLabelState
+- [ ] 5.8.4: Wire useSupportState
+- [ ] 5.8.5: Wire useClampState
+- [ ] 5.8.6: Wire useSceneState
+
+**See:** `docs/refactoring/directives/PHASE_5_GRANULAR_PLAN.md`
 
 **Phase 6:** ⏳ Planned
 - [ ] 16-extract-cad-core-package (TBD)
