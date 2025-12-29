@@ -40,3 +40,6 @@ export type { ViewOrientation as CameraViewOrientation, UseCameraControlsProps, 
 
 export { useModelTransform } from './useModelTransform';
 export type { LiveTransformData, UseModelTransformProps, UseModelTransformReturn } from './useModelTransform';
+
+export { useBaseplateHandlers } from './useBaseplateHandlers';
+export type { UseBaseplateHandlersProps, UseBaseplateHandlersReturn } from './useBaseplateHandlers';
