@@ -55,3 +55,6 @@ export type { UseSupportHandlersParams } from './useSupportHandlers';
 
 export { useHoleHandlers } from './useHoleHandlers';
 export type { UseHoleHandlersParams } from './useHoleHandlers';
+
+export { useClampHandlers } from './useClampHandlers';
+export type { UseClampHandlersParams } from './useClampHandlers';

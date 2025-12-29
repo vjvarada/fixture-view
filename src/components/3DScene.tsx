@@ -68,6 +68,7 @@ import {
   useMultiSectionSelection,
   useSupportHandlers,
   useHoleHandlers,
+  useClampHandlers,
   // Container
   Scene3DProvider,
   useScene3DContext,
@@ -614,6 +615,41 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     prevOrientationRef,
     setOrbitControlsEnabled,
     updateCamera,
+  });
+
+  // Clamp handlers from hook
+  useClampHandlers({
+    basePlate,
+    setBasePlate,
+    selectedBasePlateSectionId,
+    setSelectedBasePlateSectionId,
+    placedClamps,
+    setPlacedClamps,
+    selectedClampId,
+    setSelectedClampId,
+    clampPlacementMode,
+    setClampPlacementMode,
+    clampMinOffsets,
+    setClampMinOffsets,
+    clampSupportInfos,
+    setClampSupportInfos,
+    showClampDebug,
+    setShowClampDebug,
+    setWaitingForClampSectionSelection,
+    supports,
+    labels,
+    mountingHoles,
+    importedParts,
+    modelMeshRefs,
+    partSilhouetteRef,
+    loadedClampDataRef,
+    baseTopY,
+    setDebugClampSilhouette,
+    DEBUG_SHOW_CLAMP_SILHOUETTE,
+    onPartSelected,
+    onSupportSelect,
+    calculateOptimalSectionBounds,
+    setItemBoundsUpdateTrigger,
   });
 
   // Track previous orientation to detect explicit orientation changes
@@ -2062,236 +2098,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     });
   }, [clampPlacementMode, importedParts, supports, placedClamps, baseTopY, selectedBasePlateSectionId, labels, mountingHoles, calculateOptimalSectionBounds]);
 
-  // Clamp event listeners
-  useEffect(() => {
-    const onClampPlace = (e: CustomEvent) => {
-      const { clampModelId, position } = e.detail as { clampModelId: string; position?: { x: number; y: number; z: number } };
-      
-      // Default minimum placement offset (will be updated when clamp data loads)
-      // Use a reasonable default that assumes cutouts extend ~15mm below fixture point
-      const defaultMinOffset = 15;
-      const minPlacementY = baseTopY + defaultMinOffset;
-      
-      // Default position at minimum placement height or provided position
-      const defaultPosition = position || { x: 0, y: minPlacementY, z: 0 };
-      // Ensure Y is at least at minimum placement height
-      defaultPosition.y = Math.max(defaultPosition.y, minPlacementY);
-      
-      // For multi-section baseplates, require section selection first
-      if (basePlate?.type === 'multi-section' && !selectedBasePlateSectionId) {
-        console.warn('Cannot place clamp: Please select a baseplate section first');
-        return;
-      }
-      
-      const newClamp: PlacedClamp = {
-        id: `clamp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        clampModelId,
-        position: defaultPosition,
-        rotation: { x: 0, y: 0, z: 0 },
-        scale: { x: 1, y: 1, z: 1 },
-        // Add sectionId if multi-section baseplate
-        ...(basePlate?.type === 'multi-section' && selectedBasePlateSectionId ? { sectionId: selectedBasePlateSectionId } : {}),
-      };
-      
-      setPlacedClamps(prev => [...prev, newClamp]);
-      setSelectedClampId(newClamp.id);
-      
-      // Force bounds recalculation after clamp is added to state
-      if (newClamp.sectionId) {
-        setTimeout(() => setItemBoundsUpdateTrigger(t => t + 1), 0);
-      }
-      
-      // Notify UI about the clamp placement
-      window.dispatchEvent(new CustomEvent('clamp-placed', { detail: newClamp }));
-    };
-
-    const onClampUpdate = (e: CustomEvent) => {
-      const { clampId, updates } = e.detail as { clampId: string; updates: Partial<PlacedClamp> };
-      
-      // Enforce minimum Y position if we have the offset for this clamp
-      if (updates.position) {
-        const minOffset = clampMinOffsets.get(clampId) ?? 15; // Default 15mm
-        const minY = baseTopY + minOffset;
-        updates.position.y = Math.max(updates.position.y, minY);
-      }
-      
-      // Update clamp state - reactive effect will handle bounds recalculation
-      setPlacedClamps(prev => prev.map(c => c.id === clampId ? { ...c, ...updates } : c));
-    };
-
-    const onClampDelete = (e: CustomEvent) => {
-      const clampId = e.detail as string;
-      
-      // Update state - reactive effect will handle bounds recalculation
-      setPlacedClamps(prev => prev.filter(c => c.id !== clampId));
-      setClampMinOffsets(prev => {
-        const next = new Map(prev);
-        next.delete(clampId);
-        return next;
-      });
-      if (selectedClampId === clampId) {
-        setSelectedClampId(null);
-      }
-    };
-    
-    // Handle clamp data loaded events (update minimum placement offset and store CSG data)
-    // Note: The reactive effect will handle bounds recalculation when clampSupportInfos changes
-    const onClampDataLoaded = (e: CustomEvent) => {
-      const { 
-        clampId, 
-        minPlacementOffset,
-        fixtureCutoutsGeometry,
-        fixturePointTopCenter,
-        supportInfo,
-      } = e.detail as { 
-        clampId: string; 
-        minPlacementOffset: number;
-        fixturePointY: number;
-        fixtureCutoutsGeometry: THREE.BufferGeometry | null;
-        fixturePointTopCenter: THREE.Vector3;
-        supportInfo: { polygon: Array<[number, number]>; mountSurfaceLocalY: number; fixturePointY: number; } | null;
-      };
-      
-      console.log('[3DScene] Clamp data loaded:', { clampId, minPlacementOffset });
-      
-      // Store the minimum offset for this clamp
-      setClampMinOffsets(prev => new Map(prev).set(clampId, minPlacementOffset));
-      
-      // Store support info for baseplate bounds calculation
-      // The reactive effect will automatically recalculate section bounds when this changes
-      if (supportInfo) {
-        setClampSupportInfos(prev => new Map(prev).set(clampId, {
-          polygon: supportInfo.polygon,
-          localCenter: { x: 0, y: 0 }, // Center is at origin in local space
-          fixturePointY: supportInfo.fixturePointY,
-          mountSurfaceLocalY: supportInfo.mountSurfaceLocalY,
-        }));
-      }
-      
-      // Store full clamp data for CSG operations (cavity creation)
-      loadedClampDataRef.current.set(clampId, {
-        fixtureCutoutsGeometry,
-        fixturePointTopCenter,
-        supportInfo,
-      });
-      
-      // Update clamp position if it's below the minimum
-      const minY = baseTopY + minPlacementOffset;
-      setPlacedClamps(prev => prev.map(c => {
-        if (c.id === clampId && c.position.y < minY) {
-          console.log('[3DScene] Adjusting clamp position from', c.position.y, 'to', minY);
-          return { ...c, position: { ...c.position, y: minY } };
-        }
-        return c;
-      }));
-    };
-
-    const onClampSelect = (e: CustomEvent) => {
-      const clampId = e.detail as string | null;
-      setSelectedClampId(clampId);
-    };
-
-    const onClampsClearAll = () => {
-      // Clear all clamps - reactive effect will handle bounds recalculation
-      setPlacedClamps([]);
-      setSelectedClampId(null);
-      setClampMinOffsets(new Map());
-    };
-
-    const onClampToggleDebug = (e: CustomEvent) => {
-      const show = e.detail as boolean;
-      setShowClampDebug(show);
-    };
-
-    // Handle start clamp placement mode
-    const onClampStartPlacement = (e: CustomEvent) => {
-      const { clampModelId, clampCategory } = e.detail as { 
-        clampModelId: string; 
-        clampCategory: string;
-      };
-      
-      console.log('[ClampPlacement] Start placement event received:', { clampModelId, clampCategory });
-      
-      // For multi-section baseplates, require section selection first
-      if (basePlate?.type === 'multi-section' && !selectedBasePlateSectionId) {
-        console.log('[ClampPlacement] Waiting for section selection');
-        setWaitingForClampSectionSelection(true);
-        // Store clamp info for later
-        setClampPlacementMode({
-          active: false,
-          clampModelId,
-          clampCategory
-        });
-        return;
-      }
-      
-      // Compute part silhouette for placement
-      const meshes = importedParts
-        .map(p => modelMeshRefs.current.get(p.id)?.current)
-        .filter((m): m is THREE.Mesh => m !== null);
-      
-      console.log('[ClampPlacement] Part meshes found for silhouette:', meshes.length);
-      
-      if (meshes.length > 0) {
-        // Import and compute silhouette
-        import('@/features/clamps/utils/clampPlacement').then(({ computePartSilhouetteForClamps }) => {
-          console.log('[ClampPlacement] Computing silhouette...');
-          const silhouette = computePartSilhouetteForClamps(meshes, baseTopY);
-          partSilhouetteRef.current = silhouette;
-          console.log('[ClampPlacement] Silhouette computed, points:', silhouette.length);
-          
-          // DEBUG: Store silhouette for visualization on baseplate
-          if (DEBUG_SHOW_CLAMP_SILHOUETTE) {
-            setDebugClampSilhouette(silhouette);
-          }
-        });
-      }
-      
-      setClampPlacementMode({
-        active: true,
-        clampModelId,
-        clampCategory
-      });
-      
-      console.log('[ClampPlacement] Placement mode activated');
-      
-      // Deselect any currently selected item
-      onPartSelected(null);
-      onSupportSelect?.(null);
-      setSelectedClampId(null);
-    };
-
-    // Handle cancel clamp placement mode
-    const onClampCancelPlacement = () => {
-      setClampPlacementMode({ active: false, clampModelId: null, clampCategory: null });
-      partSilhouetteRef.current = null;
-      setWaitingForClampSectionSelection(false);
-      // Clear debug silhouette visualization
-      setDebugClampSilhouette(null);
-    };
-
-    window.addEventListener('clamp-place', onClampPlace as EventListener);
-    window.addEventListener('clamp-update', onClampUpdate as EventListener);
-    window.addEventListener('clamp-delete', onClampDelete as EventListener);
-    window.addEventListener('clamp-select', onClampSelect as EventListener);
-    window.addEventListener('clamps-clear-all', onClampsClearAll);
-    window.addEventListener('clamp-toggle-debug', onClampToggleDebug as EventListener);
-    window.addEventListener('clamp-data-loaded', onClampDataLoaded as EventListener);
-    window.addEventListener('clamp-start-placement', onClampStartPlacement as EventListener);
-    window.addEventListener('clamp-cancel-placement', onClampCancelPlacement);
-
-    return () => {
-      window.removeEventListener('clamp-place', onClampPlace as EventListener);
-      window.removeEventListener('clamp-update', onClampUpdate as EventListener);
-      window.removeEventListener('clamp-delete', onClampDelete as EventListener);
-      window.removeEventListener('clamp-select', onClampSelect as EventListener);
-      window.removeEventListener('clamps-clear-all', onClampsClearAll);
-      window.removeEventListener('clamp-toggle-debug', onClampToggleDebug as EventListener);
-      window.removeEventListener('clamp-data-loaded', onClampDataLoaded as EventListener);
-      window.removeEventListener('clamp-start-placement', onClampStartPlacement as EventListener);
-      window.removeEventListener('clamp-cancel-placement', onClampCancelPlacement);
-    };
-  }, [selectedClampId, baseTopY, clampMinOffsets, importedParts, basePlate, selectedBasePlateSectionId]);
+  // Note: Clamp event listeners moved to useClampHandlers hook
 
   // Reactive multi-section baseplate bounds update
   // This effect automatically recalculates section bounds when any items change
