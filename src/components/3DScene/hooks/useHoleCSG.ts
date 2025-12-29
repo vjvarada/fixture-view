@@ -125,17 +125,13 @@ export function useHoleCSG({
 
     // No holes - clear CSG result
     if (mountingHoles.length === 0) {
-      if (baseplateWithHoles !== null) {
-        setBaseplateWithHoles(null);
-      }
+      setBaseplateWithHoles(null);
       return;
     }
 
     // We have holes - trigger CSG recalculation
     // Clear existing CSG first so BasePlate renders with correct size
-    if (baseplateWithHoles !== null) {
-      setBaseplateWithHoles(null);
-    }
+    setBaseplateWithHoles(null);
     
     // Schedule CSG trigger
     return scheduleCSGTrigger();
@@ -147,9 +143,8 @@ export function useHoleCSG({
     combinedHullPoints,
     mountingHoles.length,
     scheduleCSGTrigger,
-    isDraggingHoleRef,
-    baseplateWithHoles,
-    setBaseplateWithHoles,
+    // Note: baseplateWithHoles intentionally excluded to avoid infinite loop
+    // Note: setBaseplateWithHoles is stable (from useState), no need to include
   ]);
 
   // ========================================================================
@@ -159,7 +154,8 @@ export function useHoleCSG({
   useEffect(() => {
     originalBaseplateGeoRef.current = null;
     setBaseplateWithHoles(null);
-  }, [basePlate?.type, basePlate?.width, basePlate?.height, basePlate?.depth, hullPointsKey, originalBaseplateGeoRef, setBaseplateWithHoles]);
+  }, [basePlate?.type, basePlate?.width, basePlate?.height, basePlate?.depth, hullPointsKey]);
+  // Note: Refs and setters intentionally excluded - they're stable
 
   // ========================================================================
   // Execute CSG operation
@@ -271,12 +267,7 @@ export function useHoleCSG({
     basePlate?.depth,
     waitForRenderCycle,
     scheduleCSGTrigger,
-    isDraggingHoleRef,
-    mountingHolesRef,
-    originalBaseplateGeoRef,
-    basePlateMeshRef,
-    setBaseplateWithHoles,
-    setHoleCSGProcessing,
+    // Note: Refs and setters intentionally excluded - they're stable
   ]);
 
   // ========================================================================
