@@ -202,7 +202,6 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
 
     if (offsetChanged) {
       setTextOffset(new THREE.Vector3(-centerX, -centerY, 0));
-      setTextOffset(newOffset);
     }
 
     // Report bounds once

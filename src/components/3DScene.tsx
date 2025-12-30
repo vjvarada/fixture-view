@@ -100,6 +100,7 @@ import {
   useScene3DContext,
 } from './3DScene/index';
 import type { BoundsSummary as ExtractedBoundsSummary } from './3DScene/index';
+import type { PerformanceSettings } from '@/utils/performanceSettings';
 
 interface ThreeDSceneProps {
   importedParts: ProcessedFile[];
@@ -112,6 +113,7 @@ interface ThreeDSceneProps {
   isDarkMode?: boolean;
   selectedSupportId?: string | null;
   onSupportSelect?: (supportId: string | null) => void;
+  performanceSettings?: PerformanceSettings;
 }
 
 // Use extracted utility function (see src/components/3DScene/utils/geometryUtils.ts)
@@ -160,6 +162,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   isDarkMode = false,
   selectedSupportId,
   onSupportSelect,
+  performanceSettings,
 }) => {
   const { camera, size, gl, scene } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);

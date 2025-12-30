@@ -3,6 +3,11 @@ import { Canvas } from '@react-three/fiber';
 import { ProcessedFile } from "@/modules/FileImport/types";
 import ThreeDScene from './3DScene';
 import { useTheme } from 'next-themes';
+import { 
+  initPerformanceSettings, 
+  getPerformanceSettings, 
+  PerformanceSettings 
+} from '@/utils/performanceSettings';
 
 interface ThreeDViewerProps {
   currentFile: ProcessedFile | null;
@@ -23,6 +28,11 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
 }) => {
   // Theme for 3D viewer background
   const { resolvedTheme } = useTheme();
+  
+  // Performance settings for device optimization
+  const [perfSettings, setPerfSettings] = useState<PerformanceSettings>(() => 
+    initPerformanceSettings('auto')
+  );
   
   // Store multiple imported parts
   const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
@@ -80,6 +90,10 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
       setBaseplateVisible(e.detail.visible);
     };
 
+    const handlePerformanceChanged = (e: CustomEvent<{ settings: PerformanceSettings }>) => {
+      setPerfSettings(e.detail.settings);
+    };
+
     window.addEventListener('part-imported', handlePartImported as EventListener);
     window.addEventListener('file-imported', handleFileImported as EventListener);
     window.addEventListener('session-reset', handleSessionReset);
@@ -87,6 +101,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
     window.addEventListener('part-removed', handlePartRemoved as EventListener);
     window.addEventListener('part-visibility-changed', handlePartVisibilityChanged as EventListener);
     window.addEventListener('baseplate-visibility-changed', handleBaseplateVisibilityChanged as EventListener);
+    window.addEventListener('performance-settings-changed', handlePerformanceChanged as EventListener);
 
     return () => {
       window.removeEventListener('part-imported', handlePartImported as EventListener);
@@ -96,6 +111,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
       window.removeEventListener('part-removed', handlePartRemoved as EventListener);
       window.removeEventListener('part-visibility-changed', handlePartVisibilityChanged as EventListener);
       window.removeEventListener('baseplate-visibility-changed', handleBaseplateVisibilityChanged as EventListener);
+      window.removeEventListener('performance-settings-changed', handlePerformanceChanged as EventListener);
     };
   }, []);
 
@@ -115,11 +131,14 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
           near: 0.1,
           far: 5000
         }}
+        dpr={perfSettings.pixelRatio}
+        frameloop={perfSettings.frameRateLimit ? 'demand' : 'always'}
         gl={{
-          antialias: true,
+          antialias: perfSettings.antialias,
           alpha: true,
-          powerPreference: "high-performance"
+          powerPreference: perfSettings.pixelRatio < 1.5 ? "low-power" : "high-performance"
         }}
+        shadows={perfSettings.shadowsEnabled}
         style={{ background: viewerBackground }}
         onContextMenu={(e) => e.preventDefault()}
       >
@@ -133,6 +152,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
           isDarkMode={resolvedTheme === 'dark'}
           selectedSupportId={selectedSupportId}
           onSupportSelect={onSupportSelect}
+          performanceSettings={perfSettings}
         />
       </Canvas>
 
