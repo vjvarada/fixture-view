@@ -236,7 +236,19 @@ const ClampMesh: React.FC<ClampMeshProps> = ({
   );
 };
 
-export default ClampMesh;
+// Memoize ClampMesh to prevent unnecessary re-renders
+const MemoizedClampMesh = React.memo(ClampMesh, (prevProps, nextProps) => {
+  return (
+    prevProps.clampModel === nextProps.clampModel &&
+    prevProps.placedClamp === nextProps.placedClamp &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.showDebug === nextProps.showDebug &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick &&
+    prevProps.onClick === nextProps.onClick
+  );
+});
+
+export default MemoizedClampMesh;
 
 /**
  * Hook to manage placed clamps state

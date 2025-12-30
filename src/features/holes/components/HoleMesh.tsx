@@ -313,4 +313,16 @@ const HoleMesh: React.FC<HoleMeshProps> = ({
   );
 };
 
-export default HoleMesh;
+// Memoize HoleMesh to prevent unnecessary re-renders
+const MemoizedHoleMesh = React.memo(HoleMesh, (prevProps, nextProps) => {
+  return (
+    prevProps.hole === nextProps.hole &&
+    prevProps.baseTopY === nextProps.baseTopY &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.isPreview === nextProps.isPreview &&
+    prevProps.onClick === nextProps.onClick &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick
+  );
+});
+
+export default MemoizedHoleMesh;

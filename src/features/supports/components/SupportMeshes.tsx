@@ -1724,4 +1724,16 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
   return null;
 };
 
-export default SupportMesh;
+// Memoize SupportMesh to prevent unnecessary re-renders when other supports change
+const MemoizedSupportMesh = React.memo(SupportMesh, (prevProps, nextProps) => {
+  // Only re-render if this support's data changed
+  return (
+    prevProps.support === nextProps.support &&
+    prevProps.preview === nextProps.preview &&
+    prevProps.baseTopY === nextProps.baseTopY &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick
+  );
+});
+
+export default MemoizedSupportMesh;
