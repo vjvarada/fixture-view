@@ -9,6 +9,17 @@ import ThreeDViewer from "@/components/3DViewer";
 import { logMemoryUsage } from "@/utils/memoryMonitor";
 import { terminateWorkers } from "@rapidtool/cad-core";
 
+// Selection hooks (Phase 7a migration)
+import {
+  useSelectedPart,
+  useSelectedSupport,
+  useSelectedClamp,
+  useSelectedLabel,
+  useSelectedHole,
+  useSelectedBaseplateSection,
+  useClearSelection,
+} from "@/hooks/useSelection";
+
 import PartPropertiesAccordion from "@/components/PartPropertiesAccordion";
 import ContextOptionsPanel, { WorkflowStep, WORKFLOW_STEPS } from "@/components/ContextOptionsPanel";
 import {
@@ -97,7 +108,10 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [undoStack, setUndoStack] = useState<any[]>([]);
     const [redoStack, setRedoStack] = useState<any[]>([]);
     const [currentBaseplate, setCurrentBaseplate] = useState<{ id: string; type: string; padding?: number; height?: number; depth?: number; sections?: Array<{ id: string; minX: number; maxX: number; minZ: number; maxZ: number }> } | null>(null);
-    const [selectedBasePlateSectionId, setSelectedBasePlateSectionId] = useState<string | null>(null);
+    
+    // Selection state (Phase 7a - now from Zustand store)
+    const [selectedBasePlateSectionId, setSelectedBasePlateSectionId] = useSelectedBaseplateSection();
+    const clearSelection = useClearSelection();
 
     // Multi-section baseplate drawing state
     const [isBaseplateDrawingMode, setIsBaseplateDrawingMode] = useState(false);
@@ -111,7 +125,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
     // File Processing State (moved from FileImport)
     const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
-    const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+    // Selection: Part (Phase 7a - now from Zustand store)
+    const [selectedPartId, setSelectedPartId] = useSelectedPart();
     const [partVisibility, setPartVisibility] = useState<Map<string, boolean>>(new Map());
     const [baseplateVisible, setBaseplateVisible] = useState(true);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -157,7 +172,8 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const [isPlacementMode, setIsPlacementMode] = useState(false);
     const [supports, setSupports] = useState<AnySupport[]>([]);
     const [selectedSupportType, setSelectedSupportType] = useState<SupportType>('cylindrical');
-    const [selectedSupportId, setSelectedSupportId] = useState<string | null>(null);
+    // Selection: Support (Phase 7a - now from Zustand store)
+    const [selectedSupportId, setSelectedSupportId] = useSelectedSupport();
 
     // Labels state
     const [labels, setLabels] = useState<Array<{
@@ -168,15 +184,18 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       position: { x: number; y: number; z: number };
       rotation: { x: number; y: number; z: number };
     }>>([]);
-    const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
+    // Selection: Label (Phase 7a - now from Zustand store)
+    const [selectedLabelId, setSelectedLabelId] = useSelectedLabel();
 
     // Clamps state
     const [clamps, setClamps] = useState<PlacedClamp[]>([]);
-    const [selectedClampId, setSelectedClampId] = useState<string | null>(null);
+    // Selection: Clamp (Phase 7a - now from Zustand store)
+    const [selectedClampId, setSelectedClampId] = useSelectedClamp();
 
     // Mounting holes state
     const [mountingHoles, setMountingHoles] = useState<PlacedHole[]>([]);
-    const [selectedHoleId, setSelectedHoleId] = useState<string | null>(null);
+    // Selection: Hole (Phase 7a - now from Zustand store)
+    const [selectedHoleId, setSelectedHoleId] = useSelectedHole();
     const [isHolePlacementMode, setIsHolePlacementMode] = useState(false);
     const [pendingHoleConfig, setPendingHoleConfig] = useState<HoleConfig | null>(null);
 
