@@ -44,6 +44,7 @@ import { LabelMesh, LabelTransformControls, LabelConfig } from '@/features/label
 import { ClampMesh, ClampTransformControls, ClampWithSupport, PlacedClamp, ClampModel, getClampById } from '@/features/clamps';
 import { HoleMesh, HolePlacement, HoleTransformControls, PlacedHole, HoleConfig } from '@/features/holes';
 import { useExport } from '@/features/export';
+import { registerRenderer, unregisterRenderer, logMemoryUsage } from '@/utils/memoryMonitor';
 
 // ============================================================================
 // Extracted 3DScene Modules (available for progressive migration)
@@ -163,6 +164,17 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   const { camera, size, gl, scene } = useThree();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const raycasterRef = useRef(new THREE.Raycaster());
+  
+  // Register renderer for memory monitoring (development only)
+  useEffect(() => {
+    registerRenderer(gl);
+    logMemoryUsage('3DScene mounted');
+    
+    return () => {
+      logMemoryUsage('3DScene unmounting');
+      unregisterRenderer();
+    };
+  }, [gl]);
   
   // Future: Component library for fixture elements (currently placeholder)
   const [placedComponents, setPlacedComponents] = useState<Array<{ component: unknown; position: THREE.Vector3; id: string }>>([]);

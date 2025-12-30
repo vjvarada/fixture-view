@@ -6,7 +6,7 @@
  * The actual CSG operation happens on the baseplate geometry.
  */
 
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
 import type { PlacedHole } from '../types';
@@ -137,6 +137,7 @@ const HoleRingIndicator: React.FC<HoleRingIndicatorProps> = React.memo(({
   isPreview,
 }) => {
   const ringRef = useRef<THREE.Mesh>(null);
+  const geometryRef = useRef<THREE.RingGeometry | null>(null);
 
   const safePosition = useMemo(() => ({
     x: safeNum(position?.x, 0),
@@ -154,10 +155,26 @@ const HoleRingIndicator: React.FC<HoleRingIndicatorProps> = React.memo(({
   });
 
   const ringGeometry = useMemo(() => {
+    // Dispose previous geometry
+    if (geometryRef.current) {
+      geometryRef.current.dispose();
+    }
     const innerRadius = Math.max(0.5, safeDiameter / 2);
     const outerRadius = innerRadius + RING_THICKNESS;
-    return new THREE.RingGeometry(innerRadius, outerRadius, 32);
+    const geo = new THREE.RingGeometry(innerRadius, outerRadius, 32);
+    geometryRef.current = geo;
+    return geo;
   }, [safeDiameter]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (geometryRef.current) {
+        geometryRef.current.dispose();
+        geometryRef.current = null;
+      }
+    };
+  }, []);
 
   const color = getRingColor(isPreview, isSelected);
 
@@ -194,6 +211,7 @@ const HoleMesh: React.FC<HoleMeshProps> = ({
   onDoubleClick,
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const geometryRef = useRef<THREE.BufferGeometry | null>(null);
 
   // Sanitize hole data to prevent NaN geometries
   const safeHole = useMemo(() => ({
@@ -210,13 +228,28 @@ const HoleMesh: React.FC<HoleMeshProps> = ({
     counterboreDepth: safeNum(hole.counterboreDepth, 5),
   }), [hole]);
 
-  // Create hole geometry with safe values
-  const geometry = useMemo(
-    () => createHoleGeometry(safeHole as PlacedHole),
-    [safeHole]
-  );
+  // Create hole geometry with safe values and proper cleanup
+  const geometry = useMemo(() => {
+    // Dispose previous geometry
+    if (geometryRef.current) {
+      geometryRef.current.dispose();
+    }
+    const geo = createHoleGeometry(safeHole as PlacedHole);
+    geometryRef.current = geo;
+    return geo;
+  }, [safeHole]);
 
-  // Select appropriate material based on state
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (geometryRef.current) {
+        geometryRef.current.dispose();
+        geometryRef.current = null;
+      }
+    };
+  }, []);
+
+  // Select appropriate material based on state (uses shared instances - no cleanup needed)
   const material = useMemo(() => {
     if (isPreview) return PREVIEW_MATERIAL;
     if (isSelected) return SELECTED_MATERIAL;

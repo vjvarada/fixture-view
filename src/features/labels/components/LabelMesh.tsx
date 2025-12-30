@@ -119,11 +119,32 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
     return label.text.substring(0, 100);
   }, [label.text]);
 
-  // Memoized values
-  const material = useMemo(() => createLabelMaterial(preview, selected), [preview, selected]);
+  // Memoized values with proper cleanup for material
+  const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  
+  const material = useMemo(() => {
+    // Dispose previous material
+    if (materialRef.current) {
+      materialRef.current.dispose();
+    }
+    const mat = createLabelMaterial(preview, selected);
+    materialRef.current = mat;
+    return mat;
+  }, [preview, selected]);
+
   const position = useMemo(() => toVector3(label.position), [label.position]);
   const rotation = useMemo(() => toEuler(label.rotation), [label.rotation]);
   const fontFile = useMemo(() => getFontFile(label.font ?? 'helvetiker'), [label.font]);
+
+  // Cleanup material on unmount
+  useEffect(() => {
+    return () => {
+      if (materialRef.current) {
+        materialRef.current.dispose();
+        materialRef.current = null;
+      }
+    };
+  }, []);
 
   // Reset bounds tracking when label properties change
   useEffect(() => {

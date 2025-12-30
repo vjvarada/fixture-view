@@ -500,6 +500,7 @@ export function performRealCSGUnionInWorker(
 
 /**
  * Terminate all workers and clean up
+ * Should be called on session reset to free memory
  */
 export function terminateWorkers(): void {
   if (csgWorker) {
@@ -512,6 +513,12 @@ export function terminateWorkers(): void {
     clampCSGWorker = null;
     clampCSGWorkerPromises.clear();
   }
+  if (holeCSGWorker) {
+    holeCSGWorker.terminate();
+    holeCSGWorker = null;
+    holeCSGWorkerPromises.clear();
+  }
+  console.log('[WorkerManager] All workers terminated');
 }
 
 // ============================================

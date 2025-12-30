@@ -6,6 +6,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { ViewCube } from "@rapidtool/cad-ui";
 import VerticalToolbar from "@/components/VerticalToolbar";
 import ThreeDViewer from "@/components/3DViewer";
+import { logMemoryUsage } from "@/utils/memoryMonitor";
+import { terminateWorkers } from "@rapidtool/cad-core";
 
 import PartPropertiesAccordion from "@/components/PartPropertiesAccordion";
 import ContextOptionsPanel, { WorkflowStep, WORKFLOW_STEPS } from "@/components/ContextOptionsPanel";
@@ -768,6 +770,9 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
     // Handle step change from context panel or toolbar
     const handleStepChange = useCallback((step: WorkflowStep) => {
+      // Log memory at step transitions for debugging
+      logMemoryUsage(`Step change: ${activeStep} → ${step}`);
+      
       setActiveStep(step);
       
       // Cancel placement mode when leaving supports step
@@ -776,9 +781,15 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         window.dispatchEvent(new Event('supports-cancel-placement'));
       }
       
-    }, [isPlacementMode]);
+    }, [isPlacementMode, activeStep]);
 
     const handleResetSession = () => {
+      // Log memory before reset
+      logMemoryUsage('Session reset - before');
+      
+      // Terminate all workers to free memory
+      terminateWorkers();
+      
       // Reset all session state - like starting fresh
       setCurrentBaseplate(null);
       setUndoStack([]);
@@ -802,6 +813,9 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       window.dispatchEvent(new CustomEvent('viewer-reset'));
       window.dispatchEvent(new CustomEvent('session-reset'));
       window.dispatchEvent(new Event('supports-cancel-placement'));
+      
+      // Log memory after reset (delayed to allow GC)
+      setTimeout(() => logMemoryUsage('Session reset - after (delayed)'), 1000);
     };
 
     const handleSetOrientation = (orientation: string) => {

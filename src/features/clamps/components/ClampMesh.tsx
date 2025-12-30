@@ -40,10 +40,36 @@ const ClampMesh: React.FC<ClampMeshProps> = ({
   const groupRef = useRef<THREE.Group>(null);
   const clampGroupRef = useRef<THREE.Group | null>(null);
   const lastClickTimeRef = useRef<number>(0);
+  const selectionMaterialsRef = useRef<THREE.Material[]>([]);
   
   const [clampData, setClampData] = useState<LoadedClampData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Helper to dispose loaded clamp data
+  const disposeClampData = useCallback((data: LoadedClampData | null) => {
+    if (!data) return;
+    
+    // Dispose geometries
+    if (data.clampGeometry) data.clampGeometry.dispose();
+    if (data.fixturePointGeometry) data.fixturePointGeometry.dispose();
+    if (data.fixtureMountSurfaceGeometry) data.fixtureMountSurfaceGeometry.dispose();
+    if (data.fixtureCutoutsGeometry) data.fixtureCutoutsGeometry.dispose();
+    
+    // Dispose clamp group meshes
+    data.clampGroup.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach(mat => mat.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      }
+    });
+  }, []);
 
   // Load clamp data on mount or when clamp model changes
   useEffect(() => {
@@ -74,12 +100,26 @@ const ClampMesh: React.FC<ClampMeshProps> = ({
     };
   }, [clampModel]);
 
+  // Cleanup clamp data on unmount or when clamp model changes
+  useEffect(() => {
+    return () => {
+      disposeClampData(clampData);
+      // Dispose selection materials
+      selectionMaterialsRef.current.forEach(mat => mat.dispose());
+      selectionMaterialsRef.current = [];
+    };
+  }, [clampData, disposeClampData]);
+
   // Create materials for debug geometries
   const materials = useMemo(() => createClampMaterials(), []);
   
   // Apply selection highlight to clamp meshes
   useEffect(() => {
     if (!clampGroupRef.current) return;
+    
+    // Dispose previous selection materials
+    selectionMaterialsRef.current.forEach(mat => mat.dispose());
+    selectionMaterialsRef.current = [];
     
     clampGroupRef.current.traverse((child) => {
       if (child instanceof THREE.Mesh && child.material) {
@@ -88,7 +128,7 @@ const ClampMesh: React.FC<ClampMeshProps> = ({
           if (!child.userData.originalMaterial) {
             child.userData.originalMaterial = child.material;
           }
-          child.material = new THREE.MeshStandardMaterial({
+          const selectionMat = new THREE.MeshStandardMaterial({
             color: SELECTION_COLOR,
             roughness: 0.4,
             metalness: 0.8,
@@ -96,6 +136,8 @@ const ClampMesh: React.FC<ClampMeshProps> = ({
             emissive: SELECTION_COLOR,
             emissiveIntensity: 0.2,
           });
+          selectionMaterialsRef.current.push(selectionMat);
+          child.material = selectionMat;
         } else {
           // Restore original material
           if (child.userData.originalMaterial) {
