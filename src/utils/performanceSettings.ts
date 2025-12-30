@@ -241,6 +241,172 @@ export function shouldAutoDecimate(triangleCount: number): boolean {
   return currentSettings.autoDecimateOnImport && triangleCount > currentSettings.maxTriangles;
 }
 
+/**
+ * Device capabilities information
+ */
+export interface DeviceCapabilities {
+  // Hardware
+  cpuCores: number;
+  deviceMemoryGB: number | null;
+  platform: string;
+  userAgent: string;
+  
+  // Display
+  screenWidth: number;
+  screenHeight: number;
+  devicePixelRatio: number;
+  colorDepth: number;
+  
+  // GPU/WebGL
+  gpuVendor: string | null;
+  gpuRenderer: string | null;
+  webglVersion: string;
+  maxTextureSize: number;
+  maxViewportSize: number[];
+  
+  // Features
+  hasTouch: boolean;
+  isMobile: boolean;
+  isTablet: boolean;
+  
+  // Performance estimate
+  estimatedTier: 'high' | 'medium' | 'low';
+  recommendedLevel: PerformanceLevel;
+}
+
+/**
+ * Get detailed device capabilities
+ * Shows exactly what hardware the browser can detect
+ */
+export function getDeviceCapabilities(): DeviceCapabilities {
+  const ua = navigator.userAgent;
+  const isMobile = /iPhone|iPod|Android.*Mobile|Windows Phone/i.test(ua);
+  const isTablet = /iPad|Android(?!.*Mobile)|Tablet/i.test(ua) || 
+    (navigator.maxTouchPoints > 0 && window.screen.width >= 768 && window.screen.width < 1400);
+  
+  // GPU info
+  let gpuVendor: string | null = null;
+  let gpuRenderer: string | null = null;
+  let webglVersion = 'none';
+  let maxTextureSize = 0;
+  let maxViewportSize = [0, 0];
+  
+  try {
+    const canvas = document.createElement('canvas');
+    let gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null;
+    if (gl) {
+      webglVersion = 'WebGL 2.0';
+    } else {
+      gl = canvas.getContext('webgl') as WebGL2RenderingContext | null;
+      if (gl) webglVersion = 'WebGL 1.0';
+    }
+    
+    if (gl) {
+      const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+      if (debugInfo) {
+        gpuVendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+        gpuRenderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+      }
+      maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      const maxVp = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+      maxViewportSize = [maxVp[0], maxVp[1]];
+    }
+  } catch (e) {
+    console.warn('[Performance] WebGL detection failed:', e);
+  }
+  
+  // Estimate tier based on GPU
+  let estimatedTier: 'high' | 'medium' | 'low' = 'high';
+  if (gpuRenderer) {
+    // High-end GPUs
+    if (/RTX|GTX 10[6789]|GTX 20|Radeon RX [56789]|Radeon Pro|Quadro/i.test(gpuRenderer)) {
+      estimatedTier = 'high';
+    }
+    // Mid-range / integrated
+    else if (/GTX 10[0-5]|Intel.*Iris|Intel.*UHD|Radeon [56]|GeForce MX/i.test(gpuRenderer)) {
+      estimatedTier = 'medium';
+    }
+    // Low-end / old integrated / mobile
+    else if (/Intel.*HD|Mali|Adreno|PowerVR|Apple GPU|Intel.*[4-6][0-9]{2}/i.test(gpuRenderer)) {
+      estimatedTier = 'low';
+    }
+  }
+  
+  // Memory check
+  const deviceMemory = (navigator as any).deviceMemory || null;
+  if (deviceMemory && deviceMemory < 4) {
+    estimatedTier = 'low';
+  }
+  
+  return {
+    cpuCores: navigator.hardwareConcurrency || 0,
+    deviceMemoryGB: deviceMemory,
+    platform: navigator.platform,
+    userAgent: ua,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    devicePixelRatio: window.devicePixelRatio,
+    colorDepth: window.screen.colorDepth,
+    gpuVendor,
+    gpuRenderer,
+    webglVersion,
+    maxTextureSize,
+    maxViewportSize,
+    hasTouch: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+    isMobile,
+    isTablet,
+    estimatedTier,
+    recommendedLevel: estimatedTier,
+  };
+}
+
+/**
+ * Print a formatted report of device capabilities to console
+ */
+export function printDeviceReport(): void {
+  const caps = getDeviceCapabilities();
+  
+  console.group('🖥️ Device Capabilities Report');
+  
+  console.group('Hardware');
+  console.log(`CPU Cores: ${caps.cpuCores || 'Unknown'}`);
+  console.log(`Memory: ${caps.deviceMemoryGB ? caps.deviceMemoryGB + ' GB' : 'Unknown (browser restricted)'}`);
+  console.log(`Platform: ${caps.platform}`);
+  console.groupEnd();
+  
+  console.group('Display');
+  console.log(`Screen: ${caps.screenWidth} × ${caps.screenHeight}`);
+  console.log(`Pixel Ratio: ${caps.devicePixelRatio}x`);
+  console.log(`Color Depth: ${caps.colorDepth}-bit`);
+  console.groupEnd();
+  
+  console.group('GPU / WebGL');
+  console.log(`Vendor: ${caps.gpuVendor || 'Unknown'}`);
+  console.log(`Renderer: ${caps.gpuRenderer || 'Unknown'}`);
+  console.log(`WebGL: ${caps.webglVersion}`);
+  console.log(`Max Texture: ${caps.maxTextureSize}px`);
+  console.log(`Max Viewport: ${caps.maxViewportSize[0]} × ${caps.maxViewportSize[1]}`);
+  console.groupEnd();
+  
+  console.group('Device Type');
+  console.log(`Touch: ${caps.hasTouch ? 'Yes' : 'No'}`);
+  console.log(`Mobile: ${caps.isMobile ? 'Yes' : 'No'}`);
+  console.log(`Tablet: ${caps.isTablet ? 'Yes' : 'No'}`);
+  console.groupEnd();
+  
+  console.group('Performance Recommendation');
+  console.log(`Estimated Tier: ${caps.estimatedTier.toUpperCase()}`);
+  console.log(`Current Level: ${currentLevel.toUpperCase()}`);
+  if (caps.recommendedLevel !== currentLevel) {
+    console.log(`💡 Suggested: Switch to "${caps.recommendedLevel}" for optimal performance`);
+  } else {
+    console.log(`✅ Current settings match device capabilities`);
+  }
+  console.groupEnd();
+  
+  console.groupEnd();
+}
+
 // Expose to window for debugging
 if (typeof window !== 'undefined') {
   (window as any).__performanceSettings = {
@@ -248,8 +414,10 @@ if (typeof window !== 'undefined') {
     getLevel: getPerformanceLevel,
     setLevel: setPerformanceLevel,
     detect: detectDeviceCapability,
+    getCapabilities: getDeviceCapabilities,
+    printReport: printDeviceReport,
     presets: PERFORMANCE_PRESETS,
   };
   
   console.log('[Performance] Debug commands available at window.__performanceSettings');
-}
+  console.log('[Performance] Run window.__performanceSettings.printReport() to see device capabilities');}
