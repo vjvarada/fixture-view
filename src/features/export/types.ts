@@ -10,10 +10,19 @@ import type { LabelConfig } from '@/features/labels';
 import type { PlacedClamp } from '@/features/clamps';
 
 /**
+ * Export quality preset
+ * - 'fast': Skip CSG union, minimal processing (best for low-end devices)
+ * - 'balanced': CSG union with geometry decimation (good for tablets)
+ * - 'high': Full CSG union, no decimation (best quality, needs powerful hardware)
+ */
+export type ExportQuality = 'fast' | 'balanced' | 'high';
+
+/**
  * Export progress stages
  */
 export type ExportStage = 
   | 'preparing'
+  | 'decimating'
   | 'manifold'
   | 'exporting'
   | 'complete'
@@ -105,16 +114,62 @@ export interface ExportResult {
  * Export service configuration
  */
 export interface ExportServiceConfig {
+  /** Export quality preset */
+  quality: ExportQuality;
   /** Whether to perform CSG union on overlapping geometries */
   performCSGUnion: boolean;
   /** Vertex merge tolerance for welding */
   vertexMergeTolerance: number;
+  /** Target triangle count for decimation (0 = no decimation) */
+  targetTriangleCount: number;
+  /** Maximum triangles per CSG batch (lower = less memory, slower) */
+  csgBatchSize: number;
+  /** Use chunked processing with idle callbacks (better for UI responsiveness) */
+  useChunkedProcessing: boolean;
+  /** Chunk size for processing (triangles per chunk) */
+  chunkSize: number;
+}
+
+/**
+ * Get export config for a quality preset
+ */
+export function getExportConfigForQuality(quality: ExportQuality): ExportServiceConfig {
+  switch (quality) {
+    case 'fast':
+      return {
+        quality: 'fast',
+        performCSGUnion: false, // Skip CSG for speed
+        vertexMergeTolerance: 0.01, // Looser tolerance for faster welding
+        targetTriangleCount: 50000, // Aggressive decimation
+        csgBatchSize: 5,
+        useChunkedProcessing: true,
+        chunkSize: 5000,
+      };
+    case 'balanced':
+      return {
+        quality: 'balanced',
+        performCSGUnion: true,
+        vertexMergeTolerance: 0.005,
+        targetTriangleCount: 100000, // Moderate decimation
+        csgBatchSize: 10,
+        useChunkedProcessing: true,
+        chunkSize: 10000,
+      };
+    case 'high':
+    default:
+      return {
+        quality: 'high',
+        performCSGUnion: true,
+        vertexMergeTolerance: 0.001, // Tight tolerance
+        targetTriangleCount: 0, // No decimation
+        csgBatchSize: 20,
+        useChunkedProcessing: false,
+        chunkSize: 50000,
+      };
+  }
 }
 
 /**
  * Default export service configuration
  */
-export const DEFAULT_EXPORT_CONFIG: ExportServiceConfig = {
-  performCSGUnion: true,
-  vertexMergeTolerance: 0.001,
-};
+export const DEFAULT_EXPORT_CONFIG: ExportServiceConfig = getExportConfigForQuality('high');

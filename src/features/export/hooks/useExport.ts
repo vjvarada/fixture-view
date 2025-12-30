@@ -2,6 +2,7 @@
  * Export Hook
  * 
  * React hook for managing fixture export operations.
+ * Supports quality presets for optimization on low-end devices.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -12,10 +13,12 @@ import type { LabelConfig } from '@/features/labels';
 import type { PlacedClamp } from '@/features/clamps';
 import { collectAllGeometries } from '../utils/geometryCollector';
 import { exportFixture } from '../services/exportService';
+import { getExportConfigForQuality } from '../types';
 import type { 
   GeometryCollectionContext, 
   ExportProgress,
   ClampExportData,
+  ExportQuality,
 } from '../types';
 
 export interface UseExportParams {
@@ -43,10 +46,13 @@ export interface UseExportParams {
   labelsRef: React.MutableRefObject<LabelConfig[]>;
   /** Top Y position of baseplate */
   baseTopY: number;
+  /** Export quality preset (default: 'high') - use 'fast' or 'balanced' for low-end devices */
+  exportQuality?: ExportQuality;
 }
 
 /**
  * Hook for handling fixture export functionality
+ * Supports quality presets for optimization on low-end devices
  */
 export function useExport({
   mergedFixtureMesh,
@@ -61,6 +67,7 @@ export function useExport({
   loadedClampDataRef,
   labelsRef,
   baseTopY,
+  exportQuality = 'high',
 }: UseExportParams) {
   // Store the latest values in refs for the event handler
   const paramsRef = useRef({
@@ -71,6 +78,7 @@ export function useExport({
     placedClamps,
     clampSupportInfos,
     baseTopY,
+    exportQuality,
   });
   
   // Update refs when values change
@@ -83,8 +91,9 @@ export function useExport({
       placedClamps,
       clampSupportInfos,
       baseTopY,
+      exportQuality,
     };
-  }, [mergedFixtureMesh, basePlate, baseplateWithHoles, modifiedSupportGeometries, placedClamps, clampSupportInfos, baseTopY]);
+  }, [mergedFixtureMesh, basePlate, baseplateWithHoles, modifiedSupportGeometries, placedClamps, clampSupportInfos, baseTopY, exportQuality]);
 
   /**
    * Handle export fixture event
@@ -127,13 +136,20 @@ export function useExport({
       // Collect all geometries
       const geometryCollection = await collectAllGeometries(ctx, onProgress);
       
+      // Get service config based on quality preset
+      // Quality can also be overridden via the export event detail
+      const quality = (e.detail as any).quality ?? params.exportQuality;
+      const serviceConfig = getExportConfigForQuality(quality);
+      
+      console.log(`[Export] Using quality preset: ${quality}`, serviceConfig);
+      
       // Export fixture
       const result = await exportFixture(
         geometryCollection,
         config,
         params.mergedFixtureMesh.geometry,
         params.basePlate?.sections?.length || 1,
-        { performCSGUnion: true, vertexMergeTolerance: 0.001 },
+        serviceConfig,
         onProgress
       );
       

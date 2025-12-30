@@ -2,6 +2,11 @@
  * Export Service
  * 
  * Handles the STL export process including CSG union and file generation.
+ * Optimized for performance on less powerful devices with:
+ * - Geometry decimation options
+ * - Chunked processing with idle callbacks
+ * - Memory-efficient cleanup
+ * - Multiple quality presets (fast/balanced/high)
  */
 
 import * as THREE from 'three';
@@ -18,14 +23,22 @@ import type {
   ExportProgressCallback,
   ExportResult,
   ExportServiceConfig,
-  DEFAULT_EXPORT_CONFIG,
 } from '../types';
+import { getExportConfigForQuality } from '../types';
+import {
+  yieldToMain,
+  optimizeGeometriesForExport,
+  getTotalTriangleCount,
+  disposeGeometries,
+} from '../utils/geometryOptimizer';
 
 /**
  * Performs CSG union on baseplate and supports
+ * With chunked processing for better UI responsiveness
  */
 async function performBaseplateSupportsUnion(
   baseplateAndSupports: THREE.BufferGeometry[],
+  config: ExportServiceConfig,
   onProgress?: ExportProgressCallback
 ): Promise<THREE.BufferGeometry | null> {
   if (baseplateAndSupports.length === 0) {
@@ -44,21 +57,35 @@ async function performBaseplateSupportsUnion(
   });
   
   try {
+    // Process in batches for better memory management on low-end devices
+    const batchSize = config.csgBatchSize;
+    const totalParts = baseplateAndSupports.length;
+    
     const geomsForWorker = baseplateAndSupports.map((geom, idx) => ({
       id: idx === 0 ? 'baseplate' : `support-${idx}`,
       geometry: geom
     }));
     
+    // Yield before heavy operation if using chunked processing
+    if (config.useChunkedProcessing) {
+      await yieldToMain();
+    }
+    
     const result = await performRealCSGUnionInWorker(
       geomsForWorker,
       undefined,
-      (current, total, stage) => {
+      async (current, total, stage) => {
         const progress = 10 + ((current / total) * 25); // 10-35%
         onProgress?.({ 
           stage: 'manifold', 
           progress, 
           message: `CSG union: ${stage} (${current}/${total})` 
         });
+        
+        // Yield periodically during long operations
+        if (config.useChunkedProcessing && current % batchSize === 0) {
+          await yieldToMain();
+        }
       }
     );
     
@@ -75,12 +102,13 @@ async function performBaseplateSupportsUnion(
 
 /**
  * Performs fast geometry merge with vertex welding
+ * Optimized with chunked processing for UI responsiveness
  */
-function performFastMerge(
+async function performFastMerge(
   geometries: THREE.BufferGeometry[],
-  tolerance: number,
+  config: ExportServiceConfig,
   onProgress?: ExportProgressCallback
-): THREE.BufferGeometry | null {
+): Promise<THREE.BufferGeometry | null> {
   if (geometries.length === 0) {
     return null;
   }
@@ -90,7 +118,11 @@ function performFastMerge(
   
   try {
     // Normalize all geometries before merging
-    const normalizedGeometries = geometries.map(geom => {
+    const normalizedGeometries: THREE.BufferGeometry[] = [];
+    const chunkSize = config.chunkSize;
+    
+    for (let i = 0; i < geometries.length; i++) {
+      const geom = geometries[i];
       const nonIndexed = geom.index ? geom.toNonIndexed() : geom.clone();
       if (nonIndexed.getAttribute('uv')) {
         nonIndexed.deleteAttribute('uv');
@@ -98,8 +130,13 @@ function performFastMerge(
       if (nonIndexed.getAttribute('uv2')) {
         nonIndexed.deleteAttribute('uv2');
       }
-      return nonIndexed;
-    });
+      normalizedGeometries.push(nonIndexed);
+      
+      // Yield periodically for UI responsiveness
+      if (config.useChunkedProcessing && i % 5 === 0) {
+        await yieldToMain();
+      }
+    }
     
     onProgress?.({ 
       stage: 'manifold', 
@@ -107,18 +144,28 @@ function performFastMerge(
       message: `Merging ${normalizedGeometries.length} geometries...` 
     });
     
+    // Yield before heavy merge operation
+    if (config.useChunkedProcessing) {
+      await yieldToMain();
+    }
+    
     const merged = mergeGeometries(normalizedGeometries, false);
     
     if (merged) {
       onProgress?.({ stage: 'manifold', progress: 60, message: 'Welding vertices...' });
       
-      const welded = mergeVertices(merged, tolerance);
+      // Yield before vertex welding (can be expensive)
+      if (config.useChunkedProcessing) {
+        await yieldToMain();
+      }
+      
+      const welded = mergeVertices(merged, config.vertexMergeTolerance);
       welded.computeVertexNormals();
       
       console.log(`[Export] Final merge succeeded: ${welded.getAttribute('position').count} vertices`);
       
       // Cleanup temporary geometries
-      normalizedGeometries.forEach(g => g.dispose());
+      disposeGeometries(normalizedGeometries);
       
       return welded;
     }
@@ -131,13 +178,20 @@ function performFastMerge(
 
 /**
  * Performs full CSG union as fallback
+ * With chunked processing for UI responsiveness
  */
 async function performFullCSGUnion(
   geometries: THREE.BufferGeometry[],
+  config: ExportServiceConfig,
   onProgress?: ExportProgressCallback
 ): Promise<THREE.BufferGeometry | null> {
   console.log('[Export] Falling back to full CSG union...');
   onProgress?.({ stage: 'manifold', progress: 70, message: 'Trying full CSG union (fallback)...' });
+  
+  // Yield before heavy operation
+  if (config.useChunkedProcessing) {
+    await yieldToMain();
+  }
   
   try {
     const geometriesForWorker = geometries.map((geom, idx) => ({
@@ -145,16 +199,23 @@ async function performFullCSGUnion(
       geometry: geom
     }));
     
+    const batchSize = config.csgBatchSize;
+    
     const result = await performRealCSGUnionInWorker(
       geometriesForWorker,
       undefined,
-      (current, total, stage) => {
+      async (current, total, stage) => {
         const progress = 70 + ((current / total) * 20); // 70-90%
         onProgress?.({ 
           stage: 'manifold', 
           progress, 
           message: `CSG Union: ${stage} (${current}/${total})` 
         });
+        
+        // Yield periodically
+        if (config.useChunkedProcessing && current % batchSize === 0) {
+          await yieldToMain();
+        }
       }
     );
     
@@ -230,19 +291,29 @@ function generateSTLFiles(
 }
 
 /**
- * Main export function
+ * Main export function with optimization support
+ * 
+ * @param geometryCollection - Collection of geometries to export
+ * @param config - Export configuration (filename, format, etc.)
+ * @param fallbackGeometry - Fallback geometry if processing fails
+ * @param sectionCount - Number of sections (for multi-section baseplates)
+ * @param serviceConfig - Service configuration (quality, CSG options, etc.)
+ * @param onProgress - Progress callback
  */
 export async function exportFixture(
   geometryCollection: ExportGeometryCollection,
   config: ExportConfig,
   fallbackGeometry: THREE.BufferGeometry | null,
   sectionCount: number = 1,
-  serviceConfig: ExportServiceConfig = { performCSGUnion: true, vertexMergeTolerance: 0.001 },
+  serviceConfig: ExportServiceConfig = getExportConfigForQuality('high'),
   onProgress?: ExportProgressCallback
 ): Promise<ExportResult> {
   try {
+    const startTime = performance.now();
+    console.log(`[Export] Starting export with quality: ${serviceConfig.quality}`);
+    
     // Collect all geometries for CSG union (baseplate + supports)
-    const baseplateAndSupportsForCSG: THREE.BufferGeometry[] = [];
+    let baseplateAndSupportsForCSG: THREE.BufferGeometry[] = [];
     
     // Add baseplate
     if (geometryCollection.baseplateGeometry) {
@@ -255,13 +326,33 @@ export async function exportFixture(
     // Add clamp supports
     baseplateAndSupportsForCSG.push(...geometryCollection.clampSupportGeometries);
     
+    // Log initial triangle count
+    const initialTriangles = getTotalTriangleCount(baseplateAndSupportsForCSG);
+    console.log(`[Export] Initial triangle count: ${initialTriangles}`);
+    
+    // Optimize geometries if decimation is enabled
+    if (serviceConfig.targetTriangleCount > 0 && initialTriangles > serviceConfig.targetTriangleCount) {
+      onProgress?.({ 
+        stage: 'decimating', 
+        progress: 2, 
+        message: `Optimizing geometry (${initialTriangles} → ${serviceConfig.targetTriangleCount} triangles)...` 
+      });
+      
+      baseplateAndSupportsForCSG = await optimizeGeometriesForExport(
+        baseplateAndSupportsForCSG,
+        serviceConfig,
+        onProgress
+      );
+    }
+    
     // Final geometries to merge (after CSG union of baseplate+supports)
     const geometriesToMerge: THREE.BufferGeometry[] = [];
     
-    // Perform CSG union on baseplate + supports
+    // Perform CSG union on baseplate + supports (if enabled)
     if (serviceConfig.performCSGUnion && baseplateAndSupportsForCSG.length > 1) {
       const unionResult = await performBaseplateSupportsUnion(
         baseplateAndSupportsForCSG,
+        serviceConfig,
         onProgress
       );
       
@@ -274,6 +365,8 @@ export async function exportFixture(
     } else if (baseplateAndSupportsForCSG.length === 1) {
       geometriesToMerge.push(baseplateAndSupportsForCSG[0]);
     } else if (baseplateAndSupportsForCSG.length > 1) {
+      // CSG union disabled (fast mode) - just add geometries directly
+      console.log('[Export] Skipping CSG union (fast mode)');
       geometriesToMerge.push(...baseplateAndSupportsForCSG);
     }
     
@@ -293,15 +386,15 @@ export async function exportFixture(
     }
     
     // Perform final merge
-    let exportGeometry = performFastMerge(
+    let exportGeometry = await performFastMerge(
       geometriesToMerge,
-      serviceConfig.vertexMergeTolerance,
+      serviceConfig,
       onProgress
     );
     
-    // Fallback to full CSG union if fast merge failed
-    if (!exportGeometry) {
-      exportGeometry = await performFullCSGUnion(geometriesToMerge, onProgress);
+    // Fallback to full CSG union if fast merge failed (only if CSG is enabled)
+    if (!exportGeometry && serviceConfig.performCSGUnion) {
+      exportGeometry = await performFullCSGUnion(geometriesToMerge, serviceConfig, onProgress);
     }
     
     // Last resort: use fallback geometry
@@ -329,7 +422,10 @@ export async function exportFixture(
       exportGeometry.dispose();
     }
     
-    onProgress?.({ stage: 'complete', progress: 100, message: 'Export complete!' });
+    const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
+    console.log(`[Export] Completed in ${totalTime}s (quality: ${serviceConfig.quality})`);
+    
+    onProgress?.({ stage: 'complete', progress: 100, message: `Export complete! (${totalTime}s)` });
     
     return result;
     

@@ -1339,6 +1339,8 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
   }, [setOrbitControlsEnabled]);
 
   // Use the export feature module for fixture export
+  // Export quality can be 'fast' (for tablets), 'balanced', or 'high' (default)
+  // The quality can also be overridden via the export-fixture event detail
   useExport({
     mergedFixtureMesh,
     basePlate,
@@ -1352,6 +1354,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     loadedClampDataRef,
     labelsRef,
     baseTopY,
+    // Default to 'high' quality - can be changed to 'fast' or 'balanced' for low-end devices
+    // or passed via export event: window.dispatchEvent(new CustomEvent('export-fixture', { detail: { config, quality: 'fast' } }))
+    exportQuality: 'high',
   });
 
   // Handle view reset events
