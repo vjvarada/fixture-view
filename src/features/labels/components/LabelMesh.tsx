@@ -23,6 +23,9 @@ const PREVIEW_OPACITY = 0.7;
 const MIN_VALID_DIMENSION = 0.01;
 const OFFSET_CHANGE_THRESHOLD = 0.01;
 
+// Reusable temp vector for useFrame (avoid allocations in render loop)
+const _tempOffset = new THREE.Vector3();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,11 +122,32 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
     return label.text.substring(0, 100);
   }, [label.text]);
 
-  // Memoized values
-  const material = useMemo(() => createLabelMaterial(preview, selected), [preview, selected]);
+  // Memoized values with proper cleanup for material
+  const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  
+  const material = useMemo(() => {
+    // Dispose previous material
+    if (materialRef.current) {
+      materialRef.current.dispose();
+    }
+    const mat = createLabelMaterial(preview, selected);
+    materialRef.current = mat;
+    return mat;
+  }, [preview, selected]);
+
   const position = useMemo(() => toVector3(label.position), [label.position]);
   const rotation = useMemo(() => toEuler(label.rotation), [label.rotation]);
   const fontFile = useMemo(() => getFontFile(label.font ?? 'helvetiker'), [label.font]);
+
+  // Cleanup material on unmount
+  useEffect(() => {
+    return () => {
+      if (materialRef.current) {
+        materialRef.current.dispose();
+        materialRef.current = null;
+      }
+    };
+  }, []);
 
   // Reset bounds tracking when label properties change
   useEffect(() => {
@@ -166,17 +190,18 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
       return;
     }
 
-    // Compute centering offset
+    // Compute centering offset (use temp vector to avoid allocations in render loop)
     const centerX = (box.min.x + box.max.x) / 2;
     const centerY = (box.min.y + box.max.y) / 2;
-    const newOffset = new THREE.Vector3(-centerX, -centerY, 0);
+    _tempOffset.set(-centerX, -centerY, 0);
 
     // Update offset if changed significantly
     const offsetChanged =
-      Math.abs(textOffset.x - newOffset.x) > OFFSET_CHANGE_THRESHOLD ||
-      Math.abs(textOffset.y - newOffset.y) > OFFSET_CHANGE_THRESHOLD;
+      Math.abs(textOffset.x - _tempOffset.x) > OFFSET_CHANGE_THRESHOLD ||
+      Math.abs(textOffset.y - _tempOffset.y) > OFFSET_CHANGE_THRESHOLD;
 
     if (offsetChanged) {
+      setTextOffset(new THREE.Vector3(-centerX, -centerY, 0));
       setTextOffset(newOffset);
     }
 
@@ -206,4 +231,16 @@ const LabelMesh: React.FC<LabelMeshProps> = ({
   );
 };
 
-export default LabelMesh;
+// Memoize LabelMesh to prevent unnecessary re-renders
+const MemoizedLabelMesh = React.memo(LabelMesh, (prevProps, nextProps) => {
+  return (
+    prevProps.label === nextProps.label &&
+    prevProps.preview === nextProps.preview &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.onSelect === nextProps.onSelect &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick &&
+    prevProps.onBoundsComputed === nextProps.onBoundsComputed
+  );
+});
+
+export default MemoizedLabelMesh;

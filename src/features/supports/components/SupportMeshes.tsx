@@ -1,4 +1,4 @@
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useEffect } from 'react';
 import * as THREE from 'three';
 import { ThreeEvent } from '@react-three/fiber';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -1408,18 +1408,48 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
   const bodyHeight = Math.max(0.1, height - effectiveFilletRadius);
   const bodyCenter = effectiveBaseY + effectiveFilletRadius + bodyHeight / 2;
 
-  const mat = React.useMemo(() => materialFor(preview, selected), [preview, selected]);
+  // Track geometries for cleanup
+  const geometriesRef = useRef<THREE.BufferGeometry[]>([]);
+  const materialRef = useRef<THREE.Material | null>(null);
+
+  // Cleanup geometries and material on unmount
+  useEffect(() => {
+    return () => {
+      geometriesRef.current.forEach(geo => geo.dispose());
+      geometriesRef.current = [];
+      if (materialRef.current) {
+        materialRef.current.dispose();
+        materialRef.current = null;
+      }
+    };
+  }, []);
+
+  const mat = React.useMemo(() => {
+    // Dispose previous material if exists
+    if (materialRef.current) {
+      materialRef.current.dispose();
+    }
+    const newMat = materialFor(preview, selected);
+    materialRef.current = newMat;
+    return newMat;
+  }, [preview, selected]);
+
+  // Helper to register a geometry for cleanup
+  const registerGeometry = useCallback(<T extends THREE.BufferGeometry>(geo: T): T => {
+    geometriesRef.current.push(geo);
+    return geo;
+  }, []);
 
   if (type === 'cylindrical') {
     const { radius } = support as any;
-    const geo = React.useMemo(() => new THREE.CylinderGeometry(radius, radius, bodyHeight, 64), [radius, bodyHeight]);
-    const filletGeo = React.useMemo(() => createCylindricalFilletGeometry(radius, effectiveFilletRadius, FILLET_SEGMENTS), [radius, effectiveFilletRadius]);
+    const geo = React.useMemo(() => registerGeometry(new THREE.CylinderGeometry(radius, radius, bodyHeight, 64)), [radius, bodyHeight, registerGeometry]);
+    const filletGeo = React.useMemo(() => registerGeometry(createCylindricalFilletGeometry(radius, effectiveFilletRadius, FILLET_SEGMENTS)), [radius, effectiveFilletRadius, registerGeometry]);
     const bottomCapGeo = React.useMemo(() => {
       const outerRadius = radius + effectiveFilletRadius;
       const cap = new THREE.CircleGeometry(outerRadius, 64);
       cap.rotateX(Math.PI / 2); // Face downward
-      return cap;
-    }, [radius, effectiveFilletRadius]);
+      return registerGeometry(cap);
+    }, [radius, effectiveFilletRadius, registerGeometry]);
     
     return (
       <group onClick={handleClick}>
@@ -1434,7 +1464,7 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
 
   if (type === 'rectangular') {
     const { width, depth, cornerRadius = 0 } = support as any;
-    const filletGeo = React.useMemo(() => createRectangularFilletGeometry(width, depth, cornerRadius, effectiveFilletRadius, FILLET_SEGMENTS), [width, depth, cornerRadius, effectiveFilletRadius]);
+    const filletGeo = React.useMemo(() => registerGeometry(createRectangularFilletGeometry(width, depth, cornerRadius, effectiveFilletRadius, FILLET_SEGMENTS)), [width, depth, cornerRadius, effectiveFilletRadius, registerGeometry]);
     
     // Bottom cap geometry
     const bottomCapGeo = React.useMemo(() => {
@@ -1445,7 +1475,7 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
       if (capCornerRadius <= 0.01) {
         const cap = new THREE.PlaneGeometry(capWidth, capDepth);
         cap.rotateX(Math.PI / 2); // Face downward
-        return cap;
+        return registerGeometry(cap);
       } else {
         const hw = capWidth / 2;
         const hd = capDepth / 2;
@@ -1462,12 +1492,12 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
         shape.quadraticCurveTo(-hw, -hd, -hw + r, -hd);
         const cap = new THREE.ShapeGeometry(shape, 32);
         cap.rotateX(Math.PI / 2); // Face downward
-        return cap;
+        return registerGeometry(cap);
       }
-    }, [width, depth, cornerRadius, effectiveFilletRadius]);
+    }, [width, depth, cornerRadius, effectiveFilletRadius, registerGeometry]);
     
     if (cornerRadius <= 0) {
-      const geo = React.useMemo(() => new THREE.BoxGeometry(width, bodyHeight, depth), [width, bodyHeight, depth]);
+      const geo = React.useMemo(() => registerGeometry(new THREE.BoxGeometry(width, bodyHeight, depth)), [width, bodyHeight, depth, registerGeometry]);
       return (
         <group onClick={handleClick}>
           <mesh geometry={bottomCapGeo} position={[center.x, effectiveBaseY, center.y]} rotation={[0, rotY, 0]} material={mat} />
@@ -1496,8 +1526,8 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
       const e = new THREE.ExtrudeGeometry(s, { depth: bodyHeight, bevelEnabled: false, curveSegments: 64 });
       e.rotateX(-Math.PI / 2);
       // Extrude upward (positive Y direction)
-      return e;
-    }, [width, depth, cornerRadius, bodyHeight]);
+      return registerGeometry(e);
+    }, [width, depth, cornerRadius, bodyHeight, registerGeometry]);
     
     return (
       <group onClick={handleClick}>
@@ -1539,14 +1569,14 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     const conicalBodyCenter = effectiveBaseY + conicalFilletTopY + conicalBodyHeight / 2;
     
     // The cone geometry: bottom radius should match where the fillet ends
-    const geo = React.useMemo(() => new THREE.CylinderGeometry(topRadius, filletTopRadius, conicalBodyHeight, 64), [topRadius, filletTopRadius, conicalBodyHeight]);
-    const filletGeo = React.useMemo(() => createConicalFilletGeometry(baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius, FILLET_SEGMENTS), [baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius]);
+    const geo = React.useMemo(() => registerGeometry(new THREE.CylinderGeometry(topRadius, filletTopRadius, conicalBodyHeight, 64)), [topRadius, filletTopRadius, conicalBodyHeight, registerGeometry]);
+    const filletGeo = React.useMemo(() => registerGeometry(createConicalFilletGeometry(baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius, FILLET_SEGMENTS)), [baseRadius, topRadius, conicalBodyHeight, effectiveFilletRadius, registerGeometry]);
     const bottomCapGeo = React.useMemo(() => {
       const outerRadius = baseRadius + effectiveFilletRadius;
       const cap = new THREE.CircleGeometry(outerRadius, 64);
       cap.rotateX(Math.PI / 2); // Face downward
-      return cap;
-    }, [baseRadius, effectiveFilletRadius]);
+      return registerGeometry(cap);
+    }, [baseRadius, effectiveFilletRadius, registerGeometry]);
     
     return (
       <group onClick={handleClick}>
@@ -1593,17 +1623,17 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
     }, [validPolygon, cornerRadius]);
     
     const filletGeo = React.useMemo(() => {
-      if (!validPolygon) return new THREE.BufferGeometry();
-      return createPolygonFilletGeometry(validPolygon, safeCornerRadius, effectiveFilletRadius, FILLET_SEGMENTS);
-    }, [validPolygon, safeCornerRadius, effectiveFilletRadius]);
+      if (!validPolygon) return registerGeometry(new THREE.BufferGeometry());
+      return registerGeometry(createPolygonFilletGeometry(validPolygon, safeCornerRadius, effectiveFilletRadius, FILLET_SEGMENTS));
+    }, [validPolygon, safeCornerRadius, effectiveFilletRadius, registerGeometry]);
     
     const bottomCapGeo = React.useMemo(() => {
-      if (!validPolygon) return new THREE.BufferGeometry();
-      return createBottomCapGeometry('custom', { polygon: validPolygon, cornerRadius: safeCornerRadius }, effectiveFilletRadius);
-    }, [validPolygon, safeCornerRadius, effectiveFilletRadius]);
+      if (!validPolygon) return registerGeometry(new THREE.BufferGeometry());
+      return registerGeometry(createBottomCapGeometry('custom', { polygon: validPolygon, cornerRadius: safeCornerRadius }, effectiveFilletRadius));
+    }, [validPolygon, safeCornerRadius, effectiveFilletRadius, registerGeometry]);
     
     const geo = React.useMemo(() => {
-      if (!validPolygon) return new THREE.BufferGeometry();
+      if (!validPolygon) return registerGeometry(new THREE.BufferGeometry());
       
       const shape = new THREE.Shape();
       const n = validPolygon.length;
@@ -1677,8 +1707,8 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
       const e = new THREE.ExtrudeGeometry(shape, { depth: bodyHeight, bevelEnabled: false, curveSegments: 64 });
       e.rotateX(-Math.PI / 2);
       // Extrude upward (positive Y direction)
-      return e;
-    }, [validPolygon, safeCornerRadius, bodyHeight]);
+      return registerGeometry(e);
+    }, [validPolygon, safeCornerRadius, bodyHeight, registerGeometry]);
     
     return (
       <group onClick={handleClick}>
@@ -1694,4 +1724,16 @@ const SupportMesh: React.FC<SupportMeshProps> = ({ support, preview, baseTopY = 
   return null;
 };
 
-export default SupportMesh;
+// Memoize SupportMesh to prevent unnecessary re-renders when other supports change
+const MemoizedSupportMesh = React.memo(SupportMesh, (prevProps, nextProps) => {
+  // Only re-render if this support's data changed
+  return (
+    prevProps.support === nextProps.support &&
+    prevProps.preview === nextProps.preview &&
+    prevProps.baseTopY === nextProps.baseTopY &&
+    prevProps.selected === nextProps.selected &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick
+  );
+});
+
+export default MemoizedSupportMesh;
