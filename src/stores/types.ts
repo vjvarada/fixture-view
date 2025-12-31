@@ -128,13 +128,8 @@ export interface BaseplateConfig {
   sections: BaseplateSection[];
 }
 
-/** Cavity settings */
-export interface CavitySettings {
-  clearance: number;
-  useConvexHull: boolean;
-  smoothing: number;
-  resolution: number;
-}
+// CavitySettings imported from @rapidtool/cad-core
+export type { CavitySettings } from '@rapidtool/cad-core';
 
 /** Workflow steps for fixture design */
 export type FixtureWorkflowStep = 

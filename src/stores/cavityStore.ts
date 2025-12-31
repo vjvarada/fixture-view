@@ -7,14 +7,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { CavitySettings } from './types';
-
-const DEFAULT_CAVITY_SETTINGS: CavitySettings = {
-  clearance: 0.5,
-  useConvexHull: false,
-  smoothing: 0,
-  resolution: 64,
-};
+import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@rapidtool/cad-core';
 
 export interface CavityState {
   /** Cavity settings */
@@ -37,8 +30,11 @@ export interface CavityState {
 }
 
 export interface CavityActions {
-  /** Update cavity settings */
-  setSettings: (settings: Partial<CavitySettings>) => void;
+  /** Update cavity settings (full replacement) */
+  setSettings: (settings: CavitySettings) => void;
+  
+  /** Update cavity settings (partial update) */
+  updateSettings: (settings: Partial<CavitySettings>) => void;
   
   /** Set processing state */
   setProcessing: (isProcessing: boolean) => void;
@@ -76,6 +72,12 @@ export const useCavityStore = create<CavityStore>()(
       ...INITIAL_STATE,
 
       setSettings: (settings) => {
+        set((state) => {
+          state.settings = settings;
+        });
+      },
+      
+      updateSettings: (settings) => {
         set((state) => {
           Object.assign(state.settings, settings);
         });
