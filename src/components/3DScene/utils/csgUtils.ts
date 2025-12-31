@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { LabelConfig } from '@/features/labels';
+import { ensureClockwiseWindingXZ, computeEdgeNormal } from '@/features/supports/utils/polygonUtils';
 
 // =============================================================================
 // Clamp Support Geometry Constants
@@ -71,6 +72,7 @@ function removeBottomCapFaces(
 
 /**
  * Create bottom cap geometry for a polygon support at Y=0
+ * Uses CW polygon directly (no reverse) to match body geometry.
  */
 function createClampBottomCapGeometry(
   polygon: Array<[number, number]>,
@@ -79,22 +81,12 @@ function createClampBottomCapGeometry(
 ): THREE.BufferGeometry | null {
   if (!polygon || polygon.length < 3) return null;
 
-  const workingPolygon: [number, number][] = [...polygon].reverse();
-  
-  let signedArea = 0;
-  for (let i = 0; i < workingPolygon.length; i++) {
-    const [x1, z1] = workingPolygon[i];
-    const [x2, z2] = workingPolygon[(i + 1) % workingPolygon.length];
-    signedArea += (x2 - x1) * (z2 + z1);
-  }
-  const isCW = signedArea > 0;
+  // CRITICAL: Use SAME polygon ordering as body (CW, no reverse)
+  const workingPolygon = ensureClockwiseWindingXZ(polygon);
+  const isCW = true;  // We've normalized to CW
 
   const getEdgeNormal = (p1: [number, number], p2: [number, number]): [number, number] => {
-    const dx = p2[0] - p1[0];
-    const dz = p2[1] - p1[1];
-    const len = Math.sqrt(dx * dx + dz * dz);
-    if (len < 0.01) return [0, 0];
-    return isCW ? [-dz / len, dx / len] : [dz / len, -dx / len];
+    return computeEdgeNormal(p1, p2, isCW);
   };
 
   const n = workingPolygon.length;
@@ -204,6 +196,8 @@ function createClampBottomCapGeometry(
   positions.push(centroidX, 0, centroidZ);
   for (const [x, z] of perimeterPoints) positions.push(x, 0, z);
 
+  // Face winding for CW polygon looking down (-Y normal):
+  // Use (0, next+1, i+1) for downward-facing faces
   for (let i = 0; i < perimeterPoints.length; i++) {
     const next = (i + 1) % perimeterPoints.length;
     indices.push(0, next + 1, i + 1);
@@ -229,22 +223,13 @@ function createClampFilletGeometry(
 
   const positions: number[] = [];
   const indices: number[] = [];
-  const workingPolygon: [number, number][] = [...polygon].reverse();
-
-  let signedArea = 0;
-  for (let i = 0; i < workingPolygon.length; i++) {
-    const [x1, z1] = workingPolygon[i];
-    const [x2, z2] = workingPolygon[(i + 1) % workingPolygon.length];
-    signedArea += (x2 - x1) * (z2 + z1);
-  }
-  const isCW = signedArea > 0;
+  
+  // CRITICAL: Use SAME polygon ordering as body (CW, no reverse)
+  const workingPolygon = ensureClockwiseWindingXZ(polygon);
+  const isCW = true;  // We've normalized to CW
 
   const getEdgeNormal = (p1: [number, number], p2: [number, number]): [number, number] => {
-    const dx = p2[0] - p1[0];
-    const dz = p2[1] - p1[1];
-    const len = Math.sqrt(dx * dx + dz * dz);
-    if (len < 0.01) return [0, 0];
-    return isCW ? [-dz / len, dx / len] : [dz / len, -dx / len];
+    return computeEdgeNormal(p1, p2, isCW);
   };
 
   const addEdgeFillet = (x1: number, z1: number, x2: number, z2: number, nx: number, nz: number) => {

@@ -5,7 +5,8 @@ import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferG
 import { AnySupport } from '../types';
 import { 
   computeEdgeNormal,
-  ensureClockwiseWindingXZ 
+  ensureClockwiseWindingXZ,
+  validateAndPreparePolygon
 } from '../utils/polygonUtils';
 
 interface SupportMeshProps {
@@ -894,13 +895,12 @@ const createBottomCapGeometry = (
     }
     
     // Fan triangulation - normal should point downward (-Y)
-    // The custom polygon fillet uses opposite winding to other fillets (due to reverse()),
-    // so the cap also needs opposite winding to match.
-    // Use (0, next+1, i+1) instead of (0, i+1, next+1) to flip the normal direction.
+    // For CW polygon, reverse the winding to get downward-facing normal (-Y).
+    // Use (0, next+1, i+1) for correct downward-facing faces.
     for (let i = 0; i < perimeterPoints.length; i++) {
       const next = (i + 1) % perimeterPoints.length;
       // Center is at index 0, vertices start at index 1
-      // Reversed winding for downward normal matching the fillet's winding convention
+      // Reversed fan winding for downward-facing normal
       indices.push(0, next + 1, i + 1);
     }
     
@@ -1207,13 +1207,18 @@ export function buildFullSupportGeometry(support: AnySupport, baseTopY: number =
     const { polygon, cornerRadius = 0 } = support as any;
     if (!polygon || polygon.length < 3) return null;
     
-    // Normalize polygon to CW for the body shape.
-    // Both createPolygonFilletGeometry and createBottomCapGeometry now normalize internally,
-    // but we still need the normalized polygon for the body extrusion.
-    const normalizedPolygon = ensureClockwiseWindingXZ(polygon);
+    // Validate and normalize polygon - removes duplicates, checks for self-intersection
+    const validatedPolygon = validateAndPreparePolygon(polygon);
+    if (!validatedPolygon || validatedPolygon.length < 3) {
+      console.warn('[buildFullSupportGeometry] Custom support has invalid polygon');
+      return null;
+    }
     
-    // Create fillet geometry - normalizes internally for robustness
-    filletGeo = createPolygonFilletGeometry(polygon, cornerRadius, effectiveFilletRadius, FILLET_SEGMENTS);
+    // The validated polygon is already normalized to CW
+    const normalizedPolygon = validatedPolygon;
+    
+    // Create fillet geometry - uses same CW polygon for consistent corners
+    filletGeo = createPolygonFilletGeometry(normalizedPolygon, cornerRadius, effectiveFilletRadius, FILLET_SEGMENTS);
     
     // Build the custom shape for the body
     // Apply [x, -y] transform which flips winding: CW in XZ → CCW in Shape's XY

@@ -316,8 +316,8 @@ function createCutoutsGeometryAtOrigin(
 
 /**
  * Create bottom cap geometry for a polygon support
- * This creates a flat cap at Y=0 that matches the fillet's outer perimeter
- * Based on SupportMeshes.tsx createBottomCapGeometry for 'custom' type
+ * This creates a flat cap at Y=0 that matches the fillet's outer perimeter.
+ * CRITICAL: Uses SAME polygon ordering as body and fillet (CW, no reversal).
  */
 function createBottomCapGeometry(
   polygon: Array<[number, number]>,
@@ -326,29 +326,13 @@ function createBottomCapGeometry(
 ): THREE.BufferGeometry | null {
   if (!polygon || polygon.length < 3) return null;
 
-  // Reverse polygon to match fillet's winding
-  const workingPolygon: [number, number][] = [...polygon].reverse();
+  // CRITICAL: Use SAME polygon ordering as body/fillet (CW, no reversal)
+  const workingPolygon = ensureClockwiseWindingXZ(polygon);
+  const isCW = true;  // We've normalized to CW
 
-  // Determine winding direction
-  let signedArea = 0;
-  for (let i = 0; i < workingPolygon.length; i++) {
-    const [x1, z1] = workingPolygon[i];
-    const [x2, z2] = workingPolygon[(i + 1) % workingPolygon.length];
-    signedArea += (x2 - x1) * (z2 + z1);
-  }
-  const isCW = signedArea > 0;
-
-  // Compute edge normals
+  // Use shared utility for computing edge normals
   const getEdgeNormal = (p1: [number, number], p2: [number, number]): [number, number] => {
-    const dx = p2[0] - p1[0];
-    const dz = p2[1] - p1[1];
-    const len = Math.sqrt(dx * dx + dz * dz);
-    if (len < 0.01) return [0, 0];
-    if (isCW) {
-      return [-dz / len, dx / len];
-    } else {
-      return [dz / len, -dx / len];
-    }
+    return computeEdgeNormal(p1, p2, isCW);
   };
 
   const n = workingPolygon.length;
@@ -489,7 +473,8 @@ function createBottomCapGeometry(
     positions.push(x, 0, z);
   }
 
-  // Fan triangulation with reversed winding for downward normal
+  // Face winding for CW polygon looking down (-Y normal):
+  // Use (0, next+1, i+1) for downward-facing faces
   for (let i = 0; i < perimeterPoints.length; i++) {
     const next = (i + 1) % perimeterPoints.length;
     indices.push(0, next + 1, i + 1);

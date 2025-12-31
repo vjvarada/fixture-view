@@ -42,4 +42,7 @@ export {
   ensureClockwiseWindingXZ,
   preparePolygonForGeometry,
   computeEdgeNormal,
+  isPolygonSimple,
+  simplifyPolygonVertices,
+  validateAndPreparePolygon,
 } from './utils/polygonUtils';
