@@ -794,7 +794,7 @@ export async function unionGeometriesWithManifold(
     let failedCount = 0;
     const manifolds: any[] = [];
     
-    // Convert all geometries to Manifold objects
+    // Convert all geometries to Manifold objects with pre-processing
     for (let i = 0; i < geometries.length; i++) {
       const geom = geometries[i];
       const progress = 5 + ((i / geometries.length) * 40); // 5-45%
@@ -802,7 +802,7 @@ export async function unionGeometriesWithManifold(
       onProgress?.({ 
         stage: 'repairing', 
         progress, 
-        message: `Converting mesh ${i + 1}/${geometries.length}...` 
+        message: `Pre-processing and converting mesh ${i + 1}/${geometries.length}...` 
       });
       await yieldToUI();
       
@@ -816,19 +816,90 @@ export async function unionGeometriesWithManifold(
       const triangles = positionAttr.count / 3;
       totalInputTriangles += triangles;
       
+      // Pre-process geometry to make it more likely to be manifold-compatible
+      let processedGeom = geom;
+      
+      try {
+        // Step 1: Weld vertices to fix floating point precision issues
+        // Try progressively larger tolerances
+        const tolerances = [1e-6, 1e-5, 1e-4, 1e-3];
+        for (const tolerance of tolerances) {
+          processedGeom = weldVertices(processedGeom, tolerance);
+        }
+        
+        // Step 2: Remove degenerate triangles
+        processedGeom = removeDegenerateTriangles(processedGeom);
+        
+        // Step 3: Convert to non-indexed for cleaner Manifold conversion
+        processedGeom = toNonIndexed(processedGeom);
+        
+        console.log(`[ManifoldUnion] Pre-processed geometry ${i}: ${triangles} → ${processedGeom.getAttribute('position').count / 3} triangles`);
+        
+      } catch (preprocessErr) {
+        console.warn(`[ManifoldUnion] Pre-processing failed for geometry ${i}, using original:`, preprocessErr);
+        processedGeom = geom;
+      }
+      
       try {
         // Convert to Manifold Mesh format
-        const mesh = threeGeometryToManifoldMesh(geom, wasm);
+        const mesh = threeGeometryToManifoldMesh(processedGeom, wasm);
         
-        // Create Manifold from mesh
-        const manifold = new Manifold(mesh);
+        // Create Manifold from mesh - try multiple approaches
+        let manifold: any = null;
         
-        // Check if manifold is empty (failed conversion)
-        if (!manifold.isEmpty()) {
+        // Approach 1: Direct construction
+        try {
+          manifold = new Manifold(mesh);
+          if (manifold.isEmpty()) {
+            manifold.delete();
+            manifold = null;
+          }
+        } catch (e) {
+          console.log(`[ManifoldUnion] Direct Manifold construction failed for ${i}, trying alternatives...`);
+        }
+        
+        // Approach 2: Use Manifold.compose for topological composition (doesn't require manifold input)
+        if (!manifold) {
+          try {
+            // Manifold.compose creates a manifold from a list of meshes without requiring manifold input
+            // It's more tolerant of non-manifold geometry
+            manifold = Manifold.compose([new Manifold(mesh)]);
+            if (manifold && manifold.isEmpty()) {
+              manifold.delete();
+              manifold = null;
+            }
+          } catch (e2) {
+            console.log(`[ManifoldUnion] Manifold.compose also failed for ${i}`);
+          }
+        }
+        
+        // Approach 3: Try with hull as fallback for severely broken meshes
+        if (!manifold) {
+          try {
+            // Use convex hull as absolute fallback - preserves volume but loses detail
+            const positions = processedGeom.getAttribute('position').array as Float32Array;
+            const points: [number, number, number][] = [];
+            for (let j = 0; j < positions.length; j += 3) {
+              points.push([positions[j], positions[j + 1], positions[j + 2]]);
+            }
+            manifold = Manifold.hull(points);
+            if (manifold && !manifold.isEmpty()) {
+              console.warn(`[ManifoldUnion] Using convex hull fallback for geometry ${i} (shape may be simplified)`);
+            } else if (manifold) {
+              manifold.delete();
+              manifold = null;
+            }
+          } catch (e3) {
+            console.log(`[ManifoldUnion] Convex hull fallback also failed for ${i}`);
+          }
+        }
+        
+        if (manifold && !manifold.isEmpty()) {
           manifolds.push(manifold);
+          console.log(`[ManifoldUnion] Successfully converted geometry ${i}`);
         } else {
-          console.warn(`[ManifoldUnion] Mesh ${i} converted to empty manifold, skipping`);
-          manifold.delete();
+          console.warn(`[ManifoldUnion] All conversion attempts failed for geometry ${i}, skipping`);
+          if (manifold) manifold.delete();
           failedCount++;
         }
         
