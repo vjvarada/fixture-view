@@ -483,7 +483,7 @@ export function performRealCSGUnionInWorker(
       return;
     }
     
-    // Send message to worker - use the NEW 'csg-union-batch' type for real CSG union
+    // Send message to worker - use the 'csg-union-batch' type for real CSG union
     worker.postMessage(
       {
         type: 'csg-union-batch',
