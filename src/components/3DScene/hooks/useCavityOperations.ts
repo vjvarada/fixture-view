@@ -533,14 +533,17 @@ export function useCavityOperations({
             // === REGULAR BASEPLATE WITHOUT HOLES ===
             basePlateMeshRef.current.updateMatrixWorld(true);
             baseplateGeometry = basePlateMeshRef.current.geometry.clone();
-            baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
             
-            // Cache the baseplate geometry for export (since BasePlate component will be hidden after cavity)
-            // This is needed when there are no holes, so originalBaseplateGeoRef would otherwise be null
+            // Cache the baseplate geometry for export BEFORE applying world transform
+            // This ensures originalBaseplateGeoRef is always in LOCAL space (consistent with useHoleCSG)
+            // The export code will apply basePlate.position to convert to world space
             if (!originalBaseplateGeoRef.current) {
               originalBaseplateGeoRef.current = baseplateGeometry.clone();
-              console.log('[useCavityOperations] Cached baseplate geometry for export');
+              console.log('[useCavityOperations] Cached baseplate geometry for export (LOCAL space)');
             }
+            
+            // Now apply world transform for cavity CSG operations
+            baseplateGeometry.applyMatrix4(basePlateMeshRef.current.matrixWorld);
             console.log('[useCavityOperations] Using original baseplate geometry');
           }
           

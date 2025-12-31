@@ -16,6 +16,7 @@ import {
   downloadFile,
   generateExportFilename,
   performRealCSGUnionInWorker,
+  repairMeshForExport,
   type ExportConfig,
 } from '@rapidtool/cad-core';
 import type { 
@@ -174,6 +175,58 @@ async function performFastMerge(
   }
   
   return null;
+}
+
+/**
+ * Performs final mesh repair and manifold conversion before export
+ * This step fills small holes and ensures mesh is watertight for 3D printing
+ */
+async function performFinalMeshRepair(
+  geometry: THREE.BufferGeometry,
+  config: ExportServiceConfig,
+  onProgress?: ExportProgressCallback
+): Promise<THREE.BufferGeometry> {
+  console.log('[Export] Performing final mesh repair and manifold conversion...');
+  onProgress?.({ stage: 'manifold', progress: 85, message: 'Repairing mesh and filling holes...' });
+  
+  // Yield before heavy operation
+  if (config.useChunkedProcessing) {
+    await yieldToMain();
+  }
+  
+  try {
+    const repairResult = await repairMeshForExport(geometry, (progress) => {
+      // Map repair progress to 85-94%
+      const mappedProgress = 85 + (progress.progress * 0.09);
+      onProgress?.({ 
+        stage: 'manifold', 
+        progress: mappedProgress, 
+        message: progress.message 
+      });
+    });
+    
+    if (repairResult.success && repairResult.geometry) {
+      console.log(`[Export] Mesh repair succeeded:`, {
+        originalTriangles: repairResult.originalTriangles,
+        finalTriangles: repairResult.finalTriangles,
+        isManifold: repairResult.isManifold,
+        steps: repairResult.repairSteps
+      });
+      
+      // Dispose old geometry if we have a new one
+      if (repairResult.geometry !== geometry) {
+        geometry.dispose();
+      }
+      
+      return repairResult.geometry;
+    } else {
+      console.warn('[Export] Mesh repair failed, using original geometry:', repairResult.error);
+      return geometry;
+    }
+  } catch (error) {
+    console.error('[Export] Mesh repair error:', error);
+    return geometry;
+  }
 }
 
 /**
@@ -342,13 +395,21 @@ async function exportSeparateSections(
     
     onProgress?.({ 
       stage: 'manifold', 
-      progress: 10 + ((i / sections.length) * 70), 
+      progress: 10 + ((i / sections.length) * 60), 
       message: `Processing section ${sectionNumber}/${sections.length}...` 
     });
     
     try {
       // Process this section's geometry
-      const sectionGeometry = await processSectionExport(section, config, serviceConfig, onProgress);
+      let sectionGeometry = await processSectionExport(section, config, serviceConfig, onProgress);
+      
+      // Repair mesh for this section (hole filling + manifold)
+      onProgress?.({ 
+        stage: 'manifold', 
+        progress: 70 + ((i / sections.length) * 15), 
+        message: `Repairing section ${sectionNumber}...` 
+      });
+      sectionGeometry = await performFinalMeshRepair(sectionGeometry, serviceConfig, onProgress);
       
       // Generate filename for this section
       const filename = generateExportFilename({
@@ -525,6 +586,10 @@ export async function exportFixture(
         return { success: false, error: 'Failed to create export geometry' };
       }
     }
+    
+    // Perform final mesh repair (hole filling + manifold conversion) before export
+    // This ensures the mesh is watertight and suitable for 3D printing
+    exportGeometry = await performFinalMeshRepair(exportGeometry, serviceConfig, onProgress);
     
     // Generate STL file(s)
     const result = generateSTLFiles(

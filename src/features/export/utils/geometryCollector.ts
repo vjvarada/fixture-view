@@ -126,6 +126,9 @@ export function createMultiSectionGeometriesFromConfig(
 /**
  * Creates baseplate geometry from config when refs are not available.
  * Note: This only works for single baseplates, not multi-section.
+ * 
+ * IMPORTANT: This creates geometry in LOCAL SPACE (centered at origin).
+ * The caller must apply basePlate.position to transform to world space.
  */
 export function createBaseplateGeometryFromConfig(
   config: BasePlateConfig
@@ -141,11 +144,9 @@ export function createBaseplateGeometryFromConfig(
     const depth = config.depth ?? 10;
     const height = config.height ?? 200;
     
-    // Get baseplate position (world space center)
-    const posX = config.position?.x ?? 0;
-    const posZ = config.position?.z ?? 0;
-    
     // Create a rounded rectangle shape similar to BasePlate component
+    // Note: Geometry is created centered at origin (local space)
+    // Position will be applied by caller using basePlate.position
     const cornerRadiusFactor = 0.08;
     const cornerRadius = Math.min(width, height) * cornerRadiusFactor;
     const shape = new THREE.Shape();
@@ -180,13 +181,13 @@ export function createBaseplateGeometryFromConfig(
     geometry.rotateX(-Math.PI / 2);
     geometry.translate(0, chamferSize, 0);
     
-    // Apply baseplate world position (X and Z offset from center)
-    geometry.translate(posX, 0, posZ);
+    // NOTE: Do NOT apply position here - caller will apply basePlate.position
+    // This keeps the function consistent with other geometry sources
     
     geometry.computeBoundingBox();
     geometry.computeVertexNormals();
     
-    console.log('[Export] Created baseplate geometry from config:', { width, height, depth, posX, posZ });
+    console.log('[Export] Created baseplate geometry from config (local space):', { width, height, depth });
     return geometry;
   } catch (err) {
     console.error('[Export] Failed to create baseplate geometry from config:', err);
@@ -331,11 +332,39 @@ export function collectBaseplateGeometry(
       max: { x: afterBox.max.x.toFixed(2), y: afterBox.max.y.toFixed(2), z: afterBox.max.z.toFixed(2) }
     });
   } else if (ctx.basePlateMeshRef.current?.geometry) {
-    console.log('[Export] Using baseplate geometry from ref');
+    // Baseplate mesh is still mounted - use its geometry with world transform
+    console.log('[Export] Using baseplate geometry from ref (no holes)');
     geometry = ctx.basePlateMeshRef.current.geometry.clone();
     ctx.basePlateMeshRef.current.updateMatrixWorld(true);
-    geometry.applyMatrix4(ctx.basePlateMeshRef.current.matrixWorld);
+    
+    // Debug: Log geometry bounds before transform
+    geometry.computeBoundingBox();
+    const beforeBox = geometry.boundingBox!;
+    const beforeCenter = new THREE.Vector3();
+    beforeBox.getCenter(beforeCenter);
+    console.log('[Export] Baseplate geometry BEFORE transform:', {
+      center: { x: beforeCenter.x.toFixed(2), y: beforeCenter.y.toFixed(2), z: beforeCenter.z.toFixed(2) },
+      min: { x: beforeBox.min.x.toFixed(2), y: beforeBox.min.y.toFixed(2), z: beforeBox.min.z.toFixed(2) },
+      max: { x: beforeBox.max.x.toFixed(2), y: beforeBox.max.y.toFixed(2), z: beforeBox.max.z.toFixed(2) }
+    });
+    
+    const matrixWorld = ctx.basePlateMeshRef.current.matrixWorld;
+    const pos = new THREE.Vector3();
+    pos.setFromMatrixPosition(matrixWorld);
+    console.log('[Export] Applying matrixWorld from mesh ref, position:', { x: pos.x.toFixed(2), y: pos.y.toFixed(2), z: pos.z.toFixed(2) });
+    geometry.applyMatrix4(matrixWorld);
     console.log('[Export] Applied baseplate mesh matrixWorld to geometry from ref');
+    
+    // Debug: Log geometry bounds after transform
+    geometry.computeBoundingBox();
+    const afterBox = geometry.boundingBox!;
+    const afterCenter = new THREE.Vector3();
+    afterBox.getCenter(afterCenter);
+    console.log('[Export] Baseplate geometry AFTER transform:', {
+      center: { x: afterCenter.x.toFixed(2), y: afterCenter.y.toFixed(2), z: afterCenter.z.toFixed(2) },
+      min: { x: afterBox.min.x.toFixed(2), y: afterBox.min.y.toFixed(2), z: afterBox.max.z.toFixed(2) },
+      max: { x: afterBox.max.x.toFixed(2), y: afterBox.max.y.toFixed(2), z: afterBox.max.z.toFixed(2) }
+    });
   } else if (ctx.originalBaseplateGeoRef.current) {
     // originalBaseplateGeoRef is cached from useHoleCSG (local space with geometry offset)
     // Need to apply mesh position to convert to world space
@@ -351,8 +380,43 @@ export function collectBaseplateGeometry(
     }
   } else if (ctx.basePlate) {
     // Fallback: create from config - this is in local/origin space
-    console.log('[Export] Creating baseplate geometry from config');
+    // MUST apply basePlate.position to convert to world space
+    console.log('[Export] Creating baseplate geometry from config (fallback)');
     geometry = createBaseplateGeometryFromConfig(ctx.basePlate);
+    
+    // Apply mesh position transform to convert from local to world space
+    if (ctx.basePlate.position) {
+      const pos = ctx.basePlate.position;
+      
+      // Debug: Log geometry bounds before transform
+      geometry.computeBoundingBox();
+      const beforeBox = geometry.boundingBox!;
+      const beforeCenter = new THREE.Vector3();
+      beforeBox.getCenter(beforeCenter);
+      console.log('[Export] Baseplate geometry BEFORE transform:', {
+        center: { x: beforeCenter.x.toFixed(2), y: beforeCenter.y.toFixed(2), z: beforeCenter.z.toFixed(2) },
+        min: { x: beforeBox.min.x.toFixed(2), y: beforeBox.min.y.toFixed(2), z: beforeBox.min.z.toFixed(2) },
+        max: { x: beforeBox.max.x.toFixed(2), y: beforeBox.max.y.toFixed(2), z: beforeBox.max.z.toFixed(2) }
+      });
+      
+      console.log('[Export] Applying basePlate.position to config-created geometry:', { x: pos.x, y: pos.y, z: pos.z });
+      const positionMatrix = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
+      geometry.applyMatrix4(positionMatrix);
+      console.log('[Export] Applied basePlate.position transform to config-created geometry');
+      
+      // Debug: Log geometry bounds after transform
+      geometry.computeBoundingBox();
+      const afterBox = geometry.boundingBox!;
+      const afterCenter = new THREE.Vector3();
+      afterBox.getCenter(afterCenter);
+      console.log('[Export] Baseplate geometry AFTER transform:', {
+        center: { x: afterCenter.x.toFixed(2), y: afterCenter.y.toFixed(2), z: afterCenter.z.toFixed(2) },
+        min: { x: afterBox.min.x.toFixed(2), y: afterBox.min.y.toFixed(2), z: afterBox.min.z.toFixed(2) },
+        max: { x: afterBox.max.x.toFixed(2), y: afterBox.max.y.toFixed(2), z: afterBox.max.z.toFixed(2) }
+      });
+    } else {
+      console.warn('[Export] No basePlate.position available for config-created geometry!');
+    }
   }
   
   return { geometry, isMultiSection, multiSectionGeometries, sectionData };
