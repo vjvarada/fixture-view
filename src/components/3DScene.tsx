@@ -1371,9 +1371,9 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
     loadedClampDataRef,
     labelsRef,
     baseTopY,
-    // Default to 'high' quality - can be changed to 'fast' or 'balanced' for low-end devices
-    // or passed via export event: window.dispatchEvent(new CustomEvent('export-fixture', { detail: { config, quality: 'fast' } }))
-    exportQuality: 'high',
+    // Default to 'balanced' quality - can be overridden via export event
+    // User can select quality in the export dialog
+    exportQuality: 'balanced',
   });
 
   // Handle view reset events

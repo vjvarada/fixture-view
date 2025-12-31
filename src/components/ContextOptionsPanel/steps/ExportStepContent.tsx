@@ -16,7 +16,10 @@ import {
   Settings2,
   AlertTriangle,
   Loader2,
-  Cog
+  Cog,
+  Zap,
+  Scale,
+  Sparkles
 } from 'lucide-react';
 import {
   Dialog,
@@ -27,6 +30,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { ExportFormat, ExportConfig, ExportResult } from '@rapidtool/cad-core';
+import type { ExportQuality } from '@/features/export/types';
 
 interface ExportProgressState {
   stage: string;
@@ -79,6 +83,7 @@ const ExportStepContent: React.FC<ExportStepContentProps> = ({
   const [format, setFormat] = useState<ExportFormat>('stl');
   const [binary, setBinary] = useState(true);
   const [splitParts, setSplitParts] = useState(true); // Default to split for multi-section
+  const [exportQuality, setExportQuality] = useState<ExportQuality>('balanced');
   const [showFilenameDialog, setShowFilenameDialog] = useState(false);
   const [filename, setFilename] = useState('Fixture');
   const [filenameError, setFilenameError] = useState<string | null>(null);
@@ -158,6 +163,7 @@ const ExportStepContent: React.FC<ExportStepContentProps> = ({
       format,
       splitParts: isMultiSection ? splitParts : false,
       options: format === 'stl' ? { binary } : undefined,
+      quality: exportQuality,
     };
 
     onExport?.(config);
@@ -324,6 +330,71 @@ const ExportStepContent: React.FC<ExportStepContentProps> = ({
               </div>
             </Card>
           )}
+
+          {/* Export Quality/Speed Selection */}
+          <Card className="tech-glass p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+              <p className="text-sm font-tech font-medium">Export Speed</p>
+            </div>
+            
+            <RadioGroup 
+              value={exportQuality} 
+              onValueChange={(v) => setExportQuality(v as ExportQuality)}
+              className="space-y-2"
+            >
+              <div 
+                className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors ${exportQuality === 'fast' ? 'bg-primary/10' : 'hover:bg-muted/50'}`}
+                onClick={() => setExportQuality('fast')}
+              >
+                <RadioGroupItem value="fast" id="speed-fast" />
+                <div className="flex-1">
+                  <Label htmlFor="speed-fast" className="text-xs font-tech cursor-pointer flex items-center gap-2">
+                    <Zap className="w-3 h-3 text-green-500" />
+                    Fast
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">~5s</Badge>
+                  </Label>
+                  <p className="text-[10px] text-muted-foreground font-tech">
+                    Skip geometry merging • May have overlaps
+                  </p>
+                </div>
+              </div>
+              
+              <div 
+                className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors ${exportQuality === 'balanced' ? 'bg-primary/10' : 'hover:bg-muted/50'}`}
+                onClick={() => setExportQuality('balanced')}
+              >
+                <RadioGroupItem value="balanced" id="speed-balanced" />
+                <div className="flex-1">
+                  <Label htmlFor="speed-balanced" className="text-xs font-tech cursor-pointer flex items-center gap-2">
+                    <Scale className="w-3 h-3 text-blue-500" />
+                    Balanced
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">Recommended</Badge>
+                  </Label>
+                  <p className="text-[10px] text-muted-foreground font-tech">
+                    Merged geometry • Reduced file size
+                  </p>
+                </div>
+              </div>
+              
+              <div 
+                className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors ${exportQuality === 'high' ? 'bg-primary/10' : 'hover:bg-muted/50'}`}
+                onClick={() => setExportQuality('high')}
+              >
+                <RadioGroupItem value="high" id="speed-high" />
+                <div className="flex-1">
+                  <Label htmlFor="speed-high" className="text-xs font-tech cursor-pointer flex items-center gap-2">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    High Quality
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">~30-60s</Badge>
+                  </Label>
+                  <p className="text-[10px] text-muted-foreground font-tech">
+                    Full resolution • Clean manifold geometry
+                  </p>
+                </div>
+              </div>
+            </RadioGroup>
+          </Card>
 
           {/* Split Parts - Only show for multi-section baseplates */}
           {isMultiSection && (

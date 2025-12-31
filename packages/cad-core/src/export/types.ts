@@ -47,6 +47,8 @@ export interface ExportConfig {
   splitParts: boolean;
   /** Format-specific options */
   options?: STLExportOptions;
+  /** Export quality/speed preset */
+  quality?: 'fast' | 'balanced' | 'high';
 }
 
 /**

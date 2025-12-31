@@ -352,7 +352,10 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
     const handleExport = useCallback((config: ExportConfig) => {
       setIsExporting(true);
       // Dispatch export event to 3DScene which has the merged fixture mesh
-      window.dispatchEvent(new CustomEvent('export-fixture', { detail: { config } }));
+      // Include quality from config for speed optimization
+      window.dispatchEvent(new CustomEvent('export-fixture', { 
+        detail: { config, quality: config.quality || 'balanced' } 
+      }));
       
       // Listen for export completion
       const handleExportComplete = (e: CustomEvent) => {
@@ -361,10 +364,11 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
       };
       window.addEventListener('export-complete', handleExportComplete as EventListener);
       
-      // Timeout fallback
+      // Timeout fallback - adjust based on quality
+      const timeout = config.quality === 'high' ? 120000 : config.quality === 'balanced' ? 60000 : 30000;
       setTimeout(() => {
         setIsExporting(false);
-      }, 30000);
+      }, timeout);
     }, []);
 
     // ─────────────────────────────────────────────────────────────────────────

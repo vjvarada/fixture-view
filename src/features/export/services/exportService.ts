@@ -7,7 +7,6 @@
  * - Chunked processing with idle callbacks
  * - Memory-efficient cleanup
  * - Multiple quality presets (fast/balanced/high)
- * - Real CSG union for manifold output (3D printing compatibility)
  */
 
 import * as THREE from 'three';
@@ -429,40 +428,6 @@ export async function exportFixture(
       
       return result;
     }
-    
-    // OPTIMIZATION: Use cached union from cavity step if available
-    // The cavity step already performs CSG union (baseplate + supports + labels + hole subtraction)
-    // However, the cavity step uses buffer concatenation (fast) which creates non-manifold geometry
-    // at overlapping supports. For manifold output, we need to use real CSG union.
-    
-    // If manifold repair is enabled, skip the cached union and use real CSG union instead
-    // This is slower but produces proper manifold geometry for 3D printing
-    if (serviceConfig.repairManifold) {
-      console.log('[Export] Manifold output requested - using real CSG union (not cached buffer concat)');
-      // Fall through to the CSG union path below
-    } else if (serviceConfig.useCachedUnion && fallbackGeometry) {
-      console.log('[Export] Using cached union from cavity step (skipping redundant CSG)');
-      onProgress?.({ stage: 'manifold', progress: 50, message: 'Using pre-computed geometry...' });
-      
-      // Generate STL directly from the cached geometry
-      const result = generateSTLFiles(
-        fallbackGeometry,
-        config,
-        geometryCollection.isMultiSection,
-        sectionCount,
-        onProgress
-      );
-      
-      const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-      console.log(`[Export] Completed with cached union in ${totalTime}s (quality: ${serviceConfig.quality})`);
-      
-      onProgress?.({ stage: 'complete', progress: 100, message: `Export complete! (${totalTime}s)` });
-      
-      return result;
-    }
-    
-    // Use real CSG union to produce manifold geometry
-    console.log('[Export] Performing real CSG union for manifold output...');
     
     // Single file export (combined geometry)
     // Collect all geometries for CSG union (baseplate + supports)
