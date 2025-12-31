@@ -17,11 +17,18 @@ import type {
 } from '../types';
 
 /**
- * Creates baseplate geometry from config when refs are not available
+ * Creates baseplate geometry from config when refs are not available.
+ * Note: This only works for single baseplates, not multi-section.
  */
 export function createBaseplateGeometryFromConfig(
   config: BasePlateConfig
 ): THREE.BufferGeometry | null {
+  // Multi-section baseplates should use multiSectionBasePlateGroupRef instead
+  if (config.type === 'multi-section') {
+    console.warn('[Export] createBaseplateGeometryFromConfig called for multi-section baseplate - this should use multiSectionBasePlateGroupRef');
+    return null;
+  }
+  
   try {
     const width = config.width ?? 200;
     const depth = config.depth ?? 10;
@@ -111,10 +118,8 @@ export function collectBaseplateGeometry(
   const sectionData: SectionGeometryData[] = [];
   let geometry: THREE.BufferGeometry | null = null;
   
-  if (ctx.baseplateWithHoles) {
-    console.log('[Export] Using baseplateWithHoles geometry');
-    geometry = ctx.baseplateWithHoles;
-  } else if (isMultiSection && ctx.multiSectionBasePlateGroupRef.current && ctx.basePlate?.sections) {
+  // Multi-section baseplates: always use the group reference (ignore baseplateWithHoles)
+  if (isMultiSection && ctx.multiSectionBasePlateGroupRef.current && ctx.basePlate?.sections) {
     console.log('[Export] Collecting multi-section baseplate geometries');
     const sections = ctx.basePlate.sections;
     let sectionIndex = 0;
@@ -145,6 +150,14 @@ export function collectBaseplateGeometry(
         sectionIndex++;
       }
     });
+    
+    if (multiSectionGeometries.length === 0) {
+      console.warn('[Export] Multi-section baseplate group has no mesh children!');
+    }
+  } else if (ctx.baseplateWithHoles) {
+    // Single baseplate with holes cut (CSG result)
+    console.log('[Export] Using baseplateWithHoles geometry');
+    geometry = ctx.baseplateWithHoles;
   } else if (ctx.basePlateMeshRef.current?.geometry) {
     console.log('[Export] Using baseplate geometry from ref');
     geometry = ctx.basePlateMeshRef.current.geometry;
