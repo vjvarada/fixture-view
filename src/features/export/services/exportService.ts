@@ -7,6 +7,7 @@
  * - Chunked processing with idle callbacks
  * - Memory-efficient cleanup
  * - Multiple quality presets (fast/balanced/high)
+ * - Manifold repair for 3D printing compatibility
  */
 
 import * as THREE from 'three';
@@ -16,6 +17,7 @@ import {
   downloadFile,
   generateExportFilename,
   performRealCSGUnionInWorker,
+  repairMeshForExport,
   type ExportConfig,
 } from '@rapidtool/cad-core';
 import type { 
@@ -434,16 +436,65 @@ export async function exportFixture(
     // so we can skip redundant CSG operations and use the pre-computed geometry directly
     if (serviceConfig.useCachedUnion && fallbackGeometry) {
       console.log('[Export] Using cached union from cavity step (skipping redundant CSG)');
-      onProgress?.({ stage: 'manifold', progress: 50, message: 'Using pre-computed geometry...' });
       
-      // Generate STL directly from the cached geometry
+      let exportGeometry: THREE.BufferGeometry = fallbackGeometry;
+      
+      // Apply manifold repair if enabled to fix non-manifold edges from:
+      // - Overlapping supports (buffer concatenation creates internal faces)
+      // - Fillet-baseplate intersections
+      // - Clamp support overlaps
+      if (serviceConfig.repairManifold) {
+        console.log('[Export] Repairing mesh for manifold output...');
+        onProgress?.({ stage: 'manifold', progress: 20, message: 'Repairing mesh for manifold output...' });
+        
+        try {
+          const repairResult = await repairMeshForExport(fallbackGeometry, (progress) => {
+            // Map repair progress to 20-70% range
+            const mappedProgress = 20 + (progress.progress * 0.5);
+            onProgress?.({ 
+              stage: 'manifold', 
+              progress: Math.round(mappedProgress), 
+              message: progress.message 
+            });
+          });
+          
+          if (repairResult.success && repairResult.geometry) {
+            exportGeometry = repairResult.geometry;
+            console.log('[Export] Manifold repair complete:', {
+              isManifold: repairResult.isManifold,
+              originalTriangles: repairResult.originalTriangles,
+              finalTriangles: repairResult.finalTriangles,
+              steps: repairResult.repairSteps,
+            });
+            
+            if (!repairResult.isManifold) {
+              console.warn('[Export] Mesh may still have manifold issues after repair');
+            }
+          } else {
+            console.warn('[Export] Manifold repair failed, using original geometry:', repairResult.error);
+            exportGeometry = fallbackGeometry;
+          }
+        } catch (repairError) {
+          console.warn('[Export] Manifold repair threw error, using original geometry:', repairError);
+          exportGeometry = fallbackGeometry;
+        }
+      } else {
+        onProgress?.({ stage: 'manifold', progress: 50, message: 'Using pre-computed geometry...' });
+      }
+      
+      // Generate STL from the (possibly repaired) geometry
       const result = generateSTLFiles(
-        fallbackGeometry,
+        exportGeometry,
         config,
         geometryCollection.isMultiSection,
         sectionCount,
         onProgress
       );
+      
+      // Cleanup repaired geometry if it's different from fallback
+      if (exportGeometry !== fallbackGeometry) {
+        exportGeometry.dispose();
+      }
       
       const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
       console.log(`[Export] Completed with cached union in ${totalTime}s (quality: ${serviceConfig.quality})`);

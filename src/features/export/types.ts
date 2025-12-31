@@ -152,6 +152,13 @@ export interface ExportServiceConfig {
    * This significantly speeds up export since cavity step already performs CSG union.
    */
   useCachedUnion: boolean;
+  /**
+   * Whether to repair the mesh to ensure manifold output before export.
+   * Uses Manifold3D to convert the geometry to a proper manifold mesh,
+   * fixing non-manifold edges from overlapping supports, fillet intersections, etc.
+   * Recommended for 3D printing exports.
+   */
+  repairManifold: boolean;
   /** Vertex merge tolerance for welding */
   vertexMergeTolerance: number;
   /** Target triangle count for decimation (0 = no decimation) */
@@ -174,6 +181,7 @@ export function getExportConfigForQuality(quality: ExportQuality): ExportService
         quality: 'fast',
         performCSGUnion: false, // Skip CSG for speed
         useCachedUnion: true, // Use cavity step's pre-computed union
+        repairManifold: false, // Skip manifold repair for speed
         vertexMergeTolerance: 0.01, // Looser tolerance for faster welding
         targetTriangleCount: 50000, // Aggressive decimation
         csgBatchSize: 5,
@@ -185,6 +193,7 @@ export function getExportConfigForQuality(quality: ExportQuality): ExportService
         quality: 'balanced',
         performCSGUnion: true,
         useCachedUnion: true, // Use cavity step's pre-computed union
+        repairManifold: true, // Repair manifold for 3D printing quality
         vertexMergeTolerance: 0.005,
         targetTriangleCount: 100000, // Moderate decimation
         csgBatchSize: 10,
@@ -197,6 +206,7 @@ export function getExportConfigForQuality(quality: ExportQuality): ExportService
         quality: 'high',
         performCSGUnion: true,
         useCachedUnion: true, // Use cavity step's pre-computed union (skip redundant CSG)
+        repairManifold: true, // Ensure manifold output for 3D printing
         vertexMergeTolerance: 0.001, // Tight tolerance
         targetTriangleCount: 0, // No decimation
         csgBatchSize: 20,
