@@ -139,15 +139,19 @@ export function useClampHandlers({
     const onClampUpdate = (e: CustomEvent) => {
       const { clampId, updates } = e.detail as { clampId: string; updates: Partial<PlacedClamp> };
       
+      // Create a mutable copy of updates to avoid mutating frozen Zustand state
+      const mutableUpdates = { ...updates };
+      
       // Enforce minimum Y position if we have the offset for this clamp
-      if (updates.position) {
+      if (mutableUpdates.position) {
+        mutableUpdates.position = { ...mutableUpdates.position };
         const minOffset = clampMinOffsets.get(clampId) ?? 15; // Default 15mm
         const minY = baseTopY + minOffset;
-        updates.position.y = Math.max(updates.position.y, minY);
+        mutableUpdates.position.y = Math.max(mutableUpdates.position.y, minY);
       }
       
       // Update clamp state - reactive effect will handle bounds recalculation
-      setPlacedClamps(prev => prev.map(c => c.id === clampId ? { ...c, ...updates } : c));
+      setPlacedClamps(prev => prev.map(c => c.id === clampId ? { ...c, ...mutableUpdates } : c));
     };
 
     const onClampDelete = (e: CustomEvent) => {
