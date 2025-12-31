@@ -13,6 +13,7 @@
  */
 
 import * as THREE from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import Module from 'manifold-3d';
 import { decimateMesh as fallbackDecimateMesh } from './meshAnalysis';
 
@@ -305,6 +306,273 @@ function toNonIndexed(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
     return geometry.clone();
   }
   return geometry.toNonIndexed();
+}
+
+/**
+ * Edge key for tracking edges in a mesh
+ */
+function makeEdgeKey(i1: number, i2: number): string {
+  return i1 < i2 ? `${i1}-${i2}` : `${i2}-${i1}`;
+}
+
+/**
+ * Analyze mesh for non-manifold edges
+ * Returns information about mesh topology
+ */
+function analyzeMeshTopology(geometry: THREE.BufferGeometry): {
+  isManifold: boolean;
+  nonManifoldEdges: number;
+  boundaryEdges: number;
+  totalEdges: number;
+  edgeTriangleMap: Map<string, number[]>;
+} {
+  const positions = geometry.getAttribute('position').array as Float32Array;
+  const indices = geometry.index?.array;
+  
+  const edgeTriangleMap = new Map<string, number[]>();
+  
+  const numTriangles = indices ? indices.length / 3 : positions.length / 9;
+  
+  for (let t = 0; t < numTriangles; t++) {
+    let i0: number, i1: number, i2: number;
+    
+    if (indices) {
+      i0 = indices[t * 3];
+      i1 = indices[t * 3 + 1];
+      i2 = indices[t * 3 + 2];
+    } else {
+      i0 = t * 3;
+      i1 = t * 3 + 1;
+      i2 = t * 3 + 2;
+    }
+    
+    // Add all three edges of this triangle
+    const edges = [
+      makeEdgeKey(i0, i1),
+      makeEdgeKey(i1, i2),
+      makeEdgeKey(i2, i0)
+    ];
+    
+    for (const edge of edges) {
+      if (!edgeTriangleMap.has(edge)) {
+        edgeTriangleMap.set(edge, []);
+      }
+      edgeTriangleMap.get(edge)!.push(t);
+    }
+  }
+  
+  let nonManifoldEdges = 0;
+  let boundaryEdges = 0;
+  
+  for (const [, triangles] of edgeTriangleMap) {
+    if (triangles.length > 2) {
+      nonManifoldEdges++;
+    } else if (triangles.length === 1) {
+      boundaryEdges++;
+    }
+  }
+  
+  return {
+    isManifold: nonManifoldEdges === 0 && boundaryEdges === 0,
+    nonManifoldEdges,
+    boundaryEdges,
+    totalEdges: edgeTriangleMap.size,
+    edgeTriangleMap
+  };
+}
+
+/**
+ * Remove triangles that share non-manifold edges (edges with > 2 triangles)
+ * This is aggressive but can help make the mesh manifold
+ */
+function removeNonManifoldTriangles(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const positions = geometry.getAttribute('position').array as Float32Array;
+  const indices = geometry.index?.array;
+  
+  // First, use Three.js mergeVertices to consolidate duplicate vertices
+  let workingGeom = geometry.clone();
+  if (!workingGeom.index) {
+    // Convert to indexed to enable vertex merging
+    const tempIndices: number[] = [];
+    for (let i = 0; i < positions.length / 3; i++) {
+      tempIndices.push(i);
+    }
+    workingGeom.setIndex(tempIndices);
+  }
+  
+  // Merge vertices with tolerance
+  workingGeom = mergeVertices(workingGeom, 1e-4);
+  
+  const analysis = analyzeMeshTopology(workingGeom);
+  
+  if (analysis.isManifold) {
+    console.log('[removeNonManifoldTriangles] Mesh is already manifold');
+    return workingGeom;
+  }
+  
+  console.log(`[removeNonManifoldTriangles] Found ${analysis.nonManifoldEdges} non-manifold edges, ${analysis.boundaryEdges} boundary edges`);
+  
+  // Find triangles to remove (those that share non-manifold edges)
+  const trianglesToRemove = new Set<number>();
+  
+  for (const [edge, triangles] of analysis.edgeTriangleMap) {
+    if (triangles.length > 2) {
+      // Non-manifold edge - keep only the first 2 triangles, remove the rest
+      for (let i = 2; i < triangles.length; i++) {
+        trianglesToRemove.add(triangles[i]);
+      }
+    }
+  }
+  
+  if (trianglesToRemove.size === 0) {
+    return workingGeom;
+  }
+  
+  console.log(`[removeNonManifoldTriangles] Removing ${trianglesToRemove.size} triangles`);
+  
+  // Build new geometry without the problematic triangles
+  const workingPositions = workingGeom.getAttribute('position').array as Float32Array;
+  const workingIndices = workingGeom.index?.array;
+  
+  const newPositions: number[] = [];
+  const numTriangles = workingIndices ? workingIndices.length / 3 : workingPositions.length / 9;
+  
+  for (let t = 0; t < numTriangles; t++) {
+    if (trianglesToRemove.has(t)) continue;
+    
+    let i0: number, i1: number, i2: number;
+    if (workingIndices) {
+      i0 = workingIndices[t * 3];
+      i1 = workingIndices[t * 3 + 1];
+      i2 = workingIndices[t * 3 + 2];
+    } else {
+      i0 = t * 3;
+      i1 = t * 3 + 1;
+      i2 = t * 3 + 2;
+    }
+    
+    newPositions.push(
+      workingPositions[i0 * 3], workingPositions[i0 * 3 + 1], workingPositions[i0 * 3 + 2],
+      workingPositions[i1 * 3], workingPositions[i1 * 3 + 1], workingPositions[i1 * 3 + 2],
+      workingPositions[i2 * 3], workingPositions[i2 * 3 + 1], workingPositions[i2 * 3 + 2]
+    );
+  }
+  
+  const newGeometry = new THREE.BufferGeometry();
+  newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(newPositions), 3));
+  
+  return newGeometry;
+}
+
+/**
+ * Ensure consistent triangle winding (all normals point outward)
+ * Uses the centroid method - assumes mesh is roughly convex or has consistent inside
+ */
+function ensureConsistentWinding(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  // Compute bounding box center
+  geometry.computeBoundingBox();
+  const center = new THREE.Vector3();
+  geometry.boundingBox!.getCenter(center);
+  
+  const positions = geometry.getAttribute('position').array as Float32Array;
+  const newPositions = new Float32Array(positions.length);
+  
+  const v0 = new THREE.Vector3();
+  const v1 = new THREE.Vector3();
+  const v2 = new THREE.Vector3();
+  const edge1 = new THREE.Vector3();
+  const edge2 = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const toCenter = new THREE.Vector3();
+  
+  const numTriangles = positions.length / 9;
+  
+  for (let t = 0; t < numTriangles; t++) {
+    const baseIdx = t * 9;
+    
+    v0.set(positions[baseIdx], positions[baseIdx + 1], positions[baseIdx + 2]);
+    v1.set(positions[baseIdx + 3], positions[baseIdx + 4], positions[baseIdx + 5]);
+    v2.set(positions[baseIdx + 6], positions[baseIdx + 7], positions[baseIdx + 8]);
+    
+    // Compute face normal
+    edge1.subVectors(v1, v0);
+    edge2.subVectors(v2, v0);
+    normal.crossVectors(edge1, edge2).normalize();
+    
+    // Compute vector from face center to mesh center
+    const faceCenter = new THREE.Vector3().addVectors(v0, v1).add(v2).divideScalar(3);
+    toCenter.subVectors(center, faceCenter);
+    
+    // If normal points toward center, flip the triangle
+    const shouldFlip = normal.dot(toCenter) > 0;
+    
+    if (shouldFlip) {
+      // Swap v1 and v2 to flip winding
+      newPositions[baseIdx] = v0.x; newPositions[baseIdx + 1] = v0.y; newPositions[baseIdx + 2] = v0.z;
+      newPositions[baseIdx + 3] = v2.x; newPositions[baseIdx + 4] = v2.y; newPositions[baseIdx + 5] = v2.z;
+      newPositions[baseIdx + 6] = v1.x; newPositions[baseIdx + 7] = v1.y; newPositions[baseIdx + 8] = v1.z;
+    } else {
+      newPositions[baseIdx] = v0.x; newPositions[baseIdx + 1] = v0.y; newPositions[baseIdx + 2] = v0.z;
+      newPositions[baseIdx + 3] = v1.x; newPositions[baseIdx + 4] = v1.y; newPositions[baseIdx + 5] = v1.z;
+      newPositions[baseIdx + 6] = v2.x; newPositions[baseIdx + 7] = v2.y; newPositions[baseIdx + 8] = v2.z;
+    }
+  }
+  
+  const newGeometry = new THREE.BufferGeometry();
+  newGeometry.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+  
+  return newGeometry;
+}
+
+/**
+ * Comprehensive mesh preparation for Manifold3D
+ * Applies multiple repair strategies to maximize compatibility
+ */
+function prepareGeometryForManifold(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  console.log('[prepareGeometryForManifold] Starting comprehensive mesh repair...');
+  
+  let workingGeom = geometry.clone();
+  const origTriangles = workingGeom.getAttribute('position').count / 3;
+  
+  // Step 1: Convert to non-indexed for uniform processing
+  workingGeom = toNonIndexed(workingGeom);
+  
+  // Step 2: Use Three.js mergeVertices with tolerance to consolidate duplicate vertices
+  // This is more robust than custom welding
+  workingGeom.deleteAttribute('normal');
+  workingGeom.deleteAttribute('uv');
+  
+  // Create indices for mergeVertices to work
+  const posCount = workingGeom.getAttribute('position').count;
+  const tempIndices: number[] = [];
+  for (let i = 0; i < posCount; i++) {
+    tempIndices.push(i);
+  }
+  workingGeom.setIndex(tempIndices);
+  
+  // Merge with progressively larger tolerances
+  for (const tolerance of [1e-6, 1e-5, 1e-4]) {
+    workingGeom = mergeVertices(workingGeom, tolerance);
+  }
+  
+  console.log(`[prepareGeometryForManifold] After vertex merge: ${workingGeom.getAttribute('position').count} vertices`);
+  
+  // Step 3: Remove degenerate triangles
+  workingGeom = removeDegenerateTriangles(workingGeom);
+  
+  // Step 4: Remove non-manifold triangles
+  workingGeom = removeNonManifoldTriangles(workingGeom);
+  
+  // Step 5: Convert to non-indexed for final output
+  workingGeom = toNonIndexed(workingGeom);
+  
+  // Step 6: Ensure consistent winding
+  workingGeom = ensureConsistentWinding(workingGeom);
+  
+  const finalTriangles = workingGeom.getAttribute('position').count / 3;
+  console.log(`[prepareGeometryForManifold] Final: ${origTriangles} → ${finalTriangles} triangles`);
+  
+  return workingGeom;
 }
 
 // ============================================================================
@@ -820,18 +1088,8 @@ export async function unionGeometriesWithManifold(
       let processedGeom = geom;
       
       try {
-        // Step 1: Weld vertices to fix floating point precision issues
-        // Try progressively larger tolerances
-        const tolerances = [1e-6, 1e-5, 1e-4, 1e-3];
-        for (const tolerance of tolerances) {
-          processedGeom = weldVertices(processedGeom, tolerance);
-        }
-        
-        // Step 2: Remove degenerate triangles
-        processedGeom = removeDegenerateTriangles(processedGeom);
-        
-        // Step 3: Convert to non-indexed for cleaner Manifold conversion
-        processedGeom = toNonIndexed(processedGeom);
+        // Use comprehensive mesh preparation
+        processedGeom = prepareGeometryForManifold(geom);
         
         console.log(`[ManifoldUnion] Pre-processed geometry ${i}: ${triangles} → ${processedGeom.getAttribute('position').count / 3} triangles`);
         
