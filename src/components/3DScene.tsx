@@ -1391,13 +1391,83 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         updateCamera('iso', null);
       }
 
-      // Clear baseplate and supports when resetting
+      // === Clear baseplate and supports ===
       setBasePlate(null);
       setSupports([]);
       setSupportsTrimPreview([]);
+      setPlacing({ active: false, type: null });
       editingSupportRef.current = null;
       
-      // Clear merged fixture mesh
+      // Clear modified support geometries with proper disposal
+      setModifiedSupportGeometries(prev => {
+        prev.forEach(geo => geo?.dispose());
+        return new Map();
+      });
+      
+      // === Clear clamps ===
+      setPlacedClamps([]);
+      setSelectedClampId(null);
+      setClampPlacementMode({ active: false, clampModelId: null, clampCategory: null });
+      setWaitingForClampSectionSelection(false);
+      setClampMinOffsets(new Map());
+      setClampDebugPoints(null);
+      setDebugPerimeter(null);
+      setDebugClampSilhouette(null);
+      isDraggingClampRef.current = false;
+      clampDebugPointsRef.current = null;
+      partSilhouetteRef.current = null;
+      
+      // Dispose clamp support geometries
+      setClampSupportInfos(prev => {
+        prev.forEach(info => {
+          info.geometry?.dispose();
+        });
+        return new Map();
+      });
+      
+      // Clear loaded clamp data with proper Three.js disposal
+      loadedClampDataRef.current.forEach(clampData => {
+        clampData.geometry?.dispose();
+        if (clampData.material) {
+          if (Array.isArray(clampData.material)) {
+            clampData.material.forEach(m => m.dispose());
+          } else {
+            clampData.material.dispose();
+          }
+        }
+      });
+      loadedClampDataRef.current.clear();
+      
+      // === Clear labels ===
+      setLabels([]);
+      setSelectedLabelId(null);
+      setWaitingForLabelSectionSelection(false);
+      setPendingLabelConfig(null);
+      isDraggingLabelRef.current = false;
+      
+      // === Clear mounting holes ===
+      setMountingHoles([]);
+      setSelectedHoleId(null);
+      setEditingHoleId(null);
+      setHolePlacementMode({ active: false, config: null, depth: 0 });
+      setWaitingForHoleSectionSelection(false);
+      setPendingHoleConfig(null);
+      setIsDraggingHole(false);
+      isDraggingHoleRef.current = false;
+      
+      // Clear baseplate with holes geometry
+      setBaseplateWithHoles(prev => {
+        prev?.dispose();
+        return null;
+      });
+      
+      // Clear original baseplate geometry ref
+      if (originalBaseplateGeoRef.current) {
+        originalBaseplateGeoRef.current.dispose();
+        originalBaseplateGeoRef.current = null;
+      }
+      
+      // === Clear merged fixture mesh ===
       setMergedFixtureMesh((prev) => {
         if (prev) {
           prev.geometry?.dispose();
@@ -1412,7 +1482,7 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         return null;
       });
       
-      // Clear all offset mesh previews
+      // === Clear all offset mesh previews ===
       setOffsetMeshPreviews(prev => {
         prev.forEach(mesh => {
           mesh.geometry?.dispose();
@@ -1426,11 +1496,30 @@ const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         });
         return new Map();
       });
+      
+      // === Clear selection and editing states ===
+      setSelectedBasePlateSectionId(null);
+      setEditingBasePlateSectionId(null);
+      
+      // === Clear multi-section drawing mode ===
+      setIsMultiSectionDrawingMode(false);
+      setDrawnSections([]);
+      setWaitingForSectionSelection(false);
+      
+      // === Force garbage collection hint ===
+      // Note: Can't force GC in JS, but nullifying refs helps
+      if (typeof window !== 'undefined' && (window as any).gc) {
+        try {
+          (window as any).gc();
+        } catch (e) {
+          // GC not available
+        }
+      }
     };
 
     window.addEventListener('viewer-reset', handleViewReset as EventListener);
     return () => window.removeEventListener('viewer-reset', handleViewReset as EventListener);
-  }, [camera, importedParts.length, updateCamera, modelBounds]);
+  }, [camera, importedParts.length, updateCamera, modelBounds, setBasePlate, setSupports, setSupportsTrimPreview, setPlacing, setModifiedSupportGeometries, setPlacedClamps, setSelectedClampId, setClampPlacementMode, setWaitingForClampSectionSelection, setClampMinOffsets, setClampDebugPoints, setDebugPerimeter, setDebugClampSilhouette, setClampSupportInfos, setLabels, setSelectedLabelId, setWaitingForLabelSectionSelection, setPendingLabelConfig, setMountingHoles, setSelectedHoleId, setEditingHoleId, setHolePlacementMode, setWaitingForHoleSectionSelection, setPendingHoleConfig, setIsDraggingHole, setBaseplateWithHoles, setMergedFixtureMesh, setOffsetMeshPreviews, setSelectedBasePlateSectionId, setEditingBasePlateSectionId, setIsMultiSectionDrawingMode, setDrawnSections, setWaitingForSectionSelection]);
 
   // Handle view orientation events
   React.useEffect(() => {
