@@ -67,7 +67,7 @@ const createCylindricalFilletGeometry = (supportRadius: number, filletRadius: nu
     }
   }
   
-  // Generate indices - winding order for outward-facing normals
+  // Generate indices - reversed winding for outward-facing normals on revolved geometry
   for (let i = 0; i < segments; i++) {
     for (let j = 0; j < radialSegments; j++) {
       const a = i * (radialSegments + 1) + j;
@@ -75,8 +75,8 @@ const createCylindricalFilletGeometry = (supportRadius: number, filletRadius: nu
       const c = a + 1;
       const d = b + 1;
       
-      indices.push(a, b, c);
-      indices.push(c, b, d);
+      indices.push(a, c, b);
+      indices.push(c, d, b);
     }
   }
   
@@ -159,7 +159,7 @@ const createConicalFilletGeometry = (
     }
   }
   
-  // Generate indices - winding for outward normals on the fillet surface
+  // Generate indices - reversed winding for outward normals on revolved fillet surface
   for (let i = 0; i < segments; i++) {
     for (let j = 0; j < radialSegments; j++) {
       const a = i * (radialSegments + 1) + j;
@@ -167,8 +167,8 @@ const createConicalFilletGeometry = (
       const c = a + 1;
       const d = b + 1;
       
-      indices.push(a, b, c);
-      indices.push(c, b, d);
+      indices.push(a, c, b);
+      indices.push(c, d, b);
     }
   }
   
@@ -594,9 +594,9 @@ const createRectangularFilletGeometry = (width: number, depthVal: number, corner
         const c = a + 1;
         const d = b + 1;
         
-        // Winding for outward normals
-        indices.push(a, b, c);
-        indices.push(c, b, d);
+        // Reversed winding for outward normals
+        indices.push(a, c, b);
+        indices.push(c, d, b);
       }
     }
   };
@@ -631,9 +631,9 @@ const createRectangularFilletGeometry = (width: number, depthVal: number, corner
         const c = a + 1;
         const d = b + 1;
         
-        // Winding for outward normals
-        indices.push(a, b, c);
-        indices.push(c, b, d);
+        // Reversed winding for outward normals
+        indices.push(a, c, b);
+        indices.push(c, d, b);
       }
     }
   };
