@@ -4,7 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Eye, EyeOff, Aperture, Zap, Lock } from "lucide-react";
+import { Eye, EyeOff, Zap, Lock } from "lucide-react";
+import { RapidToolLogo } from "@/components/RapidToolLogo";
 
 interface LoginProps {
   onLogin: (credentials: { username: string; password: string }) => void;
@@ -49,12 +50,9 @@ const Login = ({ onLogin }: LoginProps) => {
       <div className="relative w-full max-w-md">
         {/* Logo Section */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 backdrop-blur-sm mb-4">
-            <Aperture className="w-8 h-8 text-primary" />
+          <div className="flex justify-center mb-4">
+            <RapidToolLogo size="lg" subscript="fixtures" />
           </div>
-          <h1 className="text-3xl font-bold font-tech bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-            RapidTool-Fixture
-          </h1>
           <p className="text-muted-foreground mt-1 font-tech text-sm">
             Automated Fixture Designer
           </p>

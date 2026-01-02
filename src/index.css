@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Thuast Font - RapidTool Logo Font */
+@font-face {
+  font-family: 'Thuast';
+  src: url('/fonts/Thuast.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Force show number input spinners - must be outside @layer to override Tailwind preflight */
 /* Ensure number inputs have minimum height for spin buttons */
 input[type="number"] {

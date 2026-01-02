@@ -191,20 +191,20 @@ const MouseIllustration: React.FC<MouseIllustrationProps> = ({ controls }) => {
       xmlns="http://www.w3.org/2000/svg"
       style={{ flexShrink: 0 }}
     >
-      {/* Mouse body */}
-      <rect
-        x="8"
-        y="16"
-        width="48"
-        height="64"
-        rx="24"
+      {/* Mouse body - only the bottom portion */}
+      <path
+        d="M8 40 V56 C8 67.046 16.954 76 28 76 H36 C47.046 76 56 67.046 56 56 V40 H8 Z"
         fill="var(--background, #fff)"
         stroke="currentColor"
         strokeOpacity="0.3"
         strokeWidth="2"
       />
       
-      {/* Left button */}
+      {/* Left button - with solid fill to cover any overlap */}
+      <path
+        d="M8 40 V36 C8 24.954 16.954 16 28 16 H32 V40 H8 Z"
+        fill="var(--background, #fff)"
+      />
       <path
         d="M8 40 V36 C8 24.954 16.954 16 28 16 H32 V40 H8 Z"
         fill={leftControl?.color || 'rgba(59, 130, 246, 0.35)'}
@@ -212,12 +212,27 @@ const MouseIllustration: React.FC<MouseIllustrationProps> = ({ controls }) => {
         strokeWidth="2"
       />
       
-      {/* Right button */}
+      {/* Right button - with solid fill to cover any overlap */}
+      <path
+        d="M56 40 V36 C56 24.954 47.046 16 36 16 H32 V40 H56 Z"
+        fill="var(--background, #fff)"
+      />
       <path
         d="M56 40 V36 C56 24.954 47.046 16 36 16 H32 V40 H56 Z"
         fill={rightControl?.color || 'rgba(34, 197, 94, 0.35)'}
         stroke={rightControl?.borderColor || '#16a34a'}
         strokeWidth="2"
+      />
+      
+      {/* Center divider line */}
+      <line
+        x1="32"
+        y1="16"
+        x2="32"
+        y2="40"
+        stroke="currentColor"
+        strokeOpacity="0.2"
+        strokeWidth="1"
       />
       
       {/* Scroll wheel well */}

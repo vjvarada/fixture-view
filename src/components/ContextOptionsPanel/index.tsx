@@ -54,9 +54,9 @@ const WORKFLOW_STEPS: StepConfig[] = [
     description: 'Upload workpieces and models',
     icon: Upload,
     helpText: [
+      'Double-click the name on the title bar to rename your project',
       'Drag & drop STL, OBJ, or GLTF files',
-      'Select the correct unit system',
-      'Review mesh quality and optimize if needed'
+      'Select the correct unit system'
     ]
   },
   {

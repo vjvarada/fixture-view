@@ -137,7 +137,6 @@ import {
 const OPTIMIZATION_DIALOG_THRESHOLD = 500_000;
 import * as THREE from 'three';
 import {
-  Aperture,
   Upload,
   Settings,
   Eye,
@@ -153,10 +152,10 @@ import {
   Redo2,
   Pin,
   Box,
-  LogOut,
   Zap
 } from "lucide-react";
 import { IconIsoFace, IconIsoTop, IconIsoLeftFace, IconIsoCorner } from "@/components/icons";
+import { RapidToolLogo } from "@/components/RapidToolLogo";
 
 export interface AppShellHandle {
   openFilePicker: () => void;
@@ -166,7 +165,6 @@ export interface AppShellHandle {
 
 interface AppShellProps {
   children: ReactNode;
-  onLogout: () => void;
   onToggleDesignMode?: () => void;
   designMode?: boolean;
   isProcessing?: boolean;
@@ -179,7 +177,7 @@ interface AppShellProps {
 }
 
 const AppShell = forwardRef<AppShellHandle, AppShellProps>(
-  ({ children, onLogout, onToggleDesignMode, designMode = false, isProcessing: externalProcessing = false, fileStats, currentFile }, ref) => {
+  ({ children, onToggleDesignMode, designMode = false, isProcessing: externalProcessing = false, fileStats, currentFile }, ref) => {
     // ═══════════════════════════════════════════════════════════════════════
     // State from Zustand stores (Phase 7 migration)
     // ═══════════════════════════════════════════════════════════════════════
@@ -1664,12 +1662,7 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         <header className="h-14 border-b border-border/50 tech-glass flex items-center justify-between px-4 z-50">
           {/* Left Section - Logo & File Actions */}
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
-                <Aperture className="w-4 h-4 text-primary" />
-              </div>
-              <span className="font-tech font-semibold text-sm">RapidTool-Fixture</span>
-            </div>
+            <RapidToolLogo size="sm" subscript="fixtures" />
 
             <Separator orientation="vertical" className="h-6" />
 
@@ -1818,14 +1811,6 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
 
             <div className="flex items-center gap-2">
               <ThemeToggle />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onLogout}
-                className="tech-transition text-destructive hover:text-destructive"
-              >
-                <LogOut className="w-4 h-4" />
-              </Button>
             </div>
           </div>
         </header>

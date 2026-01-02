@@ -4,7 +4,6 @@ import { Toaster as Sonner } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from 'next-themes';
-import Login from './pages/Login';
 import AppShell, { AppShellHandle } from './layout/AppShell';
 import FileImport from './modules/FileImport';
 import FixtureDesigner from './components/FixtureDesigner';
@@ -16,7 +15,6 @@ const logger = createLogger('App');
 const queryClient = new QueryClient();
 
 const App = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentFile, setCurrentFile] = useState<ProcessedFile | null>(null);
   const [currentView, setCurrentView] = useState<'import' | 'design'>('import');
   const [designMode, setDesignMode] = useState(false);
@@ -34,18 +32,6 @@ const App = () => {
     return () => window.removeEventListener('session-reset', handleSessionReset);
   }, []);
 
-  const handleLogin = (credentials: { username: string; password: string }) => {
-    logger.info('User logged in:', credentials.username);
-    setIsLoggedIn(true);
-  };
-
-  const handleLogout = useCallback(() => {
-    setIsLoggedIn(false);
-    setCurrentFile(null);
-    setCurrentView('import');
-    setDesignMode(false);
-  }, []);
-
   const handleToggleDesignMode = useCallback(() => {
     setDesignMode(!designMode);
   }, [designMode]);
@@ -57,22 +43,6 @@ const App = () => {
     }
   }, []);
 
-  if (!isLoggedIn) {
-    return (
-      <ErrorBoundary name="App">
-        <QueryClientProvider client={queryClient}>
-          <ThemeProvider attribute='class' defaultTheme='light' enableSystem>
-            <TooltipProvider>
-              <Toaster />
-              <Sonner />
-              <Login onLogin={handleLogin} />
-            </TooltipProvider>
-          </ThemeProvider>
-        </QueryClientProvider>
-      </ErrorBoundary>
-    );
-  }
-
   return (
     <ErrorBoundary name="App">
       <QueryClientProvider client={queryClient}>
@@ -82,7 +52,6 @@ const App = () => {
             <Sonner />
             <AppShell
             ref={appShellRef}
-            onLogout={handleLogout}
             onToggleDesignMode={handleToggleDesignMode}
             designMode={designMode}
             isProcessing={false}
