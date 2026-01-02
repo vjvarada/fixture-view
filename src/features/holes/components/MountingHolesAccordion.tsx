@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CircleDashed, Circle, Trash2, Move, Crosshair, Maximize2 } from 'lucide-react';
-import { PlacedHole } from '@/features/holes';
+import type { PlacedHole } from '../types';
 import * as THREE from 'three';
 
 interface MountingHolesAccordionProps {

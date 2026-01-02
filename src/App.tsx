@@ -6,17 +6,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from 'next-themes';
 import AppShell, { AppShellHandle } from './layout/AppShell';
 import FileImport from './modules/FileImport';
-import FixtureDesigner from './components/FixtureDesigner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProcessedFile } from './modules/FileImport/types';
-import { createLogger } from './utils/logger';
 
-const logger = createLogger('App');
 const queryClient = new QueryClient();
 
 const App = () => {
   const [currentFile, setCurrentFile] = useState<ProcessedFile | null>(null);
-  const [currentView, setCurrentView] = useState<'import' | 'design'>('import');
   const [designMode, setDesignMode] = useState(false);
   const appShellRef = useRef<AppShellHandle>(null);
 
@@ -24,7 +20,6 @@ const App = () => {
   useEffect(() => {
     const handleSessionReset = () => {
       setCurrentFile(null);
-      setCurrentView('import');
       setDesignMode(false);
     };
 
@@ -51,30 +46,23 @@ const App = () => {
             <Toaster />
             <Sonner />
             <AppShell
-            ref={appShellRef}
-            onToggleDesignMode={handleToggleDesignMode}
-            designMode={designMode}
-            isProcessing={false}
-            fileStats={currentFile ? {
-              name: currentFile.metadata.name,
-              triangles: currentFile.metadata.triangles,
-              size: `${(currentFile.metadata.size / 1024 / 1024).toFixed(2)} MB`
-            } : undefined}
-            currentFile={currentFile}
-          >
-            {currentView === 'import' ? (
+              ref={appShellRef}
+              onToggleDesignMode={handleToggleDesignMode}
+              designMode={designMode}
+              isProcessing={false}
+              fileStats={currentFile ? {
+                name: currentFile.metadata.name,
+                triangles: currentFile.metadata.triangles,
+                size: `${(currentFile.metadata.size / 1024 / 1024).toFixed(2)} MB`
+              } : undefined}
+              currentFile={currentFile}
+            >
               <FileImport onFileLoaded={handleFileLoaded} />
-            ) : (
-              <FixtureDesigner
-                currentFile={currentFile}
-                onFileLoaded={handleFileLoaded}
-              />
-            )}
-          </AppShell>
-        </TooltipProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
-  </ErrorBoundary>
+            </AppShell>
+          </TooltipProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 };
 

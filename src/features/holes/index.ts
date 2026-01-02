@@ -4,9 +4,9 @@
  * Components and utilities for mounting hole placement and visualization.
  *
  * @example
- * `typescript
- * import { HoleMesh, HolePlacement, PlacedHole } from '@/features/holes';
- * `
+ * ```typescript
+ * import { HoleMesh, HolePlacement, MountingHolesAccordion, PlacedHole } from '@/features/holes';
+ * ```
  */
 
 // Types
@@ -26,6 +26,7 @@ export { COUNTERSINK_STANDARDS, COUNTERBORE_STANDARDS } from './types';
 export { default as HoleMesh } from './components/HoleMesh';
 export { default as HolePlacement } from './components/HolePlacement';
 export { default as HoleTransformControls } from './components/HoleTransformControls';
+export { default as MountingHolesAccordion } from './components/MountingHolesAccordion';
 
 // Geometry utilities
 export {

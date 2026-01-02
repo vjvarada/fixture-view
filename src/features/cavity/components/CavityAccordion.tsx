@@ -6,14 +6,7 @@ import {
 } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { SquaresSubtract, Eye, Loader2 } from 'lucide-react';
-import { CavitySettings } from '@rapidtool/cad-core';
-
-interface CavityAccordionProps {
-  settings: CavitySettings;
-  isProcessing?: boolean;
-  hasPreview?: boolean;
-  hasModel?: boolean;
-}
+import type { CavityAccordionProps } from '../types';
 
 /**
  * CavityAccordion - Properties panel view for cavity status

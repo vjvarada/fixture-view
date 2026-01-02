@@ -17,12 +17,11 @@ import { Cog } from 'lucide-react';
 import { ProcessedFile } from '@/modules/FileImport/types';
 import { SupportsAccordion, AnySupport } from '@/features/supports';
 import { BaseplateAccordion } from '@/features/baseplate';
-import CavityAccordion from './CavityAccordion';
+import { CavityAccordion } from '@/features/cavity';
 import { LabelsAccordion, LabelConfig } from '@/features/labels';
 import { ClampsAccordion, PlacedClamp } from '@/features/clamps';
 import PartItemAccordion from './PartItemAccordion';
-import MountingHolesAccordion from './MountingHolesAccordion';
-import { PlacedHole } from '@/features/holes';
+import { MountingHolesAccordion, PlacedHole } from '@/features/holes';
 import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@rapidtool/cad-core';
 import {
   Transform3D,
