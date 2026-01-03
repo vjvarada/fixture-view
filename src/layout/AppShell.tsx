@@ -32,6 +32,44 @@ import { useFileProcessing } from "@/modules/FileImport/hooks/useFileProcessing"
 import { LARGE_FILE_THRESHOLD } from "@/modules/FileImport/hooks/useFileProcessing";
 import { ProcessedFile } from "@/modules/FileImport/types";
 import {
+  useInitializeFixtureWorkflow,
+  useWorkflowStep,
+  useCompletedSteps,
+  useSkippedSteps,
+  useImportedParts,
+  useSelectedPart,
+  usePartVisibility,
+  useBaseplateVisible,
+  useIsProcessing,
+  useFileError,
+  useMeshAnalysis,
+  useMeshProgress,
+  useIsMeshProcessing,
+  useUnitsDialog,
+  useOptimizationDialog,
+  useSupportPlacementMode,
+  useSupports,
+  useSelectedSupportType,
+  useSelectedSupport,
+  useLabels,
+  useSelectedLabel,
+  useClamps,
+  useSelectedClamp,
+  useMountingHoles,
+  useSelectedHole,
+  useHolePlacementMode,
+  usePendingHoleConfig,
+  useModelColors,
+  useCavitySettings,
+  useIsCavityProcessing,
+  useIsApplyingCavity,
+  useHasCavityPreview,
+  useIsCavityApplied,
+  useIsExporting,
+} from "@/hooks";
+import { useProjectName } from "@/hooks/useFixture";
+import { createLogger } from "@/utils/logger";
+import {
   analyzeMesh,
   repairMesh,
   decimateMesh,
@@ -41,6 +79,8 @@ import {
   type MeshProcessingProgress,
   DECIMATION_TARGET,
 } from "@rapidtool/cad-core";
+
+const logger = createLogger('AppShell');
 
 // UI threshold for showing optimization dialog (500k triangles)
 // This is higher than the actual decimation threshold to avoid unnecessary dialogs

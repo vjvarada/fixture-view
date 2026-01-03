@@ -72,7 +72,6 @@ const MainApp = () => {
   const handleLogout = useCallback(async () => {
     await logout();
     setCurrentFile(null);
-    setCurrentView('import');
     setDesignMode(false);
   }, [logout]);
 
@@ -101,14 +100,7 @@ const MainApp = () => {
       } : undefined}
       currentFile={currentFile}
     >
-      {currentView === 'import' ? (
-        <FileImport onFileLoaded={handleFileLoaded} />
-      ) : (
-        <FixtureDesigner
-          currentFile={currentFile}
-          onFileLoaded={handleFileLoaded}
-        />
-      )}
+      <FileImport onFileLoaded={handleFileLoaded} />
     </AppShell>
   );
 };

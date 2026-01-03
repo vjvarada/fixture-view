@@ -17,3 +17,6 @@ export function useIsMobile() {
 
   return !!isMobile;
 }
+
+// Export as useMobile for backward compatibility
+export { useIsMobile as useMobile };
