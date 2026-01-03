@@ -28,6 +28,7 @@ export default {
       fontFamily: {
         'sans': ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
         'mono': ['SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Consolas', 'monospace'],
+        'thuast': ['Thuast', 'system-ui', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

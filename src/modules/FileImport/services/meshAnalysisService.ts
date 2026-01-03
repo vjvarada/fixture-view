@@ -1518,7 +1518,7 @@ function hcSmoothing(
   beta: number,
   vertexCount: number
 ): Float32Array {
-  let p: Float32Array = new Float32Array(positions); // Current positions
+  const p: Float32Array = new Float32Array(positions); // Current positions
   let q: Float32Array = new Float32Array(positions); // Previous positions
   
   for (let iter = 0; iter < iterations; iter++) {

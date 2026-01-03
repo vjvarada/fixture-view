@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { RotateCcw, Move, RotateCw, Trash2, ArrowDownToLine, Eye, EyeOff } from 'lucide-react';
 import { ProcessedFile } from '@/modules/FileImport/types';
-import PartThumbnail from './PartThumbnail';
+import { PartThumbnail } from '@rapidtool/cad-ui';
 import { IconButton } from '@/components/ui/icon-button';
 import { cn } from '@/lib/utils';
 
@@ -145,7 +145,7 @@ const TransformSection: React.FC<TransformSectionProps> = ({
         decimals={decimals}
       />
       <AxisInput
-        label="Y"
+        label="Z"
         value={values.y}
         onChange={(v) => onAxisChange('y', v)}
         colorClass="text-green-500"
@@ -153,7 +153,7 @@ const TransformSection: React.FC<TransformSectionProps> = ({
         decimals={decimals}
       />
       <AxisInput
-        label="Z"
+        label="Y"
         value={values.z}
         onChange={(v) => onAxisChange('z', v)}
         colorClass="text-blue-500"

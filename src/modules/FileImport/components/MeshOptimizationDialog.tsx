@@ -30,7 +30,7 @@ import {
   MeshProcessingProgress,
   DECIMATION_THRESHOLD,
   DECIMATION_TARGET,
-} from '../services/meshAnalysis';
+} from '@rapidtool/cad-core';
 
 /** Files larger than 5MB should be auto-optimized */
 const LARGE_FILE_THRESHOLD = 5 * 1024 * 1024; // 5MB
@@ -99,8 +99,11 @@ const MeshOptimizationDialog: React.FC<MeshOptimizationDialogProps> = ({
   // Prevent closing while processing OR while action is being triggered (but not when showing results)
   const preventClose = (isProcessing || actionTriggered) && !processingResult;
   
+  // Threshold constants
+  const MANDATORY_DECIMATION_THRESHOLD = 500_000; // Truly mandatory - no skip option
+  
   const needsDecimation = analysis && analysis.triangleCount > DECIMATION_THRESHOLD;
-  const isMandatoryOptimization = needsDecimation; // >500K triangles = mandatory optimization
+  const isMandatoryOptimization = analysis && analysis.triangleCount > MANDATORY_DECIMATION_THRESHOLD; // >500K = mandatory
   const hasIssues = analysis && analysis.issues.length > 0;
   const hasRepairableIssues = hasIssues && !analysis?.issues.every(i => i.includes('High triangle count'));
   const isLargeFile = fileSize && fileSize > LARGE_FILE_THRESHOLD;
@@ -348,8 +351,8 @@ const MeshOptimizationDialog: React.FC<MeshOptimizationDialogProps> = ({
               </Alert>
             )}
 
-            {/* High Triangle Count Warning */}
-            {needsDecimation && (
+            {/* High Triangle Count Warning - Mandatory (>500K) */}
+            {isMandatoryOptimization && (
               <Alert variant="destructive">
                 <AlertTriangle className="w-4 h-4" />
                 <AlertDescription className="ml-2">
@@ -357,10 +360,26 @@ const MeshOptimizationDialog: React.FC<MeshOptimizationDialogProps> = ({
                   <br />
                   <span className="text-xs">
                     This mesh has {formatNumber(analysis.triangleCount)} triangles, 
-                    which exceeds the maximum allowed threshold of {formatNumber(DECIMATION_THRESHOLD)}.
+                    which exceeds the mandatory threshold of 500,000.
                     <br /><br />
-                    <strong>Optimization is mandatory</strong> for meshes with more than 500,000 triangles 
-                    to ensure acceptable performance.
+                    <strong>Optimization is mandatory</strong> to ensure acceptable performance.
+                  </span>
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* High Triangle Count Warning - Recommended (>50K but <500K) */}
+            {needsDecimation && !isMandatoryOptimization && (
+              <Alert>
+                <TriangleAlert className="w-4 h-4 text-yellow-500" />
+                <AlertDescription className="ml-2">
+                  <strong>Optimization Recommended</strong>
+                  <br />
+                  <span className="text-xs">
+                    This mesh has {formatNumber(analysis.triangleCount)} triangles, 
+                    which exceeds the recommended threshold of {formatNumber(DECIMATION_THRESHOLD)}.
+                    <br /><br />
+                    Optimization is recommended for better performance, but you can proceed without it.
                   </span>
                 </AlertDescription>
               </Alert>
@@ -398,53 +417,107 @@ const MeshOptimizationDialog: React.FC<MeshOptimizationDialogProps> = ({
                 Cancel
               </Button>
           
-              {/* Case 1: High triangle count (>500K) - optimization is MANDATORY, no skip option */}
-              {needsDecimation && !isProcessing && (
+              {/* Case 1a: Very high triangle count (>500K) - optimization is MANDATORY, no skip option */}
+              {isMandatoryOptimization && !isProcessing && (
                 <>
                   {/* If mesh also has issues, show Repair & Optimize as primary action */}
                   {hasRepairableIssues && onRepairAndOptimize ? (
                     <Button
                       onClick={() => {
                         setActionTriggered(true);
-                    onRepairAndOptimize();
-                  }}
-                  disabled={preventClose}
-                >
-                  {preventClose ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Processing...
-                    </>
+                        onRepairAndOptimize();
+                      }}
+                      disabled={preventClose}
+                    >
+                      {preventClose ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          Repair & Optimize
+                        </>
+                      )}
+                    </Button>
                   ) : (
-                    <>
-                      <Sparkles className="w-4 h-4 mr-2" />
-                      Repair & Optimize
-                    </>
+                    <Button
+                      onClick={() => {
+                        setActionTriggered(true);
+                        onOptimizeMesh(false);
+                      }}
+                      disabled={preventClose}
+                    >
+                      {preventClose ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Optimizing...
+                        </>
+                      ) : (
+                        <>
+                          <Minimize2 className="w-4 h-4 mr-2" />
+                          Optimize Mesh
+                        </>
+                      )}
+                    </Button>
                   )}
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    setActionTriggered(true);
-                    onOptimizeMesh(false);
-                  }}
-                  disabled={preventClose}
-                >
-                  {preventClose ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Optimizing...
-                    </>
-                  ) : (
-                    <>
-                      <Minimize2 className="w-4 h-4 mr-2" />
-                      Optimize Mesh
-                    </>
-                  )}
-                </Button>
+                </>
               )}
-            </>
-          )}
+              
+              {/* Case 1b: High triangle count (>50K but <500K) - optimization recommended but optional */}
+              {needsDecimation && !isMandatoryOptimization && !isProcessing && (
+                <>
+                  <Button
+                    variant="secondary"
+                    onClick={() => onProceedWithOriginal(hasRepairableIssues)}
+                    disabled={preventClose}
+                  >
+                    {hasRepairableIssues ? 'Repair Only' : 'Use Original'}
+                  </Button>
+                  {hasRepairableIssues && onRepairAndOptimize ? (
+                    <Button
+                      onClick={() => {
+                        setActionTriggered(true);
+                        onRepairAndOptimize();
+                      }}
+                      disabled={preventClose}
+                    >
+                      {preventClose ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          Repair & Optimize
+                        </>
+                      )}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => {
+                        setActionTriggered(true);
+                        onOptimizeMesh(false);
+                      }}
+                      disabled={preventClose}
+                    >
+                      {preventClose ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Optimizing...
+                        </>
+                      ) : (
+                        <>
+                          <Minimize2 className="w-4 h-4 mr-2" />
+                          Optimize Mesh
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </>
+              )}
           
           {/* Case 2: Has issues but not high triangle count - show Skip Repair + Repair options */}
           {!needsDecimation && !isLargeFile && hasRepairableIssues && !isProcessing && (

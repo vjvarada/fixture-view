@@ -8,7 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Switch } from '@/components/ui/switch';
 import { AlertCircle, Plus, RotateCcw, MousePointer, X, Check, Magnet } from 'lucide-react';
 import { ThroughHoleIcon, CounterSinkIcon, CounterBoreIcon } from './HoleTypeIcons';
-import { PlacedHole } from '@/components/MountingHoles/types';
+import { PlacedHole } from '@/features/holes';
 
 type HoleType = 'through' | 'countersink' | 'counterbore';
 

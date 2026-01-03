@@ -1,734 +1,517 @@
-# RapidTool-Fixture — System Architecture
+# RapidTool Fixture View - Architecture Guide
 
-Complete system design, database schema, and API architecture.
-
----
-
-## Architecture Philosophy
-
-**Hybrid Storage: Client-First + Backend Metadata**
-
-RapidTool-Fixture uses a **hybrid architecture** where active design work happens client-side (IndexedDB) for instant performance, while project metadata and user data are stored server-side (PostgreSQL) for persistence and cross-device access.
-
-### Core Principles
-
-1. **Client-Heavy** — All 3D operations run in browser (Three.js)
-2. **Hybrid Storage** — Active work in IndexedDB, metadata in database
-3. **Instant Performance** — Zero network latency for design operations
-4. **Offline-Capable** — Full design functionality without internet
-5. **Optional Sync** — Cloud backup is user-initiated
+> **Purpose:** Single source of truth for AI agents and developers working on this codebase.
+> 
+> **Last Updated:** January 1, 2026  
+> **Version:** 3.0 (Post-Refactoring)
 
 ---
 
-## System Architecture Diagram
+## 1. Application Overview
+
+### What This Application Does
+
+RapidTool Fixture View is a **browser-based 3D CAD application** for designing manufacturing fixtures. Users follow a step-wise workflow:
+
+```
+Import Part → Configure Baseplate → Add Supports → Place Clamps → Add Labels → Drill Holes → Create Cavity → Export
+```
+
+### Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| **UI Framework** | React 18 + TypeScript |
+| **3D Rendering** | Three.js via React Three Fiber |
+| **State Management** | Zustand + Immer (stores) + React hooks (3DScene) |
+| **Styling** | Tailwind CSS + shadcn/ui |
+| **CSG Operations** | Manifold 3D (WASM) |
+| **Build Tool** | Vite |
+| **Monorepo** | npm workspaces |
+
+---
+
+## 2. Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      APPLICATION LAYER                              │
+│                       (fixture-view)                                │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  src/features/     - Feature modules (supports, clamps...)  │   │
+│  │  src/layout/       - AppShell orchestration                 │   │
+│  │  src/stores/       - App-specific Zustand stores            │   │
+│  │  src/hooks/        - App-specific hook wrappers             │   │
+│  │  src/components/   - 3DScene + UI components                │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────┤
+│                       UI COMPONENT LAYER                            │
+│                      (@rapidtool/cad-ui)                            │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  stores/       - Generic stores (selection, workflow, UI)   │   │
+│  │  viewport/     - 3D viewport components                     │   │
+│  │  panels/       - Accordion, properties panels               │   │
+│  │  navigation/   - Step navigation, workflow types            │   │
+│  │  primitives/   - Base UI components (from shadcn)           │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────┤
+│                        CORE LOGIC LAYER                             │
+│                      (@rapidtool/cad-core)                          │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  mesh/         - Mesh analysis, repair, decimation          │   │
+│  │  offset/       - Cavity/heightmap generation                │   │
+│  │  csg/          - CSG operations with Manifold               │   │
+│  │  transform/    - Coordinate transforms                      │   │
+│  │  parsers/      - STL parser                                 │   │
+│  │  workers/      - Web Worker pool management                 │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Directory Structure
+
+### `packages/cad-core/` - Pure Logic (No React)
+
+```
+cad-core/
+├── src/
+│   ├── mesh/                 # Mesh processing
+│   │   ├── meshAnalysis.ts       # Geometry analysis
+│   │   ├── manifoldMeshService.ts # Manifold integration
+│   │   └── index.ts
+│   ├── offset/               # Cavity generation
+│   │   ├── offsetHeightmap.ts    # Heightmap-based offset
+│   │   ├── offsetMeshProcessor.ts # GPU-based mesh offset
+│   │   ├── types.ts              # CavitySettings, etc.
+│   │   └── index.ts
+│   ├── csg/                  # Boolean operations
+│   │   └── csgEngine.ts          # Manifold wrapper
+│   ├── transform/            # Coordinate systems
+│   │   └── coordinateUtils.ts    # CAD ↔ Three.js
+│   ├── parsers/              # File parsers
+│   │   └── stlParser.ts
+│   └── workers/              # Worker management
+│       └── workerManager.ts
+```
+
+### `packages/cad-ui/` - Reusable React Components
+
+```
+cad-ui/
+├── src/
+│   ├── stores/               # Generic Zustand stores
+│   │   ├── selectionStore.ts     # Selection state
+│   │   ├── workflowStore.ts      # Workflow steps
+│   │   ├── uiStore.ts            # UI preferences
+│   │   └── historyStore.ts       # Undo/redo
+│   ├── viewport/             # 3D viewport
+│   │   └── ViewCube.tsx
+│   ├── navigation/           # Workflow navigation
+│   │   └── types.ts              # WorkflowStep, ComponentCategory
+│   └── primitives/           # Base UI (shadcn)
+```
+
+### `src/` - Application Code
+
+```
+src/
+├── features/                 # Feature modules (domain logic)
+│   ├── supports/             # Support placement
+│   ├── clamps/               # Clamp placement  
+│   ├── holes/                # Mounting holes
+│   ├── labels/               # Labels
+│   ├── baseplate/            # Baseplate config
+│   └── export/               # Export functionality
+│
+├── stores/                   # App-specific Zustand stores
+│   ├── fixtureStore.ts       # Parts, supports, clamps, labels, holes
+│   ├── cavityStore.ts        # Cavity operations
+│   ├── placementStore.ts     # Placement modes
+│   └── processingStore.ts    # File processing state
+│
+├── hooks/                    # App-level hook wrappers
+│   ├── useSelection.ts       # Selection hooks
+│   ├── useWorkflow.ts        # Workflow hooks
+│   ├── useFixture.ts         # Fixture entity hooks
+│   └── useCavity.ts          # Cavity hooks
+│
+├── layout/                   # Layout orchestration
+│   └── AppShell.tsx          # Main orchestration
+│
+├── components/               # UI & 3D components
+│   ├── 3DScene/              # 3D scene (DECOMPOSED)
+│   │   ├── hooks/            # Scene-specific hooks (see below)
+│   │   ├── renderers/        # Render components
+│   │   └── index.ts          # Public API
+│   ├── 3DScene.tsx           # Main scene component
+│   ├── ContextOptionsPanel/  # Workflow step panels
+│   └── ui/                   # shadcn components
+│
+└── utils/                    # Utilities
+    ├── performanceSettings.ts
+    └── memoryMonitor.ts
+```
+
+---
+
+## 4. 3DScene Hook Architecture
+
+The 3DScene component is decomposed into specialized hooks following separation of concerns:
+
+### State Hooks (Local State Management)
+
+| Hook | Purpose |
+|------|---------|
+| `useSupportState` | Support placement state (placing, supports, trim preview) |
+| `useClampState` | Clamp placement state (placedClamps, placement mode) |
+| `useLabelState` | Label state (labels, selection, pending config) |
+| `useHoleState` | Hole state (mountingHoles, placement mode, CSG) |
+| `useBaseplateState` | Baseplate config (sections, drawing mode) |
+| `useSceneState` | General scene state (transforms, bounds, CSG previews) |
+
+### Handler Hooks (Event Processing)
+
+| Hook | Purpose |
+|------|---------|
+| `useSupportHandlers` | Support add/update/delete events |
+| `useClampHandlers` | Clamp placement and update events |
+| `useLabelHandlers` | Label add/update/delete events |
+| `useHoleHandlers` | Hole placement and CSG events |
+| `useBaseplateHandlers` | Baseplate creation and modification |
+
+### Operation Hooks (Complex Operations)
+
+| Hook | Purpose |
+|------|---------|
+| `useCavityOperations` | Cavity subtraction CSG operations |
+| `useOffsetMeshPreview` | Heightmap-based offset mesh generation |
+| `useSupportTrimPreview` | Support trim preview generation |
+| `useBaseplateOperations` | Baseplate expansion calculations |
+| `useHoleCSG` | Hole CSG operations on baseplate |
+| `useSceneReset` | Scene reset with Three.js memory cleanup |
+
+### Control Hooks (Camera & Transform)
+
+| Hook | Purpose |
+|------|---------|
+| `useCameraControls` | Camera positioning and orientation |
+| `useModelTransform` | Part transform with live updates |
+| `usePartManagement` | Part bounds and visibility |
+
+### Pattern Example
+
+```typescript
+// In 3DScene.tsx - orchestration only
+const ThreeDScene: React.FC<Props> = (props) => {
+  // 1. State hooks
+  const supportState = useSupportState();
+  const clampState = useClampState();
+  
+  // 2. Handler hooks (wire events)
+  useSupportHandlers({ ...supportState, ...props });
+  useClampHandlers({ ...clampState, ...props });
+  
+  // 3. Operation hooks
+  useCavityOperations({ ... });
+  useSceneReset({ ... });
+  
+  // 4. Render
+  return (
+    <>
+      <SupportsRenderer supports={supportState.supports} />
+      <ClampsRenderer clamps={clampState.placedClamps} />
+    </>
+  );
+};
+```
+
+---
+
+## 5. State Management
+
+### Technology: Zustand + Immer
+
+We use **Zustand** with **Immer middleware** for global state management:
+
+```typescript
+// Standard store creation pattern
+import { create } from 'zustand';
+import { devtools, subscribeWithSelector } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
+
+export const useFeatureStore = create<FeatureState & FeatureActions>()(
+  devtools(
+    subscribeWithSelector(
+      immer((set, get) => ({
+        // State
+        items: [],
+        selectedId: null,
+        
+        // Actions - Immer allows direct mutation
+        addItem: (item) => set((state) => {
+          state.items.push(item);  // Direct push OK with Immer
+        }),
+        
+        removeItem: (id) => set((state) => {
+          state.items = state.items.filter(i => i.id !== id);
+        }),
+        
+        updateItem: (id, changes) => set((state) => {
+          const item = state.items.find(i => i.id === id);
+          if (item) Object.assign(item, changes);  // Direct assign OK
+        }),
+      }))
+    ),
+    { name: 'feature-store' }  // DevTools name
+  )
+);
+```
+
+### When to Use Global Store vs Local State
+
+| Scenario | Use | Location |
+|----------|-----|----------|
+| **Persisted entity data** (parts, supports, clamps) | Zustand Store | `src/stores/` |
+| **Cross-component selection** | Zustand Store | `selectionStore` |
+| **3D-only transient state** (drag preview, hover) | React useState | 3DScene hooks |
+| **Placement mode flags** | Zustand Store | `placementStore` |
+| **UI-only state** (accordion open, panel visible) | Zustand Store | `uiStore` |
+| **Three.js refs** (meshes, controls) | useRef | Component |
+
+### Store Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        USER'S BROWSER                            │
+│                    GENERIC STORES (cad-ui)                      │
+│                   Workflow-agnostic, reusable                   │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │  React Frontend Application                             │    │
-│  │  ├─ Three.js Scene (3D Rendering)                      │    │
-│  │  ├─ React Three Fiber (React Integration)              │    │
-│  │  ├─ UI Components (Tailwind CSS)                       │    │
-│  │  └─ State Management (Zustand)                         │    │
-│  └────────────────────────────────────────────────────────┘    │
-│                          ↕                                       │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │  Client-Side Storage Layer (IndexedDB)                  │    │
-│  │  ├─ Active design sessions (8-22 MB each)              │    │
-│  │  ├─ Imported models (STL/STEP/3MF)                     │    │
-│  │  ├─ Undo/redo history (50 states)                      │    │
-│  │  ├─ Auto-save snapshots (10 per session)               │    │
-│  │  └─ Export records                                      │    │
-│  │  Capacity: 1-2GB (45-125 sessions)                     │    │
-│  └────────────────────────────────────────────────────────┘    │
-│                                                                  │
+│ selectionStore    │ { category, id } selection pattern          │
+│ workflowStore     │ Active step, accordion sync                 │
+│ uiStore           │ Theme, panel states, settings               │
+│ historyStore      │ Undo/redo stacks                            │
+│ transformStore    │ Active transform mode (translate/rotate)    │
 └─────────────────────────────────────────────────────────────────┘
-                            │
-                            │ HTTPS (Auth + Metadata)
-                            ▼
+
 ┌─────────────────────────────────────────────────────────────────┐
-│                   BACKEND API SERVER                             │
+│                  APP-SPECIFIC STORES (src/stores)               │
+│                   Fixture workflow specific                     │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │  Express.js REST API                                    │    │
-│  │  ├─ /api/auth/* (authentication)                       │    │
-│  │  ├─ /api/projects/* (project metadata)                 │    │
-│  │  ├─ /api/versions/* (version metadata)                 │    │
-│  │  └─ /api/backup/* (optional cloud backup)              │    │
-│  └────────────────────────────────────────────────────────┘    │
-│                          ↕                                       │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │  PostgreSQL Database                                    │    │
-│  │  ├─ users (authentication)                             │    │
-│  │  ├─ refresh_tokens (JWT rotation)                      │    │
-│  │  ├─ projects (metadata only)                           │    │
-│  │  ├─ design_versions (metadata only)                    │    │
-│  │  ├─ exports (export records)                           │    │
-│  │  ├─ cloud_backups (optional compressed data)           │    │
-│  │  ├─ shared_projects (collaboration)                    │    │
-│  │  └─ audit_logs (security events)                       │    │
-│  └────────────────────────────────────────────────────────┘    │
-│                                                                  │
+│ fixtureStore      │ Parts, supports, clamps, labels, holes      │
+│ cavityStore       │ Cavity settings, processing state           │
+│ placementStore    │ Support/hole/baseplate placement modes      │
+│ processingStore   │ File processing, mesh analysis              │
+│ dialogStore       │ Modal dialogs state                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
----
+### Hook Wrapper Pattern
 
-## Database Schema Design
-
-### Overview
-
-**8 Tables Total:**
-- 3 Auth tables (users, refresh_tokens, audit_logs)
-- 4 Project tables (projects, design_versions, exports, shared_projects)
-- 1 Optional table (cloud_backups)
-
-**Key Design Decisions:**
-- **No 3D data in database** — Only metadata (names, timestamps, thumbnails)
-- **Lightweight** — Small footprint, fast queries
-- **Scalable** — Designed for millions of users
-- **GDPR-compliant** — Easy data deletion and export
-
----
-
-### Table 1: users
-
-**Purpose:** User authentication and account management
-
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  
-  -- Authentication
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  email_verified BOOLEAN DEFAULT FALSE,
-  verification_token VARCHAR(255),
-  verification_token_expiry TIMESTAMP,
-  
-  -- Password Reset
-  password_reset_token VARCHAR(255),
-  password_reset_expiry TIMESTAMP,
-  
-  -- Security
-  failed_login_attempts INTEGER DEFAULT 0,
-  locked_until TIMESTAMP,
-  mfa_enabled BOOLEAN DEFAULT FALSE,
-  mfa_secret VARCHAR(255),
-  
-  -- Profile
-  name VARCHAR(255),
-  avatar_url TEXT,
-  
-  -- Preferences
-  preferences JSONB DEFAULT '{}',
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  last_login_at TIMESTAMP,
-  
-  -- Soft Delete
-  deleted_at TIMESTAMP
-);
-
-CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_verification_token ON users(verification_token);
-CREATE INDEX idx_users_reset_token ON users(password_reset_token);
-```
-
-**Fields Explained:**
-- `id` — UUID primary key
-- `email` — Unique email address
-- `password_hash` — bcrypt hash (12 rounds)
-- `email_verified` — Email verification status
-- `verification_token` — Email verification token
-- `password_reset_token` — Password reset token
-- `failed_login_attempts` — Track failed logins
-- `locked_until` — Account lockout timestamp
-- `mfa_enabled` — Multi-factor auth enabled
-- `preferences` — User settings (JSON)
-- `deleted_at` — Soft delete timestamp
-
----
-
-### Table 2: refresh_tokens
-
-**Purpose:** JWT refresh token management with rotation
-
-```sql
-CREATE TABLE refresh_tokens (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Token Data
-  token_hash VARCHAR(255) UNIQUE NOT NULL,
-  expires_at TIMESTAMP NOT NULL,
-  
-  -- Rotation
-  revoked BOOLEAN DEFAULT FALSE,
-  revoked_at TIMESTAMP,
-  replaced_by_token VARCHAR(255),
-  
-  -- Metadata
-  ip_address VARCHAR(45),
-  user_agent TEXT,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
-CREATE INDEX idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
-CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
-```
-
-**Fields Explained:**
-- `token_hash` — SHA-256 hash of refresh token
-- `expires_at` — Token expiration (7 days)
-- `revoked` — Token revoked status
-- `replaced_by_token` — New token hash (rotation)
-- `ip_address` — Client IP for security
-- `user_agent` — Client browser info
-
----
-
-### Table 3: audit_logs
-
-**Purpose:** Security event tracking and compliance
-
-```sql
-CREATE TABLE audit_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-  
-  -- Event Data
-  action VARCHAR(50) NOT NULL,
-  resource VARCHAR(50),
-  resource_id VARCHAR(255),
-  
-  -- Result
-  status VARCHAR(20) NOT NULL, -- success, failure, error
-  error_message TEXT,
-  
-  -- Request Context
-  ip_address VARCHAR(45),
-  user_agent TEXT,
-  
-  -- Additional Data
-  metadata JSONB,
-  
-  -- Timestamp
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
-CREATE INDEX idx_audit_logs_action ON audit_logs(action);
-CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
-CREATE INDEX idx_audit_logs_resource ON audit_logs(resource, resource_id);
-```
-
-**Actions Tracked:**
-- `LOGIN`, `LOGOUT`, `REGISTER`
-- `PASSWORD_CHANGE`, `PASSWORD_RESET`
-- `EMAIL_VERIFY`
-- `PROJECT_CREATE`, `PROJECT_DELETE`, `PROJECT_SHARE`
-- `EXPORT_CREATE`
-- `BACKUP_UPLOAD`, `BACKUP_DOWNLOAD`
-
----
-
-### Table 4: projects
-
-**Purpose:** Project metadata (NOT 3D data)
-
-```sql
-CREATE TABLE projects (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Project Info
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  thumbnail_url TEXT,
-  
-  -- Model Info (metadata only)
-  model_filename VARCHAR(255),
-  model_file_type VARCHAR(10), -- STL, STEP, 3MF
-  model_file_size INTEGER,
-  
-  -- Design Stats
-  supports_count INTEGER DEFAULT 0,
-  clamps_count INTEGER DEFAULT 0,
-  has_baseplate BOOLEAN DEFAULT FALSE,
-  
-  -- Status
-  status VARCHAR(20) DEFAULT 'active', -- active, archived, deleted
-  
-  -- Collaboration
-  is_public BOOLEAN DEFAULT FALSE,
-  share_token VARCHAR(255) UNIQUE,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  last_opened_at TIMESTAMP,
-  
-  -- Soft Delete
-  deleted_at TIMESTAMP
-);
-
-CREATE INDEX idx_projects_user_id ON projects(user_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_projects_status ON projects(status);
-CREATE INDEX idx_projects_share_token ON projects(share_token);
-CREATE INDEX idx_projects_updated_at ON projects(updated_at DESC);
-```
-
-**Fields Explained:**
-- `name` — Project name (e.g., "Fixture for Part XYZ")
-- `description` — Optional description
-- `thumbnail_url` — Preview image URL
-- `model_filename` — Original file name
-- `model_file_type` — STL, STEP, or 3MF
-- `supports_count` — Number of supports
-- `clamps_count` — Number of clamps
-- `status` — active, archived, or deleted
-- `is_public` — Public sharing enabled
-- `share_token` — Unique share link token
-
-**Note:** Actual 3D data is in IndexedDB, not database!
-
----
-
-### Table 5: design_versions
-
-**Purpose:** Version history metadata (NOT full state)
-
-```sql
-CREATE TABLE design_versions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  
-  -- Version Info
-  version_number INTEGER NOT NULL,
-  name VARCHAR(255),
-  description TEXT,
-  thumbnail_url TEXT,
-  
-  -- Changes Summary
-  changes_summary TEXT,
-  supports_count INTEGER DEFAULT 0,
-  clamps_count INTEGER DEFAULT 0,
-  
-  -- Metadata
-  is_auto_save BOOLEAN DEFAULT FALSE,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  created_by UUID REFERENCES users(id) ON DELETE SET NULL
-);
-
-CREATE INDEX idx_design_versions_project_id ON design_versions(project_id);
-CREATE INDEX idx_design_versions_created_at ON design_versions(created_at DESC);
-CREATE UNIQUE INDEX idx_design_versions_project_version 
-  ON design_versions(project_id, version_number);
-```
-
-**Fields Explained:**
-- `version_number` — Sequential version (1, 2, 3...)
-- `name` — Version name (e.g., "Initial design", "Added clamps")
-- `changes_summary` — What changed
-- `is_auto_save` — Auto-saved or manual
-- `thumbnail_url` — Version preview
-
-**Note:** Full version state is in IndexedDB snapshots!
-
----
-
-### Table 6: exports
-
-**Purpose:** Track exported files
-
-```sql
-CREATE TABLE exports (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Export Info
-  format VARCHAR(10) NOT NULL, -- STL, 3MF, PDF, SESSION
-  filename VARCHAR(255) NOT NULL,
-  file_size INTEGER,
-  file_url TEXT,
-  
-  -- Export Settings
-  settings JSONB,
-  
-  -- Status
-  status VARCHAR(20) DEFAULT 'completed', -- pending, completed, failed
-  error_message TEXT,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  expires_at TIMESTAMP -- For temporary download links
-);
-
-CREATE INDEX idx_exports_project_id ON exports(project_id);
-CREATE INDEX idx_exports_user_id ON exports(user_id);
-CREATE INDEX idx_exports_created_at ON exports(created_at DESC);
-CREATE INDEX idx_exports_expires_at ON exports(expires_at) WHERE expires_at IS NOT NULL;
-```
-
-**Fields Explained:**
-- `format` — STL, 3MF, PDF, or SESSION
-- `filename` — Export filename
-- `file_url` — S3 URL or download link
-- `settings` — Export settings (JSON)
-- `expires_at` — Link expiration (24-48 hours)
-
----
-
-### Table 7: shared_projects
-
-**Purpose:** Project sharing and collaboration
-
-```sql
-CREATE TABLE shared_projects (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  shared_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  shared_with UUID REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Permissions
-  permission VARCHAR(20) DEFAULT 'view', -- view, edit, admin
-  
-  -- Share Type
-  share_type VARCHAR(20) NOT NULL, -- user, link, public
-  share_token VARCHAR(255) UNIQUE,
-  
-  -- Status
-  accepted BOOLEAN DEFAULT FALSE,
-  revoked BOOLEAN DEFAULT FALSE,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  accepted_at TIMESTAMP,
-  revoked_at TIMESTAMP,
-  expires_at TIMESTAMP
-);
-
-CREATE INDEX idx_shared_projects_project_id ON shared_projects(project_id);
-CREATE INDEX idx_shared_projects_shared_with ON shared_projects(shared_with);
-CREATE INDEX idx_shared_projects_share_token ON shared_projects(share_token);
-CREATE INDEX idx_shared_projects_expires_at ON shared_projects(expires_at);
-```
-
-**Fields Explained:**
-- `shared_by` — User who shared
-- `shared_with` — User receiving share (NULL for link shares)
-- `permission` — view, edit, or admin
-- `share_type` — user (direct), link, or public
-- `share_token` — Unique token for link sharing
-- `accepted` — Share accepted status
-- `expires_at` — Share expiration
-
----
-
-### Table 8: cloud_backups (Optional)
-
-**Purpose:** Optional cloud backup storage
-
-```sql
-CREATE TABLE cloud_backups (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Backup Data
-  backup_name VARCHAR(255),
-  compressed_data BYTEA, -- Or S3 URL
-  file_size INTEGER NOT NULL,
-  checksum VARCHAR(64) NOT NULL,
-  
-  -- Compression
-  compression_type VARCHAR(20) DEFAULT 'gzip', -- gzip, brotli
-  original_size INTEGER,
-  
-  -- Metadata
-  metadata JSONB,
-  
-  -- Timestamps
-  created_at TIMESTAMP DEFAULT NOW(),
-  accessed_at TIMESTAMP
-);
-
-CREATE INDEX idx_cloud_backups_project_id ON cloud_backups(project_id);
-CREATE INDEX idx_cloud_backups_user_id ON cloud_backups(user_id);
-CREATE INDEX idx_cloud_backups_created_at ON cloud_backups(created_at DESC);
-```
-
-**Fields Explained:**
-- `compressed_data` — Compressed session data (or S3 URL)
-- `file_size` — Compressed size
-- `checksum` — SHA-256 checksum
-- `compression_type` — gzip or brotli
-- `original_size` — Uncompressed size
-
-**Note:** This table is optional. Users can work without cloud backup.
-
----
-
-## Database Relationships
-
-```
-users (1) ──────── (N) projects
-  │                      │
-  │                      ├── (N) design_versions
-  │                      ├── (N) exports
-  │                      └── (N) cloud_backups
-  │
-  ├── (N) refresh_tokens
-  ├── (N) audit_logs
-  └── (N) shared_projects (as shared_by or shared_with)
-```
-
----
-
-## API Endpoints
-
-### Authentication Endpoints
+Stores expose backward-compatible hooks:
 
 ```typescript
-// Public
-POST   /api/auth/register          // Create account
-POST   /api/auth/login             // Login
-POST   /api/auth/refresh           // Refresh access token
-GET    /api/auth/verify            // Verify email
-POST   /api/auth/request-reset     // Request password reset
-POST   /api/auth/reset             // Reset password
+// In src/hooks/useSelection.ts
+export function useSelectedPart() {
+  const partId = useSelectionStore(state => state.selectedIds.part);
+  const select = useSelectionStore(state => state.select);
+  
+  const setSelectedPartId = useCallback((id: string | null) => {
+    select('part', id);
+  }, [select]);
+  
+  return [partId, setSelectedPartId] as const;
+}
 
-// Protected
-GET    /api/auth/me                // Get current user
-PUT    /api/auth/profile           // Update profile
-POST   /api/auth/change-password   // Change password
-POST   /api/auth/logout            // Logout
-DELETE /api/auth/account           // Delete account
+// Usage - same interface as useState
+const [selectedPartId, setSelectedPartId] = useSelectedPart();
 ```
 
-### Project Endpoints
+### Custom Events (Cross-Boundary Communication)
+
+These events remain for operations spanning component boundaries:
+
+| Event | Purpose | Direction |
+|-------|---------|-----------|
+| `generate-offset-mesh-preview` | Trigger cavity preview | AppShell → 3DScene |
+| `execute-cavity-subtraction` | Apply cavity to baseplate | AppShell → 3DScene |
+| `export-fixture` | Export merged mesh | AppShell → 3DScene |
+| `viewer-reset` | Reset viewer state | Utils → 3DScene |
+| `session-reset` | Reset entire session | Utils → All |
+
+---
+
+## 6. Critical Systems
+
+### ⚠️ DO NOT MODIFY WITHOUT UNDERSTANDING
+
+#### 6.1 Coordinate System Transform
+
+**Problem:** CAD uses Z-up, Three.js uses Y-up.
 
 ```typescript
-// Protected
-GET    /api/projects               // List user's projects
-POST   /api/projects               // Create project (metadata only)
-GET    /api/projects/:id           // Get project metadata
-PUT    /api/projects/:id           // Update project metadata
-DELETE /api/projects/:id           // Delete project
-POST   /api/projects/:id/archive   // Archive project
-POST   /api/projects/:id/restore   // Restore project
+// packages/cad-core/src/transform/coordinateUtils.ts
+export const toCadPosition = (position) => ({
+  x: position.x,
+  y: position.z,  // CAD Y = Three.js Z
+  z: position.y,  // CAD Z = Three.js Y
+});
 ```
 
-### Version Endpoints
+| Application | Three.js | Description |
+|-------------|----------|-------------|
+| X | X | Horizontal |
+| Y | Z | Depth |
+| Z | Y | Vertical |
+
+#### 6.2 Euler Order for Rotation
 
 ```typescript
-// Protected
-GET    /api/projects/:id/versions          // List versions
-POST   /api/projects/:id/versions          // Create version
-GET    /api/projects/:id/versions/:verId   // Get version
-DELETE /api/projects/:id/versions/:verId   // Delete version
+// ✅ CORRECT - Use YXZ for clean Y-axis extraction
+tempEuler.setFromQuaternion(quaternion, 'YXZ');
+const spin = tempEuler.y;
+
+// ❌ WRONG - Default order pollutes Y
+tempEuler.setFromQuaternion(quaternion);
 ```
 
-### Export Endpoints
+#### 6.3 Transform Anti-Jitter Pattern
 
 ```typescript
-// Protected
-GET    /api/projects/:id/exports           // List exports
-POST   /api/projects/:id/exports           // Create export record
-GET    /api/exports/:id/download           // Download export
-DELETE /api/exports/:id                    // Delete export
+// Required in all transform controls
+const isDraggingRef = useRef(false);
+const dragStartPos = useRef<THREE.Vector3 | null>(null);
+
+const handleDragStart = () => {
+  isDraggingRef.current = true;
+  dragStartPos.current = position.clone();  // LOCK position
+};
+
+// During drag, use LOCKED position for display
+const displayPos = isDraggingRef.current ? dragStartPos.current : currentPosition;
+
+const handleDragEnd = () => {
+  isDraggingRef.current = false;
+  dragStartPos.current = null;
+  // CRITICAL: Reset pivot to identity
+  pivotRef.current.matrix.identity();
+};
 ```
 
-### Share Endpoints
+#### 6.4 Immer Frozen State
+
+Zustand with Immer produces **frozen state**. Never mutate directly:
 
 ```typescript
-// Protected
-POST   /api/projects/:id/share             // Share project
-GET    /api/projects/:id/shares            // List shares
-DELETE /api/shares/:id                     // Revoke share
-GET    /api/shared-with-me                 // Projects shared with me
+// ❌ WRONG - Will throw "Cannot assign to read only property"
+updates.position.y = newValue;
 
-// Public
-GET    /api/share/:token                   // Access shared project
+// ✅ CORRECT - Create mutable copy
+const mutableUpdates = { ...updates };
+mutableUpdates.position = { ...mutableUpdates.position };
+mutableUpdates.position.y = newValue;
 ```
 
-### Cloud Backup Endpoints (Optional)
+#### 6.5 Three.js Memory Management
+
+Always dispose geometries and materials when removing objects:
 
 ```typescript
-// Protected
-POST   /api/backup/upload                  // Upload compressed session
-GET    /api/backup/list                    // List backups
-GET    /api/backup/:id/download            // Download backup
-DELETE /api/backup/:id                     // Delete backup
+// In useSceneReset.ts - proper cleanup pattern
+setMergedFixtureMesh(prev => {
+  if (prev) {
+    prev.geometry?.dispose();
+    if (Array.isArray(prev.material)) {
+      prev.material.forEach(m => m.dispose());
+    } else {
+      prev.material?.dispose();
+    }
+  }
+  return null;
+});
 ```
 
 ---
 
-## Data Flow
+## 7. File Reference
 
-### Creating a New Project
+### Critical Files (Handle with Care)
 
+| File | Lines | Purpose | Risk |
+|------|-------|---------|------|
+| `src/components/3DScene.tsx` | ~2,400 | Main 3D scene | 🔴 HIGH |
+| `src/layout/AppShell.tsx` | ~2,100 | App orchestration | 🔴 HIGH |
+| `packages/cad-core/src/mesh/meshAnalysis.ts` | ~3,300 | Mesh processing | 🔴 HIGH |
+| `packages/cad-core/src/offset/offsetHeightmap.ts` | ~1,200 | Cavity generation | 🔴 HIGH |
+
+### 3DScene Hooks
+
+| File | Purpose |
+|------|---------|
+| `src/components/3DScene/hooks/useSupportState.ts` | Support state |
+| `src/components/3DScene/hooks/useClampState.ts` | Clamp state |
+| `src/components/3DScene/hooks/useLabelState.ts` | Label state |
+| `src/components/3DScene/hooks/useHoleState.ts` | Hole state |
+| `src/components/3DScene/hooks/useBaseplateState.ts` | Baseplate state |
+| `src/components/3DScene/hooks/useSceneState.ts` | Scene state |
+| `src/components/3DScene/hooks/useSceneReset.ts` | Reset & cleanup |
+| `src/components/3DScene/hooks/useCavityOperations.ts` | Cavity CSG |
+| `src/components/3DScene/hooks/useOffsetMeshPreview.ts` | Offset preview |
+
+### Feature Modules
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/features/supports/` | Support placement logic |
+| `src/features/clamps/` | Clamp placement logic |
+| `src/features/holes/` | Mounting hole logic |
+| `src/features/labels/` | Label system |
+| `src/features/baseplate/` | Baseplate configuration |
+| `src/features/export/` | Export functionality |
+
+---
+
+## 8. Appendix: Type Definitions
+
+### Core Types
+
+```typescript
+// CavitySettings - packages/cad-core/src/offset/types.ts
+interface CavitySettings {
+  enabled: boolean;
+  offsetDistance: number;      // Clearance (0 = exact fit)
+  pixelsPerUnit: number;
+  rotationXZ: number;
+  rotationYZ: number;
+  fillHoles: boolean;
+  showPreview: boolean;
+}
+
+// BasePlateConfig - src/features/baseplate/types.ts
+interface BasePlateConfig {
+  type: 'single' | 'multi-section';
+  dimensions: { width: number; height: number; depth: number };
+  padding: number;
+  sections?: BasePlateSection[];
+}
 ```
-1. User imports STL file in browser
-   ↓
-2. Frontend stores in IndexedDB
-   ↓
-3. Frontend calls POST /api/projects with metadata
-   {
-     name: "Fixture for Part XYZ",
-     model_filename: "part.stl",
-     model_file_type: "STL",
-     model_file_size: 5242880
-   }
-   ↓
-4. Backend creates project record in database
-   ↓
-5. Frontend continues working offline with IndexedDB
-```
 
-### Saving Progress
+### Selection Types
 
-```
-1. User makes changes (add support, etc.)
-   ↓
-2. Auto-save triggers (30 seconds)
-   ↓
-3. Frontend saves to IndexedDB (instant)
-   ↓
-4. (Optional) Frontend calls PUT /api/projects/:id
-   to update metadata (supports_count, updated_at)
-```
-
-### Loading a Project
-
-```
-1. User opens project list
-   ↓
-2. Frontend calls GET /api/projects
-   Returns: [{ id, name, thumbnail, updated_at }]
-   ↓
-3. User clicks project
-   ↓
-4. Frontend loads from IndexedDB (instant)
-   ↓
-5. If not in IndexedDB, show "Download from cloud" option
+```typescript
+// packages/cad-ui/src/stores/selectionStore.ts
+interface SelectionState {
+  selectedIds: {
+    part: string | null;
+    support: string | null;
+    clamp: string | null;
+    label: string | null;
+    hole: string | null;
+    baseplate: string | null;
+  };
+}
 ```
 
 ---
 
-## Storage Strategy
-
-### Client-Side (IndexedDB)
-
-**What Gets Stored:**
-- Imported 3D models (full geometry)
-- Current design state
-- Undo/redo history (50 states)
-- Auto-save snapshots (10 per session)
-- Export files (temporary)
-
-**Capacity:** 1-2 GB per device (45-125 projects)
-
-### Server-Side (PostgreSQL)
-
-**What Gets Stored:**
-- User accounts
-- Project metadata (names, timestamps, thumbnails)
-- Version metadata (not full state)
-- Export records
-- Share permissions
-- Optional: Compressed backups
-
-**Capacity:** ~1-10 MB per user
-
----
-
-## Security Architecture
-
-### Authentication
-- **Password Hashing:** bcrypt with 12 salt rounds
-- **JWT Tokens:** 15-minute access, 7-day refresh
-- **Token Rotation:** Refresh tokens rotated on use
-- **Account Lockout:** 5 failed attempts → 15-minute lockout
-
-### Authorization
-- **Row-Level Security:** Users can only access their own data
-- **Share Permissions:** view, edit, admin levels
-- **Audit Logging:** All sensitive actions logged
-
-### Data Protection
-- **Client-Side:** Data stays on device
-- **In Transit:** HTTPS/TLS 1.3
-- **At Rest:** Database encryption (AES-256)
-- **Backups:** Encrypted before upload
-
----
-
-## Performance Optimization
-
-### Database Indexes
-- All foreign keys indexed
-- Composite indexes for common queries
-- Partial indexes for soft deletes
-- Covering indexes for list queries
-
-### Query Optimization
-- Pagination for list endpoints (limit 50)
-- Select only needed fields
-- Eager loading for relationships
-- Connection pooling (max 20 connections)
-
-### Caching Strategy
-- Redis for session data (optional)
-- CDN for thumbnails and exports
-- Browser caching for static assets
-
----
-
-## Scalability
-
-### Horizontal Scaling
-- Stateless API (scale backend instances)
-- Load balancer distribution
-- Database read replicas
-- CDN for static content
-
-### Vertical Scaling
-- Database optimization (indexes, queries)
-- Connection pooling
-- Async operations
-- Background jobs for exports
-
----
-
-## Summary
-
-### Database Design
-- **8 tables** — Lightweight and focused
-- **Metadata only** — No 3D data in database
-- **GDPR-compliant** — Easy data deletion
-- **Scalable** — Designed for millions of users
-
-### Architecture Benefits
-- ✅ **Fast** — Instant client-side operations
-- ✅ **Offline** — Full functionality without internet
-- ✅ **Scalable** — Minimal server load
-- ✅ **Private** — Data stays on device
-- ✅ **Flexible** — Optional cloud features
-
----
-
-**Next:** [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) for implementation details
+*End of Architecture Document*

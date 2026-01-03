@@ -159,6 +159,23 @@ export function createDragPreview(component: any): THREE.Group {
   return group;
 }
 
+// Helper function to dispose drag preview resources
+export function disposeDragPreview(group: THREE.Group): void {
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(mat => mat.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    }
+  });
+  group.clear();
+}
+
 // Helper function to check if a point is valid for placement
 export function isValidPlacement(point: THREE.Vector3, existingComponents: any[]): boolean {
   // Check if point is within reasonable bounds

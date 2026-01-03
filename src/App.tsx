@@ -13,7 +13,7 @@ import VerifyEmailPage from './pages/auth/VerifyEmail';
 import ResetPasswordPage from './pages/auth/ResetPassword';
 import AppShell, { AppShellHandle } from './layout/AppShell';
 import FileImport from './modules/FileImport';
-import FixtureDesigner from './components/FixtureDesigner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ProcessedFile } from './modules/FileImport/types';
 
 const queryClient = new QueryClient();
@@ -39,7 +39,6 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
 const MainApp = () => {
   const [currentFile, setCurrentFile] = useState<ProcessedFile | null>(null);
-  const [currentView, setCurrentView] = useState<'import' | 'design'>('import');
   const [designMode, setDesignMode] = useState(false);
   const appShellRef = useRef<AppShellHandle>(null);
   const { logout, fetchCurrentUser, isAuthenticated } = useAuthStore();
@@ -63,7 +62,6 @@ const MainApp = () => {
   useEffect(() => {
     const handleSessionReset = () => {
       setCurrentFile(null);
-      setCurrentView('import');
       setDesignMode(false);
     };
 

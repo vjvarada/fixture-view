@@ -19,7 +19,7 @@ import {
   ChevronUp,
   SquaresSubtract,
 } from 'lucide-react';
-import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@/lib/offset/types';
+import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@rapidtool/cad-core';
 
 // ============================================
 // Types
@@ -157,7 +157,7 @@ const OperationHeader = memo(() => (
   <Card className="tech-glass p-3">
     <div className="flex items-start gap-3">
       <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center flex-shrink-0">
-        <Minus className="w-4 h-4 text-primary" />
+        <SquaresSubtract className="w-4 h-4 text-primary" />
       </div>
       <div>
         <p className="text-sm font-tech font-medium">Create Cavity</p>
@@ -286,7 +286,7 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
           <Slider
             value={[settings.offsetDistance]}
             onValueChange={([v]) => handleSettingChange('offsetDistance', v)}
-            min={0.05}
+            min={0}
             max={3}
             step={0.05}
             className="flex-1"
@@ -297,7 +297,7 @@ const CavityStepContent: React.FC<CavityStepContentProps> = ({
           </Badge>
         </div>
         <p className="text-[8px] text-muted-foreground font-tech">
-          Gap around the workpiece for easier insertion/removal
+          Gap around the workpiece for easier insertion/removal (0 = exact fit)
         </p>
       </div>
 

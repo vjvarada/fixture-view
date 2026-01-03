@@ -1,188 +1,122 @@
+/**
+ * useFileProcessing Hook
+ * 
+ * Handles file upload, parsing, and processing for 3D model files.
+ * Supports STL format with extensible architecture for additional formats.
+ */
+
 import { useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { ProcessedFile, FileMetadata, SUPPORTED_FORMATS } from '../types';
+import { parseSTL, validateSTLBuffer } from '@rapidtool/cad-core';
+
+// ============================================================================
+// Types
+// ============================================================================
 
 interface UseFileProcessingReturn {
-  processFile: (file: File, units?: string, preloadedArrayBuffer?: ArrayBuffer) => Promise<ProcessedFile>;
+  processFile: (file: File, units?: string) => Promise<ProcessedFile | undefined>;
   isProcessing: boolean;
   error: string | null;
   clearError: () => void;
 }
 
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/** Maximum allowed file size (100MB) */
+export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+
+/** Files larger than this will be automatically optimized (5MB) */
+export const LARGE_FILE_THRESHOLD = 5 * 1024 * 1024; // 5MB
+
+const UNIT_SCALES: Record<string, number> = {
+  mm: 1,
+  cm: 10,
+  inch: 25.4,
+};
+
+const DEFAULT_MATERIAL_CONFIG = {
+  color: 0xb0b0b0,
+  roughness: 0.6,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+} as const;
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+function getFileExtension(filename: string): string {
+  const parts = filename.split('.');
+  return parts.length > 1 ? `.${parts.pop()!.toLowerCase()}` : '';
+}
+
+function validateFile(file: File): void {
+  const extension = getFileExtension(file.name);
+  
+  if (!SUPPORTED_FORMATS.includes(extension)) {
+    throw new Error(
+      `Unsupported format: ${extension}. Supported: ${SUPPORTED_FORMATS.join(', ')}`
+    );
+  }
+  
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error(`File too large. Maximum size: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+  }
+}
+
+function computeMetadata(
+  geometry: THREE.BufferGeometry,
+  file: File,
+  processingTimeMs: number,
+  units: string
+): FileMetadata {
+  geometry.computeBoundingBox();
+  const boundingBox = geometry.boundingBox!;
+  
+  const dimensions = boundingBox.getSize(new THREE.Vector3());
+  const center = boundingBox.getCenter(new THREE.Vector3());
+  
+  const positionAttr = geometry.getAttribute('position');
+  const triangles = Math.floor(positionAttr.count / 3);
+  
+  return {
+    name: file.name,
+    size: file.size,
+    triangles,
+    boundingBox,
+    dimensions,
+    center,
+    processingTime: processingTimeMs,
+    units,
+  };
+}
+
+function createMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: DEFAULT_MATERIAL_CONFIG.color,
+    roughness: DEFAULT_MATERIAL_CONFIG.roughness,
+    metalness: DEFAULT_MATERIAL_CONFIG.metalness,
+    side: DEFAULT_MATERIAL_CONFIG.side,
+  });
+}
+
+// ============================================================================
+// Hook Implementation
+// ============================================================================
+
 export function useFileProcessing(): UseFileProcessingReturn {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const clearError = useCallback(() => {
-    setError(null);
-  }, []);
+  const clearError = useCallback(() => setError(null), []);
 
-  const getUnitScale = (units: string): number => {
-    switch (units) {
-      case 'mm':
-        return 1; // Base unit is mm
-      case 'cm':
-        return 10; // 1 cm = 10 mm
-      case 'inch':
-        return 25.4; // 1 inch = 25.4 mm
-      default:
-        return 1;
-    }
-  };
-
-  const validateFile = (file: File): void => {
-    const extension = '.' + file.name.split('.').pop()?.toLowerCase();
-    if (!SUPPORTED_FORMATS.includes(extension)) {
-      throw new Error(`Unsupported file format: ${extension}. Supported formats: ${SUPPORTED_FORMATS.join(', ')}`);
-    }
-
-    // Check file size (max 100MB)
-    const maxSize = 100 * 1024 * 1024; // 100MB
-    if (file.size > maxSize) {
-      throw new Error('File too large. Maximum size is 100MB.');
-    }
-  };
-
-  const parseSTL = async (arrayBuffer: ArrayBuffer): Promise<THREE.BufferGeometry> => {
-    const byteLength = arrayBuffer.byteLength;
-
-    if (byteLength > 84) {
-      const view = new DataView(arrayBuffer);
-      const triangleCount = view.getUint32(80, true);
-      const expectedByteLength = 84 + triangleCount * 50;
-
-      const headerText = new TextDecoder().decode(new Uint8Array(arrayBuffer, 0, 80)).trim().toLowerCase();
-      const headerSuggestsASCII = headerText.startsWith('solid');
-
-      // Better binary detection: check if the expected length matches actual length
-      // Binary files have a predictable size based on triangle count
-      const isBinaryBySize = Math.abs(expectedByteLength - byteLength) < 100 && triangleCount > 0;
-      
-      // If the size matches binary format, treat as binary even if header starts with "solid"
-      if (isBinaryBySize) {
-        return parseBinarySTL(arrayBuffer, triangleCount);
-      }
-      
-      // If header doesn't suggest ASCII and we have valid triangle count, try binary
-      if (!headerSuggestsASCII && triangleCount > 0) {
-        return parseBinarySTL(arrayBuffer, triangleCount);
-      }
-    }
-
-    return parseASCIISTL(new TextDecoder().decode(arrayBuffer));
-  };
-
-  const parseBinarySTL = (arrayBuffer: ArrayBuffer, triangleCountFromHeader?: number): THREE.BufferGeometry => {
-    const view = new DataView(arrayBuffer);
-    const triangleCount = triangleCountFromHeader ?? view.getUint32(80, true);
-    const expectedByteLength = 84 + triangleCount * 50;
-
-    if (expectedByteLength > arrayBuffer.byteLength) {
-      throw new Error('Binary STL data is incomplete or corrupted.');
-    }
-
-    const vertices: number[] = [];
-    const normals: number[] = [];
-    
-    let offset = 84; // Skip header (80 bytes) + triangle count (4 bytes)
-    
-    for (let i = 0; i < triangleCount; i++) {
-      if (offset + 50 > arrayBuffer.byteLength) {
-        throw new Error('Unexpected end of binary STL data while reading triangles.');
-      }
-
-      // Normal vector (3 floats)
-      const nx = view.getFloat32(offset, true);
-      const ny = view.getFloat32(offset + 4, true);
-      const nz = view.getFloat32(offset + 8, true);
-      offset += 12;
-      
-      // Three vertices (9 floats total)
-      for (let j = 0; j < 3; j++) {
-        const vx = view.getFloat32(offset, true);
-        const vy = view.getFloat32(offset + 4, true);
-        const vz = view.getFloat32(offset + 8, true);
-        offset += 12;
-        
-        vertices.push(vx, vy, vz);
-        normals.push(nx, ny, nz);
-      }
-      
-      // Skip attribute byte count (2 bytes)
-      offset += 2;
-    }
-    
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    
-    return geometry;
-  };
-
-  const parseASCIISTL = (text: string): THREE.BufferGeometry => {
-    const vertices: number[] = [];
-    const normals: number[] = [];
-    
-    const lines = text.split('\n');
-    let currentNormal: number[] = [];
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      
-      if (trimmed.startsWith('facet normal')) {
-        const parts = trimmed.split(/\s+/);
-        currentNormal = [
-          parseFloat(parts[2]) || 0,
-          parseFloat(parts[3]) || 0,
-          parseFloat(parts[4]) || 0
-        ];
-      } else if (trimmed.startsWith('vertex')) {
-        const parts = trimmed.split(/\s+/);
-        vertices.push(
-          parseFloat(parts[1]) || 0,
-          parseFloat(parts[2]) || 0,
-          parseFloat(parts[3]) || 0
-        );
-        normals.push(...currentNormal);
-      }
-    }
-    
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    
-    return geometry;
-  };
-
-  const computeMetadata = (geometry: THREE.BufferGeometry, file: File, processingTime: number, units: string): FileMetadata => {
-    // Compute bounding box
-    geometry.computeBoundingBox();
-    const boundingBox = geometry.boundingBox!;
-
-    // Get dimensions and center
-    const dimensions = new THREE.Vector3();
-    boundingBox.getSize(dimensions);
-
-    const center = new THREE.Vector3();
-    boundingBox.getCenter(center);
-
-    // Count triangles
-    const positionAttribute = geometry.getAttribute('position');
-    const triangles = positionAttribute.count / 3;
-
-    return {
-      name: file.name,
-      size: file.size,
-      triangles: Math.floor(triangles),
-      boundingBox,
-      dimensions,
-      center,
-      processingTime,
-      units
-    };
-  };
-
-  const processFile = useCallback(async (file: File, units: string = 'mm', preloadedArrayBuffer?: ArrayBuffer): Promise<ProcessedFile> => {
+  const processFile = useCallback(async (
+    file: File, 
+    units: string = 'mm'
+  ): Promise<ProcessedFile | undefined> => {
     const startTime = performance.now();
     
     try {
@@ -192,64 +126,60 @@ export function useFileProcessing(): UseFileProcessingReturn {
       // Validate file
       validateFile(file);
       
-      // Use preloaded ArrayBuffer if provided, otherwise read from file
-      const arrayBuffer = preloadedArrayBuffer || await file.arrayBuffer();
+      // Read file as ArrayBuffer
+      const arrayBuffer = await file.arrayBuffer();
       
       // Parse geometry based on file type
+      const extension = getFileExtension(file.name);
       let geometry: THREE.BufferGeometry;
-      const extension = '.' + file.name.split('.').pop()?.toLowerCase();
       
       switch (extension) {
-        case '.stl':
-          geometry = await parseSTL(arrayBuffer);
+        case '.stl': {
+          const validation = validateSTLBuffer(arrayBuffer);
+          if (!validation.valid) {
+            throw new Error(validation.error || 'Invalid STL file');
+          }
+          const result = parseSTL(arrayBuffer);
+          geometry = result.geometry;
           break;
+        }
         default:
-          throw new Error(`Parser for ${extension} not yet implemented`);
+          throw new Error(`Parser for ${extension} not implemented`);
       }
       
-      // Apply unit scaling - but keep models at their original scale for now
-      // We'll scale the grid and axes instead
-      // const scale = getUnitScale(units);
-      // geometry.scale(scale, scale, scale);
-      
-      // Rotate geometry so Z is up (STL files often use Y-up convention)
-      // Rotate -90 degrees around X axis to convert from Y-up to Z-up
+      // Apply coordinate system transformation (STL typically uses Z-up, Three.js uses Y-up)
       geometry.rotateX(-Math.PI / 2);
-
-      // Ensure we have normals
+      
+      // Ensure normals exist
       if (!geometry.attributes.normal) {
         geometry.computeVertexNormals();
       }
-
+      
+      // Compute BVH for raycasting optimization (if available)
       if (typeof (geometry as any).computeBoundsTree === 'function') {
-        geometry.computeBoundsTree();
+        (geometry as any).computeBoundsTree();
       }
-
-      // Create material and mesh
-      const material = new THREE.MeshStandardMaterial({
-        color: 0xb0b0b0, // Neutral gray
-        roughness: 0.6,
-        metalness: 0.0,
-        side: THREE.DoubleSide, // Render both front and back faces
-      });
-
+      
+      // Create mesh
+      const material = createMaterial();
       const mesh = new THREE.Mesh(geometry, material);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-
+      
       // Compute metadata
       const processingTime = performance.now() - startTime;
       const metadata = computeMetadata(geometry, file, processingTime, units);
-
+      
       // Generate unique ID for multi-part support
       const id = `part-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
+      
       return { id, mesh, metadata };
       
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
-      console.error('Error creating mesh:', err);
+      console.error('[useFileProcessing] Error:', err);
+      return undefined;
     } finally {
       setIsProcessing(false);
     }
@@ -262,3 +192,5 @@ export function useFileProcessing(): UseFileProcessingReturn {
     clearError,
   };
 }
+
+export default useFileProcessing;

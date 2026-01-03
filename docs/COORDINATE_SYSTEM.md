@@ -4,24 +4,162 @@ This document explains how coordinate systems work in this application and provi
 
 ## Overview
 
-**This application uses a Z-up coordinate system** for its domain logic (fixture design, CNC machining conventions), but **Three.js uses Y-up by default**.
+**This application presents a Z-up coordinate system to users** for its domain logic (fixture design, CNC machining conventions), but **Three.js uses Y-up internally**.
+
+### User-Facing Coordinate System (Z-up)
+
+The user sees and interacts with a **Z-up coordinate system**:
+- **X** = Horizontal (left/right)
+- **Y** = Depth (forward/backward on ground plane)
+- **Z** = Vertical (height/up)
+
+This matches CAD/CNC machining conventions where the ground plane is the XY plane.
+
+### Internal Coordinate System (Y-up)
+
+Three.js internally uses **Y-up**:
+- **X** = Horizontal (left/right) - same as user
+- **Y** = Vertical (height/up) - displayed as **Z** to user
+- **Z** = Depth (forward/backward) - displayed as **Y** to user
+
+### UI Label Mapping
+
+When displaying position values in the Properties panel:
+
+| Internal (Three.js) | Display Label | User Meaning |
+|---------------------|---------------|--------------|
+| `position.x` | **X** | Horizontal position |
+| `position.y` | **Z** | Height (vertical) |
+| `position.z` | **Y** | Depth (ground plane) |
+
+**Important for developers:** When adding position inputs in the UI:
+- The internal Y value should be labeled "Z" (height)
+- The internal Z value should be labeled "Y" (depth on ground)
+- Colors: Red = X, Green = Z (height), Blue = Y (depth)
 
 This mismatch requires careful handling when:
 - Placing gizmos (PivotControls, TransformControls)
 - Extracting rotation values from quaternions
 - Converting between world space and logical space
 - Importing OBJ models (which may be authored in different coordinate systems)
+- **Displaying position/rotation values in the UI**
 
 ---
 
 ## Coordinate System Mapping
 
-| Concept | Application (Z-up) | Three.js (Y-up) | Notes |
-|---------|-------------------|-----------------|-------|
-| **Vertical axis** | Z | Y | "Height" is Y in Three.js |
+| Concept | User Sees (Z-up) | Internal Three.js (Y-up) | Notes |
+|---------|------------------|--------------------------|-------|
+| **Vertical axis** | Z | Y | "Height" is Y in Three.js but shown as Z |
 | **Horizontal plane** | XY plane | XZ plane | Where objects rest on baseplate |
 | **"Spin" rotation** | Around Z | Around Y | Rotating object on the floor |
 | **Position on floor** | (X, Y) | (X, Z) | 2D coordinates on baseplate |
+| **Height value** | Z | Y | Vertical distance from ground |
+
+### Ground Plane Positions (2D)
+
+For components that only have ground plane positions (supports, labels, baseplate sections):
+- Display **X** and **Y** labels
+- Internally: X maps to X, Y maps to Z
+
+### Full 3D Positions
+
+For components with full 3D positioning (clamps, parts):
+- Display **X**, **Y**, **Z** labels
+- Internally: X→X, Y→Z (depth), Z→Y (height)
+- User's Z (height) = internal Y
+- User's Y (depth) = internal Z
+
+---
+
+## UI Implementation Guidelines
+
+### Properties Panel Position Inputs
+
+When creating position inputs in accordion panels, follow these conventions:
+
+#### For Ground Plane Only (2D) - Supports, Labels, Baseplate Sections
+
+```tsx
+// User sees X and Y for ground plane position
+<div className="grid grid-cols-2 gap-2">
+  <div className="space-y-1">
+    <Label className="text-red-500">X</Label>
+    <Input value={internalPosition.x} onChange={...} />
+  </div>
+  <div className="space-y-1">
+    <Label className="text-green-500">Y</Label>  {/* User's Y = internal Z */}
+    <Input value={internalPosition.z} onChange={...} />
+  </div>
+</div>
+```
+
+#### For Full 3D Position - Clamps, Parts
+
+```tsx
+// User sees X, Y (depth), Z (height)
+<div className="grid grid-cols-3 gap-2">
+  <div className="space-y-1">
+    <Label className="text-red-500">X</Label>
+    <Input value={position.x} onChange={(v) => handleChange('x', v)} />
+  </div>
+  <div className="space-y-1">
+    <Label className="text-green-500">Z</Label>  {/* User's Z (height) = internal Y */}
+    <Input value={position.y} onChange={(v) => handleChange('y', v)} />
+  </div>
+  <div className="space-y-1">
+    <Label className="text-blue-500">Y</Label>   {/* User's Y (depth) = internal Z */}
+    <Input value={position.z} onChange={(v) => handleChange('z', v)} />
+  </div>
+</div>
+```
+
+### Color Conventions
+
+| User Axis | Color | Internal Axis |
+|-----------|-------|---------------|
+| X | Red (`text-red-500`) | X |
+| Y (depth) | Blue (`text-blue-500`) | Z |
+| Z (height) | Green (`text-green-500`) | Y |
+
+### Files Following These Conventions
+
+- `src/features/baseplate/components/BaseplateAccordion.tsx` - X, Y labels for section position
+- `src/features/supports/components/SupportsAccordion.tsx` - X, Y labels for support position
+- `src/features/labels/components/LabelsAccordion.tsx` - X, Y labels for label position
+- `src/features/clamps/components/ClampsAccordion.tsx` - X, Y, Z labels for clamp 3D position
+- `src/components/PartItemAccordion.tsx` - X, Y, Z labels for part 3D position
+- `src/components/MountingHolesAccordion.tsx` - X, Y labels for hole position
+
+---
+
+## Project Name
+
+The application has a centralized project name stored in the fixture store (`src/stores/fixtureStore.ts`).
+
+### Usage
+
+- **Title Bar**: Displays the project name in the center. Double-click to edit.
+- **Default Label Text**: Labels use the format `{projectName} V1.0` by default.
+- **STL Export**: The project name is used as the default export filename.
+
+### Implementation
+
+```tsx
+// Get and set project name from store
+import { useProjectName } from '@/hooks/useFixture';
+
+const [projectName, setProjectName] = useProjectName();
+// projectName defaults to 'Untitled'
+```
+
+### Files Using Project Name
+
+- `src/stores/fixtureStore.ts` - State and actions
+- `src/hooks/useFixture.ts` - `useProjectName` hook
+- `src/layout/AppShell.tsx` - Editable title bar display
+- `src/components/ContextOptionsPanel/steps/LabelsStepContent.tsx` - Default label text
+- `src/components/ContextOptionsPanel/steps/ExportStepContent.tsx` - Default export filename
 
 ---
 
@@ -248,4 +386,4 @@ rotation.y = THREE.MathUtils.radToDeg(tempEuler.y);
 
 ---
 
-*Last updated: December 2024*
+*Last updated: January 2026*

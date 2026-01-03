@@ -17,8 +17,11 @@ import {
   MeshProcessingProgress,
   DECIMATION_THRESHOLD,
   DECIMATION_TARGET,
-} from "./services/meshAnalysis";
+} from "@rapidtool/cad-core";
 import * as THREE from 'three';
+import { createLogger } from '@/utils/logger';
+
+const logger = createLogger('FileImport');
 
 interface FileImportProps {
   onFileLoaded: (file: ProcessedFile | null) => void;
@@ -79,7 +82,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
 
   // Handle file selection - read file data immediately to avoid NotReadableError
   const handleFileSelected = useCallback(async (file: File) => {
-    console.log('File selected:', file.name);
+    logger.info('File selected:', file.name);
     try {
       // Read file data immediately to avoid stale file reference issues
       const arrayBuffer = await file.arrayBuffer();
@@ -87,7 +90,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
       pendingArrayBufferRef.current = arrayBuffer;
       setIsUnitsDialogOpen(true);
     } catch (err) {
-      console.error('Error reading file:', err);
+      logger.error('Error reading file:', err);
       setError('Failed to read file. Please try selecting the file again.');
     }
   }, []);
@@ -125,7 +128,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to process file';
       setError(errorMessage);
-      console.error('Error processing file:', err);
+      logger.error('Error processing file:', err);
       setIsProcessing(false);
     }
   }, [processFile, onFileLoaded, isInCollapsiblePanel, viewer]);
@@ -186,7 +189,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
         finalizeMeshImport(pendingProcessedFile);
       }
     } catch (err) {
-      console.error('Error during mesh repair:', err);
+      logger.error('Error during mesh repair:', err);
       finalizeMeshImport(pendingProcessedFile);
     } finally {
       setIsMeshProcessing(false);
@@ -234,7 +237,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
           },
         };
         
-        console.log(`Mesh decimated: ${decimationResult.originalTriangles} -> ${decimationResult.finalTriangles} triangles (${decimationResult.reductionPercent.toFixed(1)}% reduction)`);
+        logger.info(`Mesh decimated: ${decimationResult.originalTriangles} -> ${decimationResult.finalTriangles} triangles (${decimationResult.reductionPercent.toFixed(1)}% reduction)`);
         
         finalizeMeshImport(updatedFile);
       } else {
@@ -244,7 +247,7 @@ const FileImport: React.FC<FileImportProps> = ({ onFileLoaded, isInCollapsiblePa
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to optimize mesh';
       setError(errorMessage);
-      console.error('Error during mesh optimization:', err);
+      logger.error('Error during mesh optimization:', err);
       finalizeMeshImport(pendingProcessedFile);
     } finally {
       setIsMeshProcessing(false);

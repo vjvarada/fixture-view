@@ -10,7 +10,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Upload, FileText, AlertCircle } from 'lucide-react';
 import { SUPPORTED_FORMATS } from '../types';
-import { MAX_FILE_SIZE } from '../hooks/useFileProcessingRefactored';
+import { MAX_FILE_SIZE } from '../hooks/useFileProcessing';
 import { cn } from '@/lib/utils';
 
 // ─────────────────────────────────────────────────────────────────────────────

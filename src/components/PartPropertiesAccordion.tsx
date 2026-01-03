@@ -15,16 +15,14 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Cog } from 'lucide-react';
 import { ProcessedFile } from '@/modules/FileImport/types';
-import SupportsAccordion from './Supports/SupportsAccordion';
-import BaseplateAccordion from './BaseplateAccordion';
-import CavityAccordion from './CavityAccordion';
-import { LabelsAccordion, LabelConfig } from './Labels';
-import { ClampsAccordion, PlacedClamp } from './Clamps';
+import { SupportsAccordion, AnySupport } from '@/features/supports';
+import { BaseplateAccordion } from '@/features/baseplate';
+import { CavityAccordion } from '@/features/cavity';
+import { LabelsAccordion, LabelConfig } from '@/features/labels';
+import { ClampsAccordion, PlacedClamp } from '@/features/clamps';
 import PartItemAccordion from './PartItemAccordion';
-import MountingHolesAccordion from './MountingHolesAccordion';
-import { PlacedHole } from '@/components/MountingHoles/types';
-import { AnySupport } from './Supports/types';
-import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@/lib/offset/types';
+import { MountingHolesAccordion, PlacedHole } from '@/features/holes';
+import { CavitySettings, DEFAULT_CAVITY_SETTINGS } from '@rapidtool/cad-core';
 import {
   Transform3D,
   DEFAULT_TRANSFORM,
@@ -54,6 +52,8 @@ interface PartPropertiesAccordionProps {
   onRemoveBaseplate?: () => void;
   onUpdateBaseplate?: (updates: { padding?: number; height?: number }) => void;
   onRemoveBaseplateSection?: (sectionId: string) => void;
+  onUpdateBaseplateSection?: (sectionId: string, updates: { minX?: number; maxX?: number; minZ?: number; maxZ?: number }) => void;
+  onSelectBaseplateSection?: (sectionId: string | null) => void;
   onAddBaseplateSection?: () => void;
   selectedBasePlateSectionId?: string | null;
   supports?: AnySupport[];
@@ -172,12 +172,21 @@ function usePartTransforms(parts: ProcessedFile[]) {
   return { getTransform, updateTransform };
 }
 
-/** Manages accordion section state */
+/** Manages accordion section state - auto-opens based on selected components */
 function useAccordionSection(
+  selectedPartId: string | null,
   selectedSupportId: string | null,
-  selectedClampId: string | null
+  selectedClampId: string | null,
+  selectedLabelId: string | null,
+  selectedHoleId: string | null,
+  selectedBasePlateSectionId: string | null
 ) {
   const [openSection, setOpenSection] = useState<string>('parts');
+
+  // Auto-open accordion based on selection
+  useEffect(() => {
+    if (selectedPartId) setOpenSection('parts');
+  }, [selectedPartId]);
 
   useEffect(() => {
     if (selectedSupportId) setOpenSection('supports');
@@ -186,6 +195,42 @@ function useAccordionSection(
   useEffect(() => {
     if (selectedClampId) setOpenSection('clamps');
   }, [selectedClampId]);
+
+  useEffect(() => {
+    if (selectedLabelId) setOpenSection('labels');
+  }, [selectedLabelId]);
+
+  useEffect(() => {
+    if (selectedHoleId) setOpenSection('holes');
+  }, [selectedHoleId]);
+
+  useEffect(() => {
+    if (selectedBasePlateSectionId) setOpenSection('baseplate');
+  }, [selectedBasePlateSectionId]);
+
+  // Listen for external navigation events (from WorkflowNavigationContext)
+  useEffect(() => {
+    const handleAccordionChange = (e: CustomEvent<{ section: string | null }>) => {
+      if (e.detail.section) {
+        setOpenSection(e.detail.section);
+      }
+    };
+
+    // Listen for step changes from mini-map navigation
+    // The accordion section names now come directly from cad-ui's STEP_TO_ACCORDION
+    const handleStepChange = (e: CustomEvent<{ step: string; accordion: string }>) => {
+      if (e.detail.accordion) {
+        setOpenSection(e.detail.accordion);
+      }
+    };
+
+    window.addEventListener('workflow-accordion-changed', handleAccordionChange as EventListener);
+    window.addEventListener('workflow-step-changed', handleStepChange as EventListener);
+    return () => {
+      window.removeEventListener('workflow-accordion-changed', handleAccordionChange as EventListener);
+      window.removeEventListener('workflow-step-changed', handleStepChange as EventListener);
+    };
+  }, []);
 
   return { openSection, setOpenSection };
 }
@@ -206,6 +251,8 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
   onRemoveBaseplate,
   onUpdateBaseplate,
   onRemoveBaseplateSection,
+  onUpdateBaseplateSection,
+  onSelectBaseplateSection,
   onAddBaseplateSection,
   selectedBasePlateSectionId = null,
   supports = [],
@@ -246,8 +293,12 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
 
   const { getTransform, updateTransform } = usePartTransforms(allParts);
   const { openSection, setOpenSection } = useAccordionSection(
+    selectedPartId ?? null,
     selectedSupportId,
-    selectedClampId
+    selectedClampId,
+    selectedLabelId,
+    selectedHoleId,
+    selectedBasePlateSectionId
   );
 
   // Transform handlers
@@ -383,6 +434,8 @@ const PartPropertiesAccordion: React.FC<PartPropertiesAccordionProps> = ({
         visible={baseplateVisible}
         onVisibilityChange={onBaseplateVisibilityChange}
         onRemoveSection={onRemoveBaseplateSection}
+        onUpdateSection={onUpdateBaseplateSection}
+        onSelectSection={onSelectBaseplateSection}
         onAddSections={onAddBaseplateSection}
         selectedSectionId={selectedBasePlateSectionId}
       />

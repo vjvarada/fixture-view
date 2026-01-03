@@ -6,7 +6,7 @@ import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
 import { Square, Hexagon, Check, AlertCircle, Settings2, LayoutGrid, Trash2, PenTool, XCircle } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import type { BasePlateSection } from '@/components/BasePlate/types';
+import type { BasePlateSection } from '@/features/baseplate';
 
 interface BaseplateType {
   id: 'rectangular' | 'convex-hull' | 'multi-section';
@@ -64,7 +64,7 @@ const BaseplatesStepContent: React.FC<BaseplatesStepContentProps> = ({
   const [selectedType, setSelectedType] = useState<'rectangular' | 'convex-hull' | 'multi-section'>(
     (currentBaseplate?.type as 'rectangular' | 'convex-hull' | 'multi-section') || 'rectangular'
   );
-  const [padding, setPadding] = useState(currentBaseplate?.padding || 10);
+  const [padding, setPadding] = useState(currentBaseplate?.padding || 4);
   const [height, setHeight] = useState(currentBaseplate?.height || 4);
 
   // For multi-section, combine existing sections with newly drawn ones

@@ -695,14 +695,17 @@ export function useViewer(
       } else if (baseplateData.type === 'convex-hull') {
         createOrUpdateBaseplate(baseplateData.dimensions.padding || 20, 10);
       } else if (baseplateData.type === 'cylindrical') {
-        createOrUpdateBaseplate(10, 10); // Use rectangular for now, TODO: implement cylindrical
+        // FUTURE: Implement cylindrical baseplate geometry using CylinderGeometry
+        createOrUpdateBaseplate(10, 10); // Fallback to rectangular
       } else if (baseplateData.type === 'v-block') {
-        createOrUpdateBaseplate(10, 10); // Use rectangular for now, TODO: implement v-block
+        // FUTURE: Implement V-block baseplate geometry using ExtrudeGeometry with V-profile
+        createOrUpdateBaseplate(10, 10); // Fallback to rectangular
       } else if (baseplateData.type === 'hexagonal') {
-        createOrUpdateBaseplate(10, 10); // Use rectangular for now, TODO: implement hexagonal
+        // FUTURE: Implement hexagonal baseplate geometry using ShapeGeometry
+        createOrUpdateBaseplate(10, 10); // Fallback to rectangular
       } else if (baseplateData.type === 'perforated') {
+        // FUTURE: Add perforated hole pattern using CSG subtraction or vertex manipulation
         createOrUpdateBaseplate(10, 10);
-        // TODO: Add perforated pattern to baseplate
       } else if (baseplateData.type === 'solid') {
         createOrUpdateBaseplate(10, 10);
       }

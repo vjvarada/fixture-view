@@ -21,6 +21,11 @@ import {
   MinusCircle
 } from 'lucide-react';
 import { ProcessedFile } from '@/modules/FileImport/types';
+import {
+  CATEGORY_TO_STEP,
+  STEP_TO_ACCORDION,
+  type ComponentCategory
+} from '@rapidtool/cad-ui';
 
 // Step definitions for the workflow
 export type WorkflowStep = 
@@ -49,9 +54,9 @@ const WORKFLOW_STEPS: StepConfig[] = [
     description: 'Upload workpieces and models',
     icon: Upload,
     helpText: [
+      'Double-click the name on the title bar to rename your project',
       'Drag & drop STL, OBJ, or GLTF files',
-      'Select the correct unit system',
-      'Review mesh quality and optimize if needed'
+      'Select the correct unit system'
     ]
   },
   {
@@ -96,7 +101,7 @@ const WORKFLOW_STEPS: StepConfig[] = [
     helpText: [
       'Add version numbers and identifiers',
       'Position labels on visible surfaces',
-      'Emboss or deboss text as needed'
+      'Embossed text for clear marking'
     ],
     isOptional: true
   },
@@ -163,6 +168,55 @@ const ContextOptionsPanel: React.FC<ContextOptionsPanelProps> = ({
   // Calculate progress percentage (completed + skipped count toward progress)
   const processedSteps = [...new Set([...completedSteps, ...skippedSteps])];
   const progressPercent = ((processedSteps.length) / WORKFLOW_STEPS.length) * 100;
+
+  // Listen for navigation events from double-click on components
+  useEffect(() => {
+    const handleNavigateToStep = (event: CustomEvent<{ step: WorkflowStep }>) => {
+      if (onStepChange && event.detail?.step) {
+        onStepChange(event.detail.step);
+      }
+    };
+
+    const handleHighlightComponent = (event: CustomEvent<{ category: string; id: string }>) => {
+      if (!event.detail?.category) return;
+      
+      // Use centralized mapping from cad-ui
+      const targetStep = CATEGORY_TO_STEP[event.detail.category as ComponentCategory];
+      if (!targetStep) return;
+      
+      // Always navigate to the step and dispatch the event
+      if (onStepChange && targetStep !== activeStep) {
+        onStepChange(targetStep as WorkflowStep);
+      }
+      
+      // Always dispatch event to ensure accordion opens
+      const accordionSection = STEP_TO_ACCORDION[targetStep];
+      if (accordionSection) {
+        window.dispatchEvent(new CustomEvent('workflow-step-changed', {
+          detail: { step: targetStep, accordion: accordionSection }
+        }));
+      }
+    };
+
+    window.addEventListener('navigate-to-step', handleNavigateToStep as EventListener);
+    window.addEventListener('highlight-component', handleHighlightComponent as EventListener);
+
+    return () => {
+      window.removeEventListener('navigate-to-step', handleNavigateToStep as EventListener);
+      window.removeEventListener('highlight-component', handleHighlightComponent as EventListener);
+    };
+  }, [onStepChange, activeStep]);
+
+  // Dispatch event when step changes so accordions can sync
+  useEffect(() => {
+    // Use centralized mapping from cad-ui
+    const accordionSection = STEP_TO_ACCORDION[activeStep];
+    if (accordionSection) {
+      window.dispatchEvent(new CustomEvent('workflow-step-changed', {
+        detail: { step: activeStep, accordion: accordionSection }
+      }));
+    }
+  }, [activeStep]);
 
   const getStepStatus = (stepId: WorkflowStep): 'completed' | 'skipped' | 'current' | 'upcoming' => {
     if (skippedSteps.includes(stepId)) return 'skipped';

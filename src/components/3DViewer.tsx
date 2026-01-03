@@ -2,7 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { ProcessedFile } from "@/modules/FileImport/types";
 import ThreeDScene from './3DScene';
+import { Canvas3DErrorBoundary } from './ErrorBoundary';
 import { useTheme } from 'next-themes';
+import { 
+  initPerformanceSettings, 
+  getPerformanceSettings, 
+  PerformanceSettings 
+} from '@/utils/performanceSettings';
+import { NavigationHelp } from '@rapidtool/cad-ui';
 
 interface ThreeDViewerProps {
   currentFile: ProcessedFile | null;
@@ -11,6 +18,7 @@ interface ThreeDViewerProps {
   onModelColorAssigned?: (modelId: string, color: string) => void;
   selectedSupportId?: string | null;
   onSupportSelect?: (supportId: string | null) => void;
+  isCavityApplied?: boolean;
 }
 
 const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
@@ -20,9 +28,15 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
   onModelColorAssigned,
   selectedSupportId,
   onSupportSelect,
+  isCavityApplied = false,
 }) => {
   // Theme for 3D viewer background
   const { resolvedTheme } = useTheme();
+  
+  // Performance settings for device optimization
+  const [perfSettings, setPerfSettings] = useState<PerformanceSettings>(() => 
+    initPerformanceSettings('auto')
+  );
   
   // Store multiple imported parts
   const [importedParts, setImportedParts] = useState<ProcessedFile[]>([]);
@@ -80,6 +94,10 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
       setBaseplateVisible(e.detail.visible);
     };
 
+    const handlePerformanceChanged = (e: CustomEvent<{ settings: PerformanceSettings }>) => {
+      setPerfSettings(e.detail.settings);
+    };
+
     window.addEventListener('part-imported', handlePartImported as EventListener);
     window.addEventListener('file-imported', handleFileImported as EventListener);
     window.addEventListener('session-reset', handleSessionReset);
@@ -87,6 +105,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
     window.addEventListener('part-removed', handlePartRemoved as EventListener);
     window.addEventListener('part-visibility-changed', handlePartVisibilityChanged as EventListener);
     window.addEventListener('baseplate-visibility-changed', handleBaseplateVisibilityChanged as EventListener);
+    window.addEventListener('performance-settings-changed', handlePerformanceChanged as EventListener);
 
     return () => {
       window.removeEventListener('part-imported', handlePartImported as EventListener);
@@ -96,6 +115,7 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
       window.removeEventListener('part-removed', handlePartRemoved as EventListener);
       window.removeEventListener('part-visibility-changed', handlePartVisibilityChanged as EventListener);
       window.removeEventListener('baseplate-visibility-changed', handleBaseplateVisibilityChanged as EventListener);
+      window.removeEventListener('performance-settings-changed', handlePerformanceChanged as EventListener);
     };
   }, []);
 
@@ -107,34 +127,41 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
 
   return (
     <div className="w-full h-full relative" onContextMenu={(e) => e.preventDefault()}>
-      <Canvas
-        orthographic
-        camera={{
-          position: [8, 8, 8], // Default isometric orthographic view
-          zoom: 38,
-          near: 0.1,
-          far: 5000
-        }}
-        gl={{
-          antialias: true,
-          alpha: true,
-          powerPreference: "high-performance"
-        }}
-        style={{ background: viewerBackground }}
-        onContextMenu={(e) => e.preventDefault()}
-      >
-        <ThreeDScene
-          importedParts={displayParts}
-          selectedPartId={selectedPartId}
-          onPartSelected={setSelectedPartId}
-          onModelColorAssigned={onModelColorAssigned}
-          partVisibility={partVisibility}
-          baseplateVisible={baseplateVisible}
-          isDarkMode={resolvedTheme === 'dark'}
-          selectedSupportId={selectedSupportId}
-          onSupportSelect={onSupportSelect}
-        />
-      </Canvas>
+      <Canvas3DErrorBoundary name="3DViewer">
+        <Canvas
+          orthographic
+          camera={{
+            position: [8, 8, 8], // Default isometric orthographic view
+            zoom: 38,
+            near: 0.1,
+            far: 5000
+          }}
+          dpr={perfSettings.pixelRatio}
+          frameloop={perfSettings.frameRateLimit ? 'demand' : 'always'}
+          gl={{
+            antialias: perfSettings.antialias,
+            alpha: true,
+            powerPreference: perfSettings.pixelRatio < 1.5 ? "low-power" : "high-performance"
+          }}
+          shadows={perfSettings.shadowsEnabled}
+          style={{ background: viewerBackground }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <ThreeDScene
+            importedParts={displayParts}
+            selectedPartId={selectedPartId}
+            onPartSelected={setSelectedPartId}
+            onModelColorAssigned={onModelColorAssigned}
+            partVisibility={partVisibility}
+            baseplateVisible={baseplateVisible}
+            isDarkMode={resolvedTheme === 'dark'}
+            selectedSupportId={selectedSupportId}
+            onSupportSelect={onSupportSelect}
+            performanceSettings={perfSettings}
+            isCavityApplied={isCavityApplied}
+          />
+        </Canvas>
+      </Canvas3DErrorBoundary>
 
       {/* Processing overlay */}
       {isProcessing && (
@@ -159,6 +186,9 @@ const ThreeDViewer: React.FC<ThreeDViewerProps> = ({
           </div>
         </div>
       )}
+
+      {/* Navigation help tooltip */}
+      <NavigationHelp storageKey="fixture-view-nav-tooltip-dismissed" />
     </div>
   );
 };

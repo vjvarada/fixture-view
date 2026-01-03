@@ -1,20 +1,21 @@
 /**
  * File Import Module - Refactored Exports
  * 
- * Clean, production-ready exports for mesh processing pipeline.
+ * Application-specific file import orchestration.
+ * Note: Core services (meshAnalysis, stlParser) have been moved to @rapidtool/cad-core
  */
 
 // Default export - FileImport component
 export { default } from './index.tsx';
 
-// Services - Mesh Analysis
+// Re-export from @rapidtool/cad-core for convenience
 export { 
   analyzeMesh,
   repairMesh,
   decimateMesh,
   processMeshPipeline,
-  DECIMATION_THRESHOLD,
-  DECIMATION_TARGET,
+  parseSTL,
+  validateSTLBuffer,
   type MeshAnalysisResult,
   type MeshRepairResult,
   type DecimationResult,
@@ -22,20 +23,14 @@ export {
   type ProgressCallback,
   type PipelineOptions,
   type PipelineResult,
-} from './services/meshAnalysisService';
-
-export { 
-  parseSTL,
-  validateSTLBuffer,
-  type ParseResult as STLParseResult,
-} from './services/stlParser';
+} from '@rapidtool/cad-core';
 
 // Hooks
 export { 
   useFileProcessing,
   type FileProcessingState,
   type FileProcessingResult,
-} from './hooks/useFileProcessingRefactored';
+} from './hooks/useFileProcessing';
 
 // Types (re-export from types folder)
 export type { 

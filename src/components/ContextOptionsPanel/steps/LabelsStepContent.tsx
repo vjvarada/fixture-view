@@ -36,7 +36,7 @@ import {
   LabelFont,
   LABEL_FONTS,
   getFontFile,
-} from '@/components/Labels/types';
+} from '@/features/labels';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -68,6 +68,18 @@ interface LabelsStepContentProps {
   onUpdateLabel?: (labelId: string, updates: Partial<LabelConfig>) => void;
   onDeleteLabel?: (labelId: string) => void;
   onSelectLabel?: (labelId: string | null) => void;
+  /** Project name for default label text */
+  projectName?: string;
+  /** Current baseplate configuration (for multi-section support) */
+  currentBaseplate?: { 
+    id: string; 
+    type: string; 
+    sections?: Array<{ id: string; minX: number; maxX: number; minZ: number; maxZ: number }> 
+  } | null;
+  /** Selected section ID for multi-section baseplates */
+  selectedSectionId?: string | null;
+  /** Callback to select a section */
+  onSectionSelect?: (sectionId: string | null) => void;
 }
 
 interface Label3DPreviewProps {
@@ -92,7 +104,7 @@ interface LabelFormState {
 const generateLabelId = (): string => `label-${Date.now()}`;
 
 /** Creates a new label config from form state */
-const createLabelConfig = (form: LabelFormState): LabelConfig => ({
+const createLabelConfig = (form: LabelFormState, sectionId?: string): LabelConfig => ({
   id: generateLabelId(),
   text: form.text,
   fontSize: form.fontSize,
@@ -100,6 +112,7 @@ const createLabelConfig = (form: LabelFormState): LabelConfig => ({
   font: form.font,
   position: new THREE.Vector3(0, 10, 0), // Will be repositioned by 3DScene
   rotation: new THREE.Euler(-Math.PI / 2, 0, 0), // Face up
+  sectionId, // Include section ID if provided
 });
 
 /** Dispatches a label-related custom event */
@@ -268,12 +281,23 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
   onUpdateLabel,
   onDeleteLabel,
   onSelectLabel,
+  projectName = 'Untitled',
+  currentBaseplate = null,
+  selectedSectionId = null,
+  onSectionSelect,
 }) => {
+  // Generate default label text from project name
+  const defaultLabelText = `${projectName} V1.0`;
+  
   // Form state
-  const [labelText, setLabelText] = useState(DEFAULT_LABEL_CONFIG.text);
+  const [labelText, setLabelText] = useState(defaultLabelText);
   const [fontSize, setFontSize] = useState(DEFAULT_LABEL_CONFIG.fontSize);
-  const [depth, setDepth] = useState(DEFAULT_LABEL_CONFIG.depth);
+  const [depth, setDepth] = useState(DEFAULT_DEPTH);
   const [font, setFont] = useState<LabelFont>(DEFAULT_LABEL_CONFIG.font);
+
+  // Check if using multi-section baseplate
+  const isMultiSection = currentBaseplate?.type === 'multi-section';
+  const sections = currentBaseplate?.sections || [];
 
   // Find selected label
   const selectedLabel = useMemo(
@@ -291,6 +315,13 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
     setFont(selectedLabel.font || 'helvetiker');
   }, [selectedLabel]);
 
+  // Update default label text when project name changes (only when no label is selected)
+  useEffect(() => {
+    if (!selectedLabel) {
+      setLabelText(`${projectName} V1.0`);
+    }
+  }, [projectName, selectedLabel]);
+
   // Event listeners
   useLabelSelectionListener(onSelectLabel);
   useLabelAddedListener(onUpdateLabel);
@@ -307,7 +338,8 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
   );
 
   const handleAddLabel = useCallback((): void => {
-    const newLabel = createLabelConfig({ text: labelText, fontSize, depth, font });
+    // Don't pass sectionId - let 3DScene handle section selection for multi-section baseplates
+    const newLabel = createLabelConfig({ text: labelText, fontSize, depth, font }, undefined);
     dispatchLabelEvent('label-add', newLabel);
   }, [labelText, fontSize, depth, font]);
 
@@ -430,7 +462,9 @@ const LabelsStepContent: React.FC<LabelsStepContentProps> = ({
       </Button>
 
       <p className="text-[10px] text-muted-foreground font-tech text-center">
-        Click on the baseplate or fixture to position the label.
+        {isMultiSection 
+          ? "Click 'Add Label to Scene', then select a baseplate section to place the label."
+          : "Click on the baseplate or fixture to position the label."}
         <br />
         Use the gizmo to reposition. Z-axis adjusts emboss depth.
       </p>

@@ -2,6 +2,14 @@ import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react'
 import { useThree, useFrame } from '@react-three/fiber';
 import { PivotControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import {
+  TransformController,
+  PART_TRANSFORM_CONFIG,
+  setOrbitControlsEnabled,
+  resetPivotMatrix,
+  calculateGizmoScale,
+  dispatchTransformUpdate,
+} from '@/core/transform';
 
 // ============================================================================
 // Types
@@ -45,6 +53,9 @@ const tempSize = new THREE.Vector3();
 const tempPosition = new THREE.Vector3();
 const tempQuaternion = new THREE.Quaternion();
 const tempEuler = new THREE.Euler();
+
+// Transform controller for applying constraints (shared instance for performance)
+const transformController = new TransformController(PART_TRANSFORM_CONFIG);
 
 // ============================================================================
 // Component
@@ -100,14 +111,12 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     };
   }, [meshRef]);
 
-  /** Emit transform update event */
+  /** Emit transform update event using unified utility */
   const emitTransformUpdate = useCallback(() => {
     if (!meshRef.current) return;
     const { position, rotation } = getWorldTransform();
     
-    window.dispatchEvent(new CustomEvent('model-transform-updated', {
-      detail: { position, rotation, partId },
-    }));
+    dispatchTransformUpdate(position, rotation, partId);
     onTransformChange?.({ position, rotation });
   }, [meshRef, getWorldTransform, onTransformChange, partId]);
 
@@ -195,12 +204,12 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
 
   /** Deactivate gizmo - bake transform into mesh */
   const deactivateGizmo = useCallback(async () => {
-    window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: false } }));
+    setOrbitControlsEnabled(true);
     gl.domElement.style.cursor = 'auto';
     
     // Capture world transform before hiding
-    let bakedPosition = new THREE.Vector3();
-    let bakedRotation = new THREE.Euler();
+    const bakedPosition = new THREE.Vector3();
+    const bakedRotation = new THREE.Euler();
     
     if (meshRef.current && pivotRef.current) {
       meshRef.current.updateMatrixWorld(true);
@@ -219,12 +228,8 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
     
     // Bake transform into mesh
     if (meshRef.current && pivotRef.current) {
-      // Reset pivot to origin
-      pivotRef.current.matrix.identity();
-      pivotRef.current.position.set(0, 0, 0);
-      pivotRef.current.rotation.set(0, 0, 0);
-      pivotRef.current.scale.set(1, 1, 1);
-      pivotRef.current.updateMatrix();
+      // Reset pivot to origin using unified utility
+      resetPivotMatrix(pivotRef.current);
       
       // Apply baked transform to mesh
       meshRef.current.position.copy(bakedPosition);
@@ -256,7 +261,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
   // ============================================================================
 
   const handleDragStart = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: true } }));
+    setOrbitControlsEnabled(false);
     gl.domElement.style.cursor = 'grabbing';
   }, [gl]);
 
@@ -268,7 +273,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
   }, [meshRef, onLiveTransformChange, getWorldTransform]);
 
   const handleDragEnd = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('disable-orbit-controls', { detail: { disabled: false } }));
+    setOrbitControlsEnabled(true);
     gl.domElement.style.cursor = 'auto';
     emitTransformUpdate();
   }, [gl, emitTransformUpdate]);
@@ -398,7 +403,7 @@ const SelectableTransformControls: React.FC<SelectableTransformControlsProps> = 
   // ============================================================================
 
   const gizmoScale = useMemo(() => 
-    bounds ? Math.max(bounds.radius * 0.75, 25) : 50, 
+    bounds ? calculateGizmoScale('part', { radius: bounds.radius }) : 50, 
     [bounds]
   );
 
