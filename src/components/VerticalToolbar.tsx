@@ -18,6 +18,7 @@ import {
   Scissors,
   DownloadCloud,
   LucideIcon,
+  UserCircle2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -49,6 +50,8 @@ interface VerticalToolbarProps {
   className?: string;
   /** Currently active tool */
   activeTool?: ToolId;
+  /** Callback when account button is clicked */
+  onAccountClick?: () => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +112,7 @@ const VerticalToolbar: React.FC<VerticalToolbarProps> = ({
   onToolSelect,
   className = '',
   activeTool,
+  onAccountClick,
 }) => {
   const handleToolClick = useCallback(
     (toolId: ToolId) => {
@@ -132,11 +136,26 @@ const VerticalToolbar: React.FC<VerticalToolbarProps> = ({
 
   return (
     <nav
-      className={cn('vertical-toolbar', className)}
+      className={cn('vertical-toolbar flex flex-col h-full', className)}
       role="toolbar"
       aria-label="Fixture design tools"
     >
-      <div className="flex flex-col gap-2 p-2">{toolButtons}</div>
+      {/* Main Tools */}
+      <div className="flex flex-col gap-2 p-2 flex-1">{toolButtons}</div>
+      
+      {/* Account Button at Bottom */}
+      <div className="p-2 border-t border-border/50">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onAccountClick}
+          aria-label="Account Settings"
+          className="w-10 h-10 p-0 tech-transition justify-center rounded-md hover:bg-primary/10 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"
+          title="Account Settings"
+        >
+          <UserCircle2 className="w-5 h-5" />
+        </Button>
+      </div>
     </nav>
   );
 };

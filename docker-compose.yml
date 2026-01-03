@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: rapidtool_fixture
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./backend/database:/docker-entrypoint-initdb.d:ro
+    ports:
+      - 5432:5432
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/rapidtool_fixture
+    ports:
+      - 3000:3000
+
+  frontend:
+    build: .
+    ports:
+      - 8080:80
+    depends_on:
+      - backend
