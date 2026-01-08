@@ -1,0 +1,302 @@
+// Prisma schema for RapidTool-Fixture
+// Database: PostgreSQL (Development & Production)
+// Architecture: Hybrid storage (IndexedDB for active work, database for metadata)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// AUTHENTICATION TABLES
+// ============================================================================
+
+// User authentication and profile
+model User {
+  id                       String    @id @default(uuid())
+  email                    String    @unique
+  passwordHash             String    @map("password_hash")
+  emailVerified            Boolean   @default(false) @map("email_verified")
+  verificationToken        String?   @map("verification_token")
+  verificationTokenExpiry  DateTime? @map("verification_token_expiry")
+  passwordResetToken       String?   @map("password_reset_token")
+  passwordResetExpiry      DateTime? @map("password_reset_expiry")
+  
+  // Security
+  failedLoginAttempts      Int       @default(0) @map("failed_login_attempts")
+  lockedUntil              DateTime? @map("locked_until")
+  mfaEnabled               Boolean   @default(false) @map("mfa_enabled")
+  mfaSecret                String?   @map("mfa_secret")
+  
+  // Profile
+  name                     String?
+  avatarUrl                String?   @map("avatar_url")
+  preferences              Json?     @default("{}")
+  
+  // Timestamps
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @updatedAt @map("updated_at")
+  lastLoginAt              DateTime? @map("last_login_at")
+  deletedAt                DateTime? @map("deleted_at")
+  
+  // Relations
+  refreshTokens            RefreshToken[]
+  projects                 Project[]
+  exports                  Export[]
+  cloudBackups             CloudBackup[]
+  sharedProjects           SharedProject[] @relation("SharedBy")
+  receivedShares           SharedProject[] @relation("SharedWith")
+  auditLogs                AuditLog[]
+  
+  @@index([email])
+  @@index([verificationToken])
+  @@index([passwordResetToken])
+  @@map("users")
+}
+
+// Refresh token management with rotation
+model RefreshToken {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  tokenHash      String    @unique @map("token_hash")
+  expiresAt      DateTime  @map("expires_at")
+  revoked        Boolean   @default(false)
+  revokedAt      DateTime? @map("revoked_at")
+  replacedByToken String?  @map("replaced_by_token")
+  ipAddress      String?   @map("ip_address")
+  userAgent      String?   @map("user_agent")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+// PROJECT TABLES (Metadata Only - No 3D Data)
+// ============================================================================
+
+// Project metadata (NOT 3D data)
+model Project {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  
+  // Project Info
+  name            String
+  description     String?
+  thumbnailUrl    String?   @map("thumbnail_url")
+  
+  // Model Info (metadata only)
+  modelFilename   String?   @map("model_filename")
+  modelFileType   String?   @map("model_file_type")
+  modelFileSize   Int?      @map("model_file_size")
+  
+  // Design Stats
+  supportsCount   Int       @default(0) @map("supports_count")
+  clampsCount     Int       @default(0) @map("clamps_count")
+  hasBaseplate    Boolean   @default(false) @map("has_baseplate")
+  
+  // Status
+  status          String    @default("active")
+  
+  // Collaboration
+  isPublic        Boolean   @default(false) @map("is_public")
+  shareToken      String?   @unique @map("share_token")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  lastOpenedAt    DateTime? @map("last_opened_at")
+  deletedAt       DateTime? @map("deleted_at")
+  
+  // Relations
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  designVersions  DesignVersion[]
+  exports         Export[]
+  cloudBackups    CloudBackup[]
+  sharedProjects  SharedProject[]
+  
+  @@index([userId])
+  @@index([status])
+  @@index([shareToken])
+  @@index([updatedAt])
+  @@map("projects")
+}
+
+// Design version metadata (NOT full state)
+model DesignVersion {
+  id              String    @id @default(uuid())
+  projectId       String    @map("project_id")
+  versionNumber   Int       @map("version_number")
+  
+  // Version Info
+  name            String?
+  description     String?
+  thumbnailUrl    String?   @map("thumbnail_url")
+  
+  // Changes Summary
+  changesSummary  String?   @map("changes_summary")
+  supportsCount   Int       @default(0) @map("supports_count")
+  clampsCount     Int       @default(0) @map("clamps_count")
+  
+  // Metadata
+  isAutoSave      Boolean   @default(false) @map("is_auto_save")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  createdBy       String?   @map("created_by")
+  
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@unique([projectId, versionNumber])
+  @@index([projectId])
+  @@index([createdAt])
+  @@map("design_versions")
+}
+
+// Export tracking
+model Export {
+  id              String    @id @default(uuid())
+  projectId       String    @map("project_id")
+  userId          String    @map("user_id")
+  
+  // Export Info
+  format          String
+  filename        String
+  fileSize        Int?      @map("file_size")
+  fileUrl         String?   @map("file_url")
+  
+  // Export Settings
+  settings        Json?
+  
+  // Status
+  status          String    @default("completed")
+  errorMessage    String?   @map("error_message")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  expiresAt       DateTime? @map("expires_at")
+  
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([expiresAt])
+  @@map("exports")
+}
+
+// Project sharing and collaboration
+model SharedProject {
+  id             String    @id @default(uuid())
+  projectId      String    @map("project_id")
+  sharedBy       String    @map("shared_by")
+  sharedWith     String?   @map("shared_with")
+  
+  // Permissions
+  permission     String    @default("view")
+  
+  // Share Type
+  shareType      String    @map("share_type")
+  shareToken     String?   @unique @map("share_token")
+  
+  // Status
+  accepted       Boolean   @default(false)
+  revoked        Boolean   @default(false)
+  
+  // Timestamps
+  createdAt      DateTime  @default(now()) @map("created_at")
+  acceptedAt     DateTime? @map("accepted_at")
+  revokedAt      DateTime? @map("revoked_at")
+  expiresAt      DateTime? @map("expires_at")
+  
+  // Relations
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sharedByUser   User      @relation("SharedBy", fields: [sharedBy], references: [id], onDelete: Cascade)
+  sharedWithUser User?     @relation("SharedWith", fields: [sharedWith], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([sharedWith])
+  @@index([shareToken])
+  @@index([expiresAt])
+  @@map("shared_projects")
+}
+
+// Optional cloud backup storage
+model CloudBackup {
+  id              String    @id @default(uuid())
+  projectId       String    @map("project_id")
+  userId          String    @map("user_id")
+  
+  // Backup Data
+  backupName      String?   @map("backup_name")
+  compressedData  Bytes?    @map("compressed_data")
+  fileSize        Int       @map("file_size")
+  checksum        String
+  
+  // Compression
+  compressionType String    @default("gzip") @map("compression_type")
+  originalSize    Int?      @map("original_size")
+  
+  // Metadata
+  metadata        Json?
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  accessedAt      DateTime? @map("accessed_at")
+  
+  // Relations
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("cloud_backups")
+}
+
+// Audit log for security and compliance
+model AuditLog {
+  id              String    @id @default(uuid())
+  userId          String?   @map("user_id")
+  
+  // Event Data
+  action          String
+  resource        String?
+  resourceId      String?   @map("resource_id")
+  
+  // Result
+  status          String
+  errorMessage    String?   @map("error_message")
+  
+  // Request Context
+  ipAddress       String?   @map("ip_address")
+  userAgent       String?   @map("user_agent")
+  
+  // Additional Data
+  metadata        Json?
+  
+  // Timestamp
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  // Relations
+  user            User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
+

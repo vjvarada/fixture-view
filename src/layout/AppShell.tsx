@@ -6,97 +6,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { ViewCube } from "@rapidtool/cad-ui";
 import VerticalToolbar from "@/components/VerticalToolbar";
 import ThreeDViewer from "@/components/3DViewer";
-import { logMemoryUsage } from "@/utils/memoryMonitor";
-import { createLogger } from "@/utils/logger";
-import { terminateWorkers } from "@rapidtool/cad-core";
-
-const logger = createLogger('AppShell');
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Phase 7 - Zustand Store Hooks (migrated from useState)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Selection hooks (Phase 7a)
-import {
-  useSelectedPart,
-  useSelectedSupport,
-  useSelectedClamp,
-  useSelectedLabel,
-  useSelectedHole,
-  useSelectedBaseplateSection,
-  useClearSelection,
-} from "@/hooks/useSelection";
-
-// Workflow hooks (Phase 7c)
-import {
-  useInitializeFixtureWorkflow,
-  useWorkflowStep,
-  useCompletedSteps,
-  useSkippedSteps,
-  type FixtureWorkflowStep,
-} from "@/hooks/useWorkflow";
-
-// UI hooks (Phase 7h)
-import {
-  useContextPanelCollapsed,
-  usePropertiesPanelCollapsed,
-} from "@/hooks/useUI";
-
-// Dialog hooks (Phase 7f)
-import {
-  useUnitsDialog,
-  useOptimizationDialog,
-} from "@/hooks/useDialogs";
-
-// Placement hooks (Phase 7d)
-import {
-  useSupportPlacementMode,
-  useSelectedSupportType,
-  useHolePlacementMode,
-  usePendingHoleConfig,
-  useBaseplateDrawingMode,
-  useDrawnBaseplateSections,
-  useBaseplateParams,
-} from "@/hooks/usePlacement";
-
-// Processing hooks (Phase 7e)
-import {
-  useIsProcessing,
-  useFileError,
-  useIsMeshProcessing,
-  useMeshAnalysis,
-  useMeshProgress,
-  useIsExporting,
-} from "@/hooks/useProcessing";
-
-// Cavity hooks (Phase 7g)
-import {
-  useCavitySettings,
-  useIsCavityProcessing,
-  useIsApplyingCavity,
-  useHasCavityPreview,
-  useIsCavityApplied,
-} from "@/hooks/useCavity";
-
-// Fixture data hooks (Phase 7b)
-import {
-  useImportedParts,
-  usePartVisibility,
-  useModelColors,
-  useBaseplateVisible,
-  useSupports,
-  useLabels,
-  useClamps,
-  useMountingHoles,
-  useCurrentBaseplate,
-  useProjectName,
-} from "@/hooks/useFixture";
-
-// History hooks
-import {
-  useUndoStack,
-  useRedoStack,
-} from "@/hooks/useHistory";
+import AccountSettings from "@/components/AccountSettings";
 
 import PartPropertiesAccordion from "@/components/PartPropertiesAccordion";
 import ContextOptionsPanel, { WorkflowStep, WORKFLOW_STEPS } from "@/components/ContextOptionsPanel";
@@ -122,6 +32,44 @@ import { useFileProcessing } from "@/modules/FileImport/hooks/useFileProcessing"
 import { LARGE_FILE_THRESHOLD } from "@/modules/FileImport/hooks/useFileProcessing";
 import { ProcessedFile } from "@/modules/FileImport/types";
 import {
+  useInitializeFixtureWorkflow,
+  useWorkflowStep,
+  useCompletedSteps,
+  useSkippedSteps,
+  useImportedParts,
+  useSelectedPart,
+  usePartVisibility,
+  useBaseplateVisible,
+  useIsProcessing,
+  useFileError,
+  useMeshAnalysis,
+  useMeshProgress,
+  useIsMeshProcessing,
+  useUnitsDialog,
+  useOptimizationDialog,
+  useSupportPlacementMode,
+  useSupports,
+  useSelectedSupportType,
+  useSelectedSupport,
+  useLabels,
+  useSelectedLabel,
+  useClamps,
+  useSelectedClamp,
+  useMountingHoles,
+  useSelectedHole,
+  useHolePlacementMode,
+  usePendingHoleConfig,
+  useModelColors,
+  useCavitySettings,
+  useIsCavityProcessing,
+  useIsApplyingCavity,
+  useHasCavityPreview,
+  useIsCavityApplied,
+  useIsExporting,
+} from "@/hooks";
+import { useProjectName } from "@/hooks/useFixture";
+import { createLogger } from "@/utils/logger";
+import {
   analyzeMesh,
   repairMesh,
   decimateMesh,
@@ -131,6 +79,8 @@ import {
   type MeshProcessingProgress,
   DECIMATION_TARGET,
 } from "@rapidtool/cad-core";
+
+const logger = createLogger('AppShell');
 
 // UI threshold for showing optimization dialog (500k triangles)
 // This is higher than the actual decimation threshold to avoid unnecessary dialogs
@@ -177,30 +127,20 @@ interface AppShellProps {
 }
 
 const AppShell = forwardRef<AppShellHandle, AppShellProps>(
-  ({ children, onToggleDesignMode, designMode = false, isProcessing: externalProcessing = false, fileStats, currentFile }, ref) => {
-    // ═══════════════════════════════════════════════════════════════════════
-    // State from Zustand stores (Phase 7 migration)
-    // ═══════════════════════════════════════════════════════════════════════
+  ({ children, onLogout, onToggleDesignMode, designMode = false, isProcessing: externalProcessing = false, fileStats, currentFile }, ref) => {
+    // UI State
+    const [isContextPanelCollapsed, setIsContextPanelCollapsed] = useState(false);
+    const [isPropertiesCollapsed, setIsPropertiesCollapsed] = useState(false);
+    const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState(false);
+    const [undoStack, setUndoStack] = useState<any[]>([]);
+    const [redoStack, setRedoStack] = useState<any[]>([]);
+    const [currentBaseplate, setCurrentBaseplate] = useState<{ id: string; type: string; padding?: number; height?: number; depth?: number; sections?: Array<{ id: string; minX: number; maxX: number; minZ: number; maxZ: number }> } | null>(null);
+    const [selectedBasePlateSectionId, setSelectedBasePlateSectionId] = useState<string | null>(null);
 
-    // UI State (Phase 7h)
-    const [isContextPanelCollapsed, setIsContextPanelCollapsed] = useContextPanelCollapsed();
-    const [isPropertiesCollapsed, setIsPropertiesCollapsed] = usePropertiesPanelCollapsed();
-    
-    // History state
-    const [undoStack, setUndoStack] = useUndoStack();
-    const [redoStack, setRedoStack] = useRedoStack();
-    
-    // Baseplate state (Phase 7b)
-    const [currentBaseplate, setCurrentBaseplate] = useCurrentBaseplate();
-    
-    // Selection state (Phase 7a)
-    const [selectedBasePlateSectionId, setSelectedBasePlateSectionId] = useSelectedBaseplateSection();
-    const clearSelection = useClearSelection();
-
-    // Baseplate drawing state (Phase 7d)
-    const [isBaseplateDrawingMode, setIsBaseplateDrawingMode] = useBaseplateDrawingMode();
-    const [drawnBaseplateSections, setDrawnBaseplateSections] = useDrawnBaseplateSections();
-    const [currentBaseplateParams, setCurrentBaseplateParams] = useBaseplateParams();
+    // Multi-section baseplate drawing state
+    const [isBaseplateDrawingMode, setIsBaseplateDrawingMode] = useState(false);
+    const [drawnBaseplateSections, setDrawnBaseplateSections] = useState<Array<{ id: string; minX: number; maxX: number; minZ: number; maxZ: number }>>([]);
+    const [currentBaseplateParams, setCurrentBaseplateParams] = useState<{ padding: number; height: number }>({ padding: 10, height: 4 });
 
     // Workflow State (Phase 7c)
     useInitializeFixtureWorkflow();
@@ -1818,8 +1758,12 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
         {/* Main Content */}
         <div className="flex-1 flex overflow-hidden">
           {/* Left Static Vertical Toolbar */}
-          <aside className="w-14 flex-shrink-0 border-r border-border/50 tech-glass flex flex-col justify-center">
-            <VerticalToolbar onToolSelect={handleToolSelect} activeTool={activeStep} />
+          <aside className="w-14 flex-shrink-0 border-r border-border/50 tech-glass">
+            <VerticalToolbar 
+              onToolSelect={handleToolSelect} 
+              activeTool={activeStep}
+              onAccountClick={() => setIsAccountSettingsOpen(true)}
+            />
           </aside>
 
           {/* Collapsible Context Options Panel */}
@@ -2284,6 +2228,13 @@ const AppShell = forwardRef<AppShellHandle, AppShellProps>(
           onCancel={handleCancelOptimization}
           processingResult={processingResult}
           onConfirmResult={handleConfirmProcessingResult}
+        />
+
+        {/* Account Settings Dialog */}
+        <AccountSettings
+          open={isAccountSettingsOpen}
+          onOpenChange={setIsAccountSettingsOpen}
+          onLogout={onLogout}
         />
       </div>
     );
